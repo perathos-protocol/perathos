@@ -326,17 +326,33 @@ def _create_brief_issue() -> dict | None:
     return resp.json() if resp.status_code in (200, 201) else None
 
 
-def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str]) -> None:
+def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str], full_decision: dict | None = None) -> None:
     if not (GH_TOKEN and GITHUB_REPO):
         print("  [brief] skipped — no GH_TOKEN")
-        return
-    if not brief:
-        print("  [brief] skipped — master produced no cycle_brief")
         return
 
     issue = _find_brief_issue() or _create_brief_issue()
     if not issue:
         print("  [brief] could not find or create issue")
+        return
+
+    # If master didn't produce a brief, post a diagnostic comment with the raw decision instead
+    if not brief:
+        diag_body = (
+            f"### ⚠️ Master did not produce a `cycle_brief` this cycle\n\n"
+            f"Raw decision JSON from the master (for debugging):\n\n"
+            f"```json\n{json.dumps(full_decision or {}, indent=2)[:3000]}\n```\n\n"
+            f"**Specialist results:**\n"
+            + "\n".join(f"- {'✅' if ok else '❌'} `{name}`" for name, ok in results.items())
+            + f"\n\n_Posted at {datetime.now(timezone.utc).isoformat()} UTC._"
+        )
+        httpx.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/issues/{issue['number']}/comments",
+            json={"body": diag_body},
+            headers=GH_HEADERS,
+            timeout=20,
+        )
+        print(f"  [brief] diagnostic posted to {issue['html_url']}")
         return
 
     headline = brief.get("headline", "(no headline)")
@@ -521,7 +537,12 @@ def main() -> None:
         print(f"  {'✓' if ok else '✗'} {agent}")
 
     # Post the master's cycle brief as a comment so the operator gets a phone notification
-    post_cycle_brief(decision.get("cycle_brief", {}) if decision else {}, results, pr_urls)
+    post_cycle_brief(
+        decision.get("cycle_brief", {}) if decision else {},
+        results,
+        pr_urls,
+        full_decision=decision,
+    )
 
     # Exit 0 even on partial failure — partial progress is still progress
     sys.exit(0)
