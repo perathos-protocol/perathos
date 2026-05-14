@@ -2,14 +2,13 @@
 Autonomous agent cycle runner for Perathos.
 
 Each run:
-  1. Selects which agents to run (all, or a named agent via AGENT_FILTER env)
-  2. Builds codebase context from relevant source files
-  3. Calls the LLM (Anthropic if ANTHROPIC_API_KEY set, else OpenRouter free tier)
-  4. Parses the JSON output (files + commit_message)
-  5. Writes the files, runs pytest to validate
-  6. Opens a PR; GitHub auto-merge closes it when CI passes
+  1. Master agent analyzes the full codebase + recent git history
+  2. Master assigns a specific high-value task to each specialist
+  3. Each specialist executes its assigned task
+  4. Files are written, pytest validates, a PR is opened with auto-merge
 
 Set DRY_RUN=true to print the plan without writing files or opening a PR.
+Set AGENT_FILTER=<name> to run only one agent (skips master, agent self-selects).
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ import httpx
 
 ROOT = Path(__file__).parent.parent.parent
 AGENTS_DIR = ROOT / ".claude" / "agents"
-AGENTS = ["product-engineer", "qa-tester", "ux-reviewer", "docs-writer"]
+SPECIALISTS = ["product-engineer", "qa-tester", "ux-reviewer", "docs-writer"]
 
 SOURCE_FILES = [
     "perathos/__init__.py",
@@ -41,12 +40,13 @@ SOURCE_FILES = [
     "tests/test_bundle.py",
     "tests/test_canonical.py",
     "tests/test_signing.py",
+    "README.md",
     "BACKLOG.md",
     "pyproject.toml",
 ]
 
 OPENROUTER_MODELS = [
-    "anthropic/claude-3.5-haiku",           # paid — best quality
+    "anthropic/claude-3.5-haiku",
     "deepseek/deepseek-r1:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "google/gemini-2.0-flash-exp:free",
@@ -59,19 +59,33 @@ AGENT_FILTER = os.environ.get("AGENT_FILTER", "all").strip().lower().replace(" "
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 
+GH_HEADERS = {
+    "Authorization": f"Bearer {GH_TOKEN}",
+    "Accept": "application/vnd.github+json",
+}
 
-# ── codebase context builder ──────────────────────────────────────────────────
 
-def build_context() -> str:
+# ── context builders ──────────────────────────────────────────────────────────
+
+def build_codebase_context() -> str:
     parts: list[str] = []
     for rel in SOURCE_FILES:
         path = ROOT / rel
         if path.exists():
-            content = path.read_text(encoding="utf-8")
-            parts.append(f"=== {rel} ===\n{content}")
+            parts.append(f"=== {rel} ===\n{path.read_text(encoding='utf-8')}")
         else:
             parts.append(f"=== {rel} ===\n(file does not exist yet)")
     return "\n\n".join(parts)
+
+
+def build_git_log() -> str:
+    result = subprocess.run(
+        ["git", "log", "--oneline", "-30"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() or "(no git history)"
 
 
 # ── LLM caller ────────────────────────────────────────────────────────────────
@@ -120,8 +134,7 @@ def call_openrouter(system: str, user: str) -> str:
                 time.sleep(2)
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            return resp.json()["choices"][0]["message"]["content"]
         except Exception as exc:
             print(f"  [error] {model}: {exc}")
             continue
@@ -137,10 +150,7 @@ def call_llm(system: str, user: str) -> str:
     return call_openrouter(system, user)
 
 
-# ── JSON output parser ────────────────────────────────────────────────────────
-
 def extract_json(text: str) -> dict:
-    """Extract the first JSON object from LLM output (may be wrapped in markdown)."""
     start = text.find("{")
     end = text.rfind("}") + 1
     if start == -1 or end == 0:
@@ -167,19 +177,14 @@ def open_pr(branch: str, title: str, body: str) -> str | None:
         print("  [skip PR] GH_TOKEN or GITHUB_REPOSITORY not set")
         return None
 
-    api = f"https://api.github.com/repos/{GITHUB_REPO}/pulls"
     resp = httpx.post(
-        api,
+        f"https://api.github.com/repos/{GITHUB_REPO}/pulls",
         json={"title": title, "body": body, "head": branch, "base": "main"},
-        headers={
-            "Authorization": f"Bearer {GH_TOKEN}",
-            "Accept": "application/vnd.github+json",
-        },
+        headers=GH_HEADERS,
         timeout=30,
     )
     if resp.status_code in (200, 201):
         pr = resp.json()
-        # Enable auto-merge (squash)
         _enable_auto_merge(pr["number"])
         return pr["html_url"]
     print(f"  [PR error] {resp.status_code}: {resp.text[:200]}")
@@ -187,14 +192,9 @@ def open_pr(branch: str, title: str, body: str) -> str | None:
 
 
 def _enable_auto_merge(pr_number: int) -> None:
-    """Enable auto-merge on the PR via GitHub GraphQL API."""
-    # First get the PR node_id
     resp = httpx.get(
         f"https://api.github.com/repos/{GITHUB_REPO}/pulls/{pr_number}",
-        headers={
-            "Authorization": f"Bearer {GH_TOKEN}",
-            "Accept": "application/vnd.github+json",
-        },
+        headers=GH_HEADERS,
         timeout=15,
     )
     if resp.status_code != 200:
@@ -213,17 +213,68 @@ def _enable_auto_merge(pr_number: int) -> None:
     httpx.post(
         "https://api.github.com/graphql",
         json={"query": query, "variables": {"pullRequestId": node_id}},
-        headers={
-            "Authorization": f"Bearer {GH_TOKEN}",
-            "Accept": "application/vnd.github+json",
-        },
+        headers=GH_HEADERS,
         timeout=15,
     )
 
 
+# ── master orchestrator ───────────────────────────────────────────────────────
+
+def run_master(context: str, git_log: str) -> dict[str, str | None]:
+    """
+    Call the master agent to analyze the codebase and assign tasks.
+    Returns a dict mapping agent name → task string (or None to skip).
+    """
+    print(f"\n{'='*60}")
+    print("Master Orchestrator")
+    print(f"{'='*60}")
+
+    agent_file = AGENTS_DIR / "master.md"
+    if not agent_file.exists():
+        print("  [warn] no master.md — falling back to agent self-selection")
+        return {}
+
+    system_prompt = agent_file.read_text(encoding="utf-8")
+    if system_prompt.startswith("---"):
+        end = system_prompt.find("---", 3)
+        if end != -1:
+            system_prompt = system_prompt[end + 3:].strip()
+
+    user_message = (
+        f"## Recent git history (last 30 commits)\n\n{git_log}\n\n"
+        f"## Current codebase\n\n{context}"
+    )
+
+    print("  Analyzing codebase…")
+    try:
+        raw = call_llm(system_prompt, user_message)
+    except Exception as exc:
+        print(f"  [error] master LLM call failed: {exc}")
+        return {}
+
+    try:
+        result = extract_json(raw)
+    except Exception as exc:
+        print(f"  [error] master JSON parse failed: {exc}\n{raw[:300]}")
+        return {}
+
+    analysis = result.get("analysis", "")
+    assignments = result.get("assignments", {})
+
+    print(f"\n  Analysis: {analysis}")
+    print("\n  Assignments:")
+    for agent, task in assignments.items():
+        if task:
+            print(f"    {agent}: {task[:120]}{'...' if len(str(task)) > 120 else ''}")
+        else:
+            print(f"    {agent}: (skipped this cycle)")
+
+    return assignments
+
+
 # ── per-agent runner ──────────────────────────────────────────────────────────
 
-def run_agent(name: str, context: str) -> bool:
+def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
     print(f"\n{'='*60}")
     print(f"Agent: {name}")
     print(f"{'='*60}")
@@ -234,13 +285,20 @@ def run_agent(name: str, context: str) -> bool:
         return False
 
     system_prompt = agent_file.read_text(encoding="utf-8")
-    # Strip frontmatter
     if system_prompt.startswith("---"):
         end = system_prompt.find("---", 3)
         if end != -1:
             system_prompt = system_prompt[end + 3:].strip()
 
-    user_message = f"Here is the current codebase:\n\n{context}"
+    if assignment:
+        user_message = (
+            f"## Your assigned task for this cycle\n\n"
+            f"{assignment}\n\n"
+            f"Execute this specific task. Do not pick a different one.\n\n"
+            f"## Current codebase\n\n{context}"
+        )
+    else:
+        user_message = f"## Current codebase\n\n{context}"
 
     print("  Calling LLM…")
     try:
@@ -261,8 +319,8 @@ def run_agent(name: str, context: str) -> bool:
     files = result.get("files", [])
     commit_msg = result.get("commit_message", f"agent({name}): {task}")
 
-    print(f"  Task: {task}")
-    print(f"  Files: {[f['path'] for f in files]}")
+    print(f"  Task  : {task}")
+    print(f"  Files : {[f['path'] for f in files]}")
 
     if not files:
         print("  [skip] no files to write")
@@ -279,11 +337,11 @@ def run_agent(name: str, context: str) -> bool:
         dest.write_text(f["content"], encoding="utf-8")
         print(f"  wrote {f['path']}")
 
-    # Run tests
+    # Validate
     print("  Running tests…")
     passed, output = run_tests()
     if not passed:
-        print(f"  [FAIL] tests failed — reverting changes\n{output[-1000:]}")
+        print(f"  [FAIL] tests failed — reverting\n{output[-1000:]}")
         subprocess.run(["git", "checkout", "--", "."], cwd=ROOT)
         return False
     print("  Tests passed ✓")
@@ -303,13 +361,15 @@ def run_agent(name: str, context: str) -> bool:
     )
     subprocess.run(["git", "checkout", "main"], cwd=ROOT, check=True)
 
-    # Open PR
     pr_url = open_pr(
         branch=branch,
         title=commit_msg,
-        body=f"**Agent:** `{name}`\n\n**Task:** {task}\n\n"
-             f"**Files changed:** {', '.join(f['path'] for f in files)}\n\n"
-             f"_Auto-merge enabled — will merge when CI passes._",
+        body=(
+            f"**Agent:** `{name}`\n\n"
+            f"**Task:** {task}\n\n"
+            f"**Files changed:** {', '.join(f['path'] for f in files)}\n\n"
+            f"_Auto-merge enabled — will merge when CI passes._"
+        ),
     )
     if pr_url:
         print(f"  PR opened: {pr_url}")
@@ -320,33 +380,39 @@ def run_agent(name: str, context: str) -> bool:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    agents_to_run = (
-        AGENTS if AGENT_FILTER in ("all", "") else [AGENT_FILTER]
-    )
-
-    print(f"Perathos autonomous agent cycle")
+    print("Perathos autonomous agent cycle")
     print(f"Time    : {datetime.now(timezone.utc).isoformat()}")
-    print(f"Agents  : {agents_to_run}")
+    print(f"Filter  : {AGENT_FILTER}")
     print(f"Dry run : {DRY_RUN}")
 
-    context = build_context()
-    results: dict[str, bool] = {}
+    context = build_codebase_context()
+    git_log = build_git_log()
 
-    for agent in agents_to_run:
-        results[agent] = run_agent(agent, context)
+    # Single-agent mode: skip master, agent self-selects
+    if AGENT_FILTER not in ("all", ""):
+        results = {AGENT_FILTER: run_agent(AGENT_FILTER, context)}
+    else:
+        # Master assigns tasks, then each specialist executes
+        assignments = run_master(context, git_log)
+        results: dict[str, bool] = {}
+
+        for agent in SPECIALISTS:
+            task = assignments.get(agent)
+            if task is None and assignments:
+                # Master explicitly skipped this agent
+                print(f"\n[skip] {agent} — no task assigned by master this cycle")
+                results[agent] = True  # not a failure
+                continue
+            results[agent] = run_agent(agent, context, assignment=task)
 
     print(f"\n{'='*60}")
     print("Cycle summary")
     print(f"{'='*60}")
     for agent, ok in results.items():
-        status = "✓" if ok else "✗"
-        print(f"  {status} {agent}")
+        print(f"  {'✓' if ok else '✗'} {agent}")
 
-    failed = [a for a, ok in results.items() if not ok]
-    if failed:
-        # Non-zero exit so the GH Actions step shows as failed, but don't block
-        # the workflow — partial success is still progress.
-        sys.exit(0)
+    # Exit 0 even on partial failure — partial progress is still progress
+    sys.exit(0)
 
 
 if __name__ == "__main__":
