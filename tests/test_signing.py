@@ -1,6 +1,5 @@
 import hashlib
 
-import pytest
 
 from perathos.signing import generate_keypair, sign_hash, verify_signature
 

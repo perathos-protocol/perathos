@@ -1,6 +1,5 @@
 import uuid
 
-import pytest
 
 from perathos.bundle import PERATHOS_NAMESPACE, create_bundle, sign_bundle, verify_bundle
 from perathos.signing import generate_keypair
