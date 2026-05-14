@@ -220,10 +220,10 @@ def _enable_auto_merge(pr_number: int) -> None:
 
 # ── master orchestrator ───────────────────────────────────────────────────────
 
-def run_master(context: str, git_log: str) -> dict[str, str | None]:
+def run_master(context: str, git_log: str) -> dict:
     """
     Call the master agent to analyze the codebase and assign tasks.
-    Returns a dict mapping agent name → task string (or None to skip).
+    Returns the full decision dict including 'assignments' and 'cycle_brief'.
     """
     print(f"\n{'='*60}")
     print("Master Orchestrator")
@@ -269,12 +269,111 @@ def run_master(context: str, git_log: str) -> dict[str, str | None]:
         else:
             print(f"    {agent}: (skipped this cycle)")
 
-    return assignments
+    return result
+
+
+# ── cycle brief poster ───────────────────────────────────────────────────────
+
+BRIEF_ISSUE_TITLE = "Agent Cycle Brief"
+BRIEF_LABEL = "cycle-brief"
+OPERATOR_HANDLE = os.environ.get("APPROVAL_USER_HANDLE", "tamukachagos")
+
+
+def _find_brief_issue() -> dict | None:
+    if not (GH_TOKEN and GITHUB_REPO):
+        return None
+    resp = httpx.get(
+        f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+        params={"labels": BRIEF_LABEL, "state": "open", "per_page": 5},
+        headers=GH_HEADERS,
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        return None
+    for issue in resp.json():
+        if issue.get("title") == BRIEF_ISSUE_TITLE:
+            return issue
+    return None
+
+
+def _ensure_brief_label() -> None:
+    if not (GH_TOKEN and GITHUB_REPO):
+        return
+    httpx.post(
+        f"https://api.github.com/repos/{GITHUB_REPO}/labels",
+        json={"name": BRIEF_LABEL, "color": "0e8a16", "description": "Periodic agent activity summaries"},
+        headers=GH_HEADERS,
+        timeout=10,
+    )
+
+
+def _create_brief_issue() -> dict | None:
+    if not (GH_TOKEN and GITHUB_REPO):
+        return None
+    _ensure_brief_label()
+    body = (
+        f"@{OPERATOR_HANDLE} — this is the rolling cycle brief.\n\n"
+        f"Every 2 hours the master agent posts a comment here summarising what shipped, "
+        f"where the codebase is, and where development is heading. Mute the issue if it "
+        f"gets noisy; close it to stop notifications entirely (a new one will be created)."
+    )
+    resp = httpx.post(
+        f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+        json={"title": BRIEF_ISSUE_TITLE, "body": body, "labels": [BRIEF_LABEL]},
+        headers=GH_HEADERS,
+        timeout=20,
+    )
+    return resp.json() if resp.status_code in (200, 201) else None
+
+
+def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str]) -> None:
+    if not (GH_TOKEN and GITHUB_REPO):
+        print("  [brief] skipped — no GH_TOKEN")
+        return
+    if not brief:
+        print("  [brief] skipped — master produced no cycle_brief")
+        return
+
+    issue = _find_brief_issue() or _create_brief_issue()
+    if not issue:
+        print("  [brief] could not find or create issue")
+        return
+
+    headline = brief.get("headline", "(no headline)")
+    state = brief.get("state_of_repo", "")
+    since = brief.get("since_last_cycle", "")
+    next_3 = brief.get("next_3_cycles", "")
+    blockers = brief.get("blockers_or_decisions_needed", "") or "_None_"
+
+    specialists_summary = "\n".join(
+        f"- {'✅' if ok else '❌'} `{name}`" for name, ok in results.items()
+    )
+    pr_section = "\n".join(f"- {url}" for url in pr_urls) if pr_urls else "_No PRs opened this cycle._"
+
+    comment_body = (
+        f"### {headline}\n\n"
+        f"**State of the repo**\n{state}\n\n"
+        f"**Since last cycle**\n{since}\n\n"
+        f"**Direction (next ~6 hours / 3 cycles)**\n{next_3}\n\n"
+        f"**Blockers or decisions needed**\n{blockers}\n\n"
+        f"---\n\n"
+        f"**Specialist results this cycle**\n{specialists_summary}\n\n"
+        f"**PRs opened**\n{pr_section}\n\n"
+        f"_Posted at {datetime.now(timezone.utc).isoformat()} UTC by the master agent._"
+    )
+
+    httpx.post(
+        f"https://api.github.com/repos/{GITHUB_REPO}/issues/{issue['number']}/comments",
+        json={"body": comment_body},
+        headers=GH_HEADERS,
+        timeout=20,
+    )
+    print(f"  [brief] posted to {issue['html_url']}")
 
 
 # ── per-agent runner ──────────────────────────────────────────────────────────
 
-def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
+def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[bool, str | None]:
     print(f"\n{'='*60}")
     print(f"Agent: {name}")
     print(f"{'='*60}")
@@ -282,7 +381,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
     agent_file = AGENTS_DIR / f"{name}.md"
     if not agent_file.exists():
         print(f"  [skip] no agent file at {agent_file}")
-        return False
+        return False, None
 
     system_prompt = agent_file.read_text(encoding="utf-8")
     if system_prompt.startswith("---"):
@@ -305,7 +404,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
         raw = call_llm(system_prompt, user_message)
     except Exception as exc:
         print(f"  [error] LLM call failed: {exc}")
-        return False
+        return False, None
 
     print("  Parsing response…")
     try:
@@ -313,7 +412,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
     except Exception as exc:
         print(f"  [error] JSON parse failed: {exc}")
         print(f"  Raw output (first 500 chars):\n{raw[:500]}")
-        return False
+        return False, None
 
     task = result.get("task", "improvement")
     files = result.get("files", [])
@@ -324,11 +423,11 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
 
     if not files:
         print("  [skip] no files to write")
-        return False
+        return False, None
 
     if DRY_RUN:
         print("  [DRY RUN] would write files and open PR")
-        return True
+        return True, None
 
     # Write files
     for f in files:
@@ -343,7 +442,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
     if not passed:
         print(f"  [FAIL] tests failed — reverting\n{output[-1000:]}")
         subprocess.run(["git", "checkout", "--", "."], cwd=ROOT)
-        return False
+        return False, None
     print("  Tests passed ✓")
 
     # Commit + push
@@ -374,7 +473,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> bool:
     if pr_url:
         print(f"  PR opened: {pr_url}")
 
-    return True
+    return True, pr_url
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -388,12 +487,19 @@ def main() -> None:
     context = build_codebase_context()
     git_log = build_git_log()
 
+    pr_urls: list[str] = []
+    decision: dict = {}
+
     # Single-agent mode: skip master, agent self-selects
     if AGENT_FILTER not in ("all", ""):
-        results = {AGENT_FILTER: run_agent(AGENT_FILTER, context)}
+        ok, pr = run_agent(AGENT_FILTER, context)
+        results = {AGENT_FILTER: ok}
+        if pr:
+            pr_urls.append(pr)
     else:
         # Master assigns tasks, then each specialist executes
-        assignments = run_master(context, git_log)
+        decision = run_master(context, git_log)
+        assignments = decision.get("assignments", {}) if decision else {}
         results: dict[str, bool] = {}
 
         for agent in SPECIALISTS:
@@ -403,13 +509,19 @@ def main() -> None:
                 print(f"\n[skip] {agent} — no task assigned by master this cycle")
                 results[agent] = True  # not a failure
                 continue
-            results[agent] = run_agent(agent, context, assignment=task)
+            ok, pr = run_agent(agent, context, assignment=task)
+            results[agent] = ok
+            if pr:
+                pr_urls.append(pr)
 
     print(f"\n{'='*60}")
     print("Cycle summary")
     print(f"{'='*60}")
     for agent, ok in results.items():
         print(f"  {'✓' if ok else '✗'} {agent}")
+
+    # Post the master's cycle brief as a comment so the operator gets a phone notification
+    post_cycle_brief(decision.get("cycle_brief", {}) if decision else {}, results, pr_urls)
 
     # Exit 0 even on partial failure — partial progress is still progress
     sys.exit(0)

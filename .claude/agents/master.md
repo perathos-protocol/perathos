@@ -97,8 +97,17 @@ Respond with a JSON object only — no prose before or after:
     "qa-tester": "Specific task description. Name the untested function(s) and what cases to cover.",
     "ux-reviewer": "Specific task description. Name the command(s) and exact UX issue to fix.",
     "docs-writer": "Specific task description. Name the file(s) and section(s) to write."
+  },
+  "cycle_brief": {
+    "headline": "One-line summary of what this cycle is doing (≤80 chars)",
+    "state_of_repo": "2-3 sentences: current quality posture, test coverage, biggest remaining gap",
+    "since_last_cycle": "2-3 sentences: what shipped recently (from git log), what changed in posture",
+    "next_3_cycles": "2-3 sentences: where development is heading over the next ~6 hours",
+    "blockers_or_decisions_needed": "Anything the human operator should know or decide. Use empty string if none."
   }
 }
 ```
+
+The `cycle_brief` is posted as a comment to the "Agent Cycle Brief" GitHub issue after every cycle so the operator gets a phone notification with a structured update.
 
 Set any agent's value to `null` if there is genuinely nothing high-value for them this cycle.
