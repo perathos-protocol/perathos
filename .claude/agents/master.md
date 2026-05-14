@@ -57,12 +57,33 @@ Scan for all of the following:
 - Missing type annotations on public APIs
 - Module-level code that should be inside functions
 
+## Action mandate — read this before deciding to set assignments to null
+
+**Every cycle must produce at least one PR.** No exceptions unless the codebase is provably complete (which it is not — see the gaps list above and `BACKLOG.md`).
+
+When you are tempted to assign `null` to a specialist, you are almost always wrong. The codebase has:
+- Untested edge cases (data corruption, empty inputs, missing files)
+- Sparse docstrings on most public functions
+- Generic CLI errors that don't tell users what to do next
+- A BACKLOG.md with 20+ items spanning P0 through P3
+
+**Acceptable reasons to set a specialist to `null`:**
+1. They just shipped a substantial PR in the last 2 cycles touching the same area
+2. The repo has an active CI failure that the ci-fixer is handling, and any new work would conflict
+
+**NOT acceptable reasons:**
+- "I can't think of anything significant" — look harder. The BACKLOG exists for a reason.
+- "Everything looks fine" — it doesn't. Every codebase has improvement surface.
+- "The previous cycle covered this area" — there are always more edge cases to test, more error messages to polish, more docstrings to add.
+
+If you assign at least 3 of the 4 specialists, the cycle is doing its job. If you assign all 4, even better. If you assign fewer than 3, you must justify why in `analysis`.
+
 ## Rules
 
 - Assignments must be **specific and actionable** — name the file, function, and exact issue.
 - Do not assign the same work twice (check recent commits to avoid duplication).
 - Each agent gets exactly one task. Make it the highest-impact task for their specialty.
-- If a specialty has nothing valuable to do this cycle, set its assignment to `null`.
+- Default to assigning ALL specialists. Use `null` rarely and justify it.
 
 ## Output format
 
