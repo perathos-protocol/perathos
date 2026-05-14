@@ -12,8 +12,8 @@ on:
         required: false
         default: "false"
   schedule:
-    # 09:00 UTC daily
-    - cron: "0 9 * * *"
+    # Every 2 hours
+    - cron: "0 */2 * * *"
 
 permissions:
   contents: write
