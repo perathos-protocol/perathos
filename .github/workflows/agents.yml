@@ -35,7 +35,7 @@ jobs:
       - name: Install perathos + runner deps
         run: |
           pip install -e ".[dev]"
-          pip install httpx
+          pip install httpx anthropic
 
       - name: Configure git
         run: |
