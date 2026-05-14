@@ -1,0 +1,148 @@
+"""Human-readable bundle inspection. Uses rich when available, plain text otherwise."""
+from __future__ import annotations
+
+import sys
+from datetime import datetime, timezone
+
+# SHA-256("") — shown as "(empty string)" in the hash chain
+_EMPTY_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _stdout_encoding() -> str:
+    return getattr(sys.stdout, "encoding", None) or "ascii"
+
+
+def _unicode_ok() -> bool:
+    """True when the terminal can render the characters we want to use."""
+    try:
+        "✓→·".encode(_stdout_encoding())
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+def _short(h: str, n: int = 8) -> str:
+    return f"{h[:n]}..."
+
+
+def _fmt_ts(issued_at: str) -> str:
+    dt = datetime.fromisoformat(issued_at).astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt_model(bundle: dict) -> str:
+    descriptor = bundle.get("_trace", {}).get("model_descriptor", bundle.get("proof_system", "unknown"))
+    parts = descriptor.split(":")
+    if len(parts) == 3:
+        name, system, version = parts
+        return f"{system} {version} ({name})"
+    return descriptor
+
+
+def _hash_annotation(h: str) -> str:
+    return "  (empty string)" if h == _EMPTY_HASH else ""
+
+
+def _steps(bundle: dict) -> list[tuple[int, str, str]]:
+    """Return (step_num, operation_label, short_result) for the Trace section."""
+    return [
+        (1, "hash_input   ", _short(bundle["input_hash"])),
+        (2, "hash_output  ", _short(bundle["output_hash"])),
+        (3, "hash_trace   ", _short(bundle["trace_hash"])),
+        (4, "integrity    ", _short(bundle["integrity_hash"])),
+        (5, "bundle_id    ", f"uuid5({_short(bundle['bundle_id'])})"),
+    ]
+
+
+# ── plain-text renderer ───────────────────────────────────────────────────────
+
+def _plain(bundle: dict, *, uni: bool) -> None:
+    check = "✓" if uni else "OK"
+    arrow = "→" if uni else "->"
+    dot   = "·" if uni else "."
+
+    sig = bundle.get("provider_signature")
+    sig_line = f"SIGNED ({sig['algorithm']}) {check}" if sig else "UNSIGNED"
+
+    print(f"  Bundle ID : {bundle['bundle_id']}")
+    print(f"  Issued    : {_fmt_ts(bundle['issued_at'])}")
+    print(f"  Model     : {_fmt_model(bundle)}")
+    print(f"  Signature : {sig_line}")
+
+    print()
+    print("  Hash Chain")
+    for label, key in [("input    ", "input_hash"), ("output   ", "output_hash"),
+                       ("trace    ", "trace_hash"), ("integrity", "integrity_hash")]:
+        h = bundle[key]
+        print(f"    {label} : {_short(h)}{_hash_annotation(h)}")
+
+    print()
+    print("  Trace")
+    for num, op, result in _steps(bundle):
+        print(f"    step {num} {dot} {op} {arrow} {result}")
+
+
+# ── rich renderer ─────────────────────────────────────────────────────────────
+
+def _rich(bundle: dict) -> None:
+    from rich.console import Console
+    from rich.text import Text
+
+    # Force VT100 mode to avoid the legacy Windows cp1252 renderer.
+    # We only reach this path when _unicode_ok() confirmed the terminal
+    # can handle our characters, so no further encoding guard needed.
+    console = Console(legacy_windows=False)
+
+    sig = bundle.get("provider_signature")
+
+    console.print()
+    console.print(f"  [bold]Bundle ID[/bold] : {bundle['bundle_id']}")
+    console.print(f"  [bold]Issued[/bold]    : {_fmt_ts(bundle['issued_at'])}")
+    console.print(f"  [bold]Model[/bold]     : [cyan]{_fmt_model(bundle)}[/cyan]")
+
+    if sig:
+        t = Text("  Signature : ")
+        t.append(f"SIGNED ({sig['algorithm']}) ✓", style="bold green")
+        console.print(t)
+    else:
+        t = Text("  Signature : ")
+        t.append("UNSIGNED", style="yellow")
+        console.print(t)
+
+    console.print()
+    console.print("  [bold]Hash Chain[/bold]")
+    for label, key in [("input    ", "input_hash"), ("output   ", "output_hash"),
+                       ("trace    ", "trace_hash"), ("integrity", "integrity_hash")]:
+        h = bundle[key]
+        row = Text(f"    {label} : ")
+        row.append(_short(h), style="dim cyan")
+        ann = _hash_annotation(h)
+        if ann:
+            row.append(ann, style="dim")
+        console.print(row)
+
+    console.print()
+    console.print("  [bold]Trace[/bold]")
+    for num, op, result in _steps(bundle):
+        row = Text(f"    step {num} ")
+        row.append("·", style="dim")
+        row.append(f" {op} ")
+        row.append("→", style="dim")
+        row.append(f" {result}", style="dim cyan")
+        console.print(row)
+
+    console.print()
+
+
+# ── public entry point ────────────────────────────────────────────────────────
+
+def inspect_bundle(bundle: dict) -> None:
+    uni = _unicode_ok()
+    try:
+        import rich  # noqa: F401
+        if uni:
+            _rich(bundle)
+            return
+    except ImportError:
+        pass
+    _plain(bundle, uni=uni)

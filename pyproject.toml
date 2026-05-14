@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perathos"
+version = "0.1.0"
+description = "Cryptographic proof layer for AI outputs — VRL Proof Bundles"
+requires-python = ">=3.11"
+dependencies = ["click>=8.0", "pynacl>=1.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+perathos = "perathos.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["perathos*"]

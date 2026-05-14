@@ -1,0 +1,52 @@
+name: Autonomous Agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Agent to run (product-engineer | qa-tester | ux-reviewer | docs-writer | all)"
+        required: false
+        default: "all"
+      dry_run:
+        description: "Dry run — print plan but don't commit"
+        required: false
+        default: "false"
+  schedule:
+    # 09:00 UTC daily
+    - cron: "0 9 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  run-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install perathos + runner deps
+        run: |
+          pip install -e ".[dev]"
+          pip install httpx
+
+      - name: Configure git
+        run: |
+          git config user.name  "perathos-agent[bot]"
+          git config user.email "agents@perathos.io"
+
+      - name: Run agent cycle
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_FILTER:       ${{ github.event.inputs.agent || 'all' }}
+          DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
+          GH_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+        run: python org/orchestration/execute_cycle.py
