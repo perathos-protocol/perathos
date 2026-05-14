@@ -220,11 +220,17 @@ def _enable_auto_merge(pr_number: int) -> None:
 
 # ── master orchestrator ───────────────────────────────────────────────────────
 
+_LAST_MASTER_RAW = ""
+
+
 def run_master(context: str, git_log: str) -> dict:
     """
     Call the master agent to analyze the codebase and assign tasks.
     Returns the full decision dict including 'assignments' and 'cycle_brief'.
+    Also stores the raw LLM response in _LAST_MASTER_RAW for diagnostics.
     """
+    global _LAST_MASTER_RAW
+    _LAST_MASTER_RAW = ""
     print(f"\n{'='*60}")
     print("Master Orchestrator")
     print(f"{'='*60}")
@@ -248,14 +254,17 @@ def run_master(context: str, git_log: str) -> dict:
     print("  Analyzing codebase…")
     try:
         raw = call_llm(system_prompt, user_message)
+        _LAST_MASTER_RAW = raw or ""
+        print(f"  raw master response head: {_LAST_MASTER_RAW[:200].replace(chr(10), ' ')}")
     except Exception as exc:
         print(f"  [error] master LLM call failed: {exc}")
+        _LAST_MASTER_RAW = f"<LLM call exception: {exc}>"
         return {}
 
     try:
         result = extract_json(raw)
     except Exception as exc:
-        print(f"  [error] master JSON parse failed: {exc}\n{raw[:300]}")
+        print(f"  [error] master JSON parse failed: {exc}\n{raw[:500]}")
         return {}
 
     analysis = result.get("analysis", "")
@@ -338,10 +347,13 @@ def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str], 
 
     # If master didn't produce a brief, post a diagnostic comment with the raw decision instead
     if not brief:
+        raw_text = _LAST_MASTER_RAW or "<empty — master returned nothing>"
         diag_body = (
             f"### ⚠️ Master did not produce a `cycle_brief` this cycle\n\n"
-            f"Raw decision JSON from the master (for debugging):\n\n"
-            f"```json\n{json.dumps(full_decision or {}, indent=2)[:3000]}\n```\n\n"
+            f"**Raw LLM response from master (first 3000 chars):**\n\n"
+            f"```\n{raw_text[:3000]}\n```\n\n"
+            f"**Parsed decision JSON (after extract_json):**\n\n"
+            f"```json\n{json.dumps(full_decision or {}, indent=2)[:1500]}\n```\n\n"
             f"**Specialist results:**\n"
             + "\n".join(f"- {'✅' if ok else '❌'} `{name}`" for name, ok in results.items())
             + f"\n\n_Posted at {datetime.now(timezone.utc).isoformat()} UTC._"
