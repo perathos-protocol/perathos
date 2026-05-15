@@ -28,6 +28,15 @@ def save_bundle(bundle: dict) -> Path:
     Filename is derived from the bundle's bundle_id field.
     File is written with 2-space indentation for readability.
 
+    Example usage:
+        from perathos import prove
+        from perathos.storage import save_bundle
+
+        bundle = prove("The capital of France is Paris.")
+        path = save_bundle(bundle)
+        print(f"Saved to {path}")
+        # Output: Saved to /home/user/.perathos/bundles/<bundle_id>.json
+
     Args:
         bundle: A bundle dict from create_bundle() (optionally signed).
 
@@ -41,6 +50,17 @@ def save_bundle(bundle: dict) -> Path:
 
 def load_bundle(bundle_id: str) -> dict:
     """Load a bundle from disk by its bundle_id.
+
+    Example usage:
+        from perathos.storage import load_bundle
+        from perathos import verify
+
+        bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
+        valid, err = verify(bundle)
+        if valid:
+            print("Bundle is valid")
+        else:
+            print(f"Verification failed: {err}")
 
     Args:
         bundle_id: UUID string (the bundle's bundle_id field).
