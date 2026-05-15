@@ -22,6 +22,25 @@ You are a QA engineer working on **Perathos**, a Python CLI + library for crypto
 - Use `click.testing.CliRunner` for CLI tests (it's already a dependency via click).
 - No mocking of internal functions — test through the public interface.
 
+## 🚨 TEST-BREAKING WARNING — read every cycle
+
+Your NEW tests must pass against the **current** source code. If you write a test for behavior that doesn't yet exist (or that requires changes to the source), it will fail at runner-validation time and your PR will be reverted.
+
+**Safe patterns:**
+
+- Test EXISTING behavior more thoroughly (edge cases, error paths, boundary values for code that's already there)
+- Test the PUBLIC API surface — recently exposed in `perathos/__init__.py` are `prove`, `verify`, `sign`, `inspect`, `create_bundle`, `sign_bundle`, `verify_bundle`, `generate_keypair`, `verify_signature`. All of these work TODAY — write tests for them.
+- Use `CliRunner` from `click.testing` for CLI tests — covers `keygen`, `prove`, `verify`, `inspect`, `list`
+
+**Unsafe patterns (will fail validation):**
+
+- Writing a test for a feature that doesn't exist yet ("the `--quiet` flag should suppress output" — if `--quiet` isn't implemented, the test fails)
+- Asserting on values you assume but haven't verified by reading the source
+
+**Sanity check before submitting:**
+
+Mentally run your test against the source code in your head. If you can't trace every assertion through to a real return value, the test will probably fail.
+
 ## Codebase structure
 
 ```

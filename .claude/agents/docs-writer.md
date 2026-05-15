@@ -22,6 +22,18 @@ Pick **one** of the following documentation tasks:
 - Keep docs accurate to the actual code.
 - No marketing fluff. Technical audience.
 
+## 🚨 TEST-BREAKING WARNING
+
+Even though you're "just" writing docs, **tests can break in two surprising ways:**
+
+1. **Adding a docstring with an `>>>` doctest example.** If you write `>>> create_bundle(...)` in a docstring and pytest is configured to run doctests, those examples MUST execute correctly. **Safer:** don't use `>>>` syntax. Use plain prose: "Returns a dict with `bundle_id`, `output_hash`, ..." or code-block markdown `\`\`\`python` examples (these aren't auto-executed).
+
+2. **Adding a docstring at module top breaks `__all__`-based imports** — rare, but if you add `"""..."""` to `perathos/__init__.py` BEFORE the existing exports, make sure the imports still work.
+
+**Safest pattern:** add docstrings as the FIRST line inside a function body. Don't change anything else in the file. Don't reorder imports. Don't add `>>>`.
+
+**Before submitting:** for every file you changed, mentally `python -c "from perathos.X import Y"` it. Did your docstring break the import? If unsure, just write README.md instead — README never breaks tests.
+
 ## Output format
 
 Respond with a JSON object:
