@@ -172,9 +172,10 @@ def run_tests() -> tuple[bool, str]:
 
 # ── PR opener ────────────────────────────────────────────────────────────────
 
-def open_pr(branch: str, title: str, body: str) -> str | None:
+def open_pr(branch: str, title: str, body: str, agent_name: str = "?") -> str | None:
     if not GH_TOKEN or not GITHUB_REPO:
         print("  [skip PR] GH_TOKEN or GITHUB_REPOSITORY not set")
+        _PR_ERRORS.append({"agent": agent_name, "branch": branch, "status": 0, "body": "GH_TOKEN or GITHUB_REPOSITORY missing"})
         return None
 
     resp = httpx.post(
@@ -188,6 +189,12 @@ def open_pr(branch: str, title: str, body: str) -> str | None:
         _enable_auto_merge(pr["number"])
         return pr["html_url"]
     print(f"  [PR error] {resp.status_code}: {resp.text[:200]}")
+    _PR_ERRORS.append({
+        "agent": agent_name,
+        "branch": branch,
+        "status": resp.status_code,
+        "body": resp.text[:500],
+    })
     return None
 
 
@@ -223,6 +230,8 @@ def _enable_auto_merge(pr_number: int) -> None:
 _LAST_MASTER_RAW = ""
 # Per-cycle dict of {specialist_name: {"reason": str, "raw_head": str}} populated during run_agent
 _SPECIALIST_DIAG: dict[str, dict[str, str]] = {}
+# Per-cycle list of PR creation failures: [{"agent": str, "branch": str, "status": int, "body": str}]
+_PR_ERRORS: list[dict] = []
 
 
 def run_master(context: str, git_log: str) -> dict:
@@ -384,7 +393,20 @@ def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str], 
         return f"- ❌ `{n}`"
 
     specialists_summary = "\n".join(_spec_line(name, ok) for name, ok in results.items())
-    pr_section = "\n".join(f"- {url}" for url in pr_urls) if pr_urls else "_No PRs opened this cycle._"
+
+    # Build PR section — show successful URLs OR error diagnostics
+    if pr_urls:
+        pr_section = "\n".join(f"- {url}" for url in pr_urls)
+    elif _PR_ERRORS:
+        pr_lines = ["_PRs failed to open — diagnostic:_"]
+        for err in _PR_ERRORS:
+            pr_lines.append(
+                f"- ❌ `{err['agent']}` → branch `{err['branch']}` — "
+                f"HTTP {err['status']}: `{err['body'][:200]}`"
+            )
+        pr_section = "\n".join(pr_lines)
+    else:
+        pr_section = "_No PRs opened this cycle (no specialist produced files)._"
 
     # Build per-specialist diagnostic dump for failures with raw output
     diag_blocks = []
@@ -533,6 +555,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
             f"**Files changed:** {', '.join(f['path'] for f in files)}\n\n"
             f"_Auto-merge enabled — will merge when CI passes._"
         ),
+        agent_name=name,
     )
     if pr_url:
         print(f"  PR opened: {pr_url}")
@@ -550,6 +573,7 @@ def main() -> None:
 
     # Reset per-cycle diagnostic state
     _SPECIALIST_DIAG.clear()
+    _PR_ERRORS.clear()
 
     context = build_codebase_context()
     git_log = build_git_log()
