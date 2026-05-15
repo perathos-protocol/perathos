@@ -1,4 +1,16 @@
-"""Perathos — cryptographic proof layer for AI outputs."""
+"""Perathos — cryptographic proof layer for AI outputs.
+
+Provides a clean Python API for creating, signing, and verifying tamper-evident
+VRL Proof Bundles on AI-generated content. Each bundle captures the input hash,
+output hash, execution trace, and optional cryptographic signature.
+
+Example:
+    >>> from perathos import prove, verify, sign
+    >>> bundle = prove("The capital of France is Paris.")
+    >>> bundle = sign(bundle)  # attach Ed25519 signature
+    >>> valid, err = verify(bundle)
+    >>> print(valid)  # True
+"""
 from .bundle import create_bundle, sign_bundle, verify_bundle
 from .inspector import inspect_bundle
 from .signing import generate_keypair, verify_signature
