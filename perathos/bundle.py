@@ -35,6 +35,11 @@ def _sha256(data: bytes) -> str:
 def ai_id() -> str:
     """Stable AI identity: SHA-256 of the model descriptor string.
 
+    Returns the same hash across all invocations and machines, since it
+    derives from a fixed model descriptor string. In production, this would
+    reflect actual model weights fingerprint and serving configuration,
+    enabling verifiers to confirm which model produced a given output.
+
     Returns:
         Lowercase hex-encoded SHA-256 of the hardcoded model descriptor.
         In production, this would reflect actual model weights and serving config.
