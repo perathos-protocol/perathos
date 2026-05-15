@@ -95,7 +95,7 @@ def call_anthropic(system: str, user: str) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=8192,
+        max_tokens=16384,  # Specialists write full file content — 8192 was truncating
         system=system,
         messages=[{"role": "user", "content": user}],
     )
@@ -112,7 +112,7 @@ def call_openrouter(system: str, user: str) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 8192,
+        "max_tokens": 16384,  # Specialists write full file content; 8192 truncates mid-JSON
         "temperature": 0.2,
     }
     headers = {
