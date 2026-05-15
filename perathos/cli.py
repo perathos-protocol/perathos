@@ -33,7 +33,11 @@ def keygen():
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
-    sk_path, vk_path = save_keypair(sk_hex, vk_hex)
+    try:
+        sk_path, vk_path = save_keypair(sk_hex, vk_hex)
+    except OSError as exc:
+        click.echo(f"ERROR: Failed to save keypair: {exc}", err=True)
+        sys.exit(1)
     click.echo(f"signing key  {sk_path}")
     click.echo(f"verify key   {vk_path}")
     click.echo(f"verify_key   {vk_hex}")
@@ -94,7 +98,14 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
 
     try:
         if file_path:
-            bundle = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            try:
+                bundle = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            except UnicodeDecodeError as exc:
+                click.echo(f"ERROR: Cannot read {file_path} (encoding error): {exc}", err=True)
+                sys.exit(1)
+            except json.JSONDecodeError as exc:
+                click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
+                sys.exit(1)
             display_id = file_path
         else:
             bundle = load_bundle(bundle_id)
@@ -102,8 +113,8 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     except FileNotFoundError as exc:
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(1)
-    except json.JSONDecodeError as exc:
-        click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
+    except ValueError as exc:
+        click.echo(f"ERROR: {exc}", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
@@ -134,6 +145,9 @@ def inspect_cmd(bundle_id: str):
     try:
         bundle = load_bundle(bundle_id)
     except FileNotFoundError as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        sys.exit(1)
+    except ValueError as exc:
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(1)
     inspect(bundle)
