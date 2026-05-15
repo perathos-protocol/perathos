@@ -26,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # If AGENT_PAT is set, use it so downstream workflows (CI) trigger
+          # on agent PRs. Falls back to GITHUB_TOKEN if AGENT_PAT is empty.
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
@@ -48,6 +50,9 @@ jobs:
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
           AGENT_FILTER:       ${{ github.event.inputs.agent || 'all' }}
           DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
-          GH_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          # AGENT_PAT triggers CI on agent PRs; GH_TOKEN is the fallback
+          # used for API calls when AGENT_PAT is unset.
+          AGENT_PAT:          ${{ secrets.AGENT_PAT }}
+          GH_TOKEN:           ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
         run: python org/orchestration/execute_cycle.py

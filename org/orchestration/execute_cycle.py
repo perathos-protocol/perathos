@@ -57,12 +57,36 @@ OPENROUTER_MODELS = [
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 AGENT_FILTER = os.environ.get("AGENT_FILTER", "all").strip().lower().replace(" ", "-")
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "")
-GH_TOKEN = os.environ.get("GH_TOKEN", "")
+
+# Prefer AGENT_PAT (Personal Access Token) over the default GITHUB_TOKEN:
+#   - GITHUB_TOKEN works for push + PR creation but GitHub blocks it from
+#     triggering downstream workflows (anti-recursion), so CI never fires
+#     on agent-created PRs and auto-merge can't merge them.
+#   - AGENT_PAT is a user-scoped PAT — workflows it triggers run normally,
+#     so CI fires on agent PRs and auto-merge works end-to-end.
+AGENT_PAT = os.environ.get("AGENT_PAT", "").strip()
+GITHUB_TOKEN_DEFAULT = os.environ.get("GH_TOKEN", "")
+GH_TOKEN = AGENT_PAT or GITHUB_TOKEN_DEFAULT
+USING_PAT = bool(AGENT_PAT)
 
 GH_HEADERS = {
     "Authorization": f"Bearer {GH_TOKEN}",
     "Accept": "application/vnd.github+json",
 }
+
+
+def configure_git_for_pat() -> None:
+    """If AGENT_PAT is set, rewrite the remote URL so git push uses it
+    (instead of the default GITHUB_TOKEN configured by actions/checkout)."""
+    if not (USING_PAT and GITHUB_REPO):
+        return
+    new_url = f"https://x-access-token:{AGENT_PAT}@github.com/{GITHUB_REPO}.git"
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", new_url],
+        cwd=ROOT,
+        check=False,  # non-fatal — push will fail loud if this didn't take
+    )
+    print("  [auth] git remote reconfigured to use AGENT_PAT")
 
 
 # ── context builders ──────────────────────────────────────────────────────────
@@ -570,6 +594,9 @@ def main() -> None:
     print(f"Time    : {datetime.now(timezone.utc).isoformat()}")
     print(f"Filter  : {AGENT_FILTER}")
     print(f"Dry run : {DRY_RUN}")
+    print(f"Auth    : {'AGENT_PAT (CI triggers on agent PRs)' if USING_PAT else 'GITHUB_TOKEN (CI will NOT fire on agent PRs)'}")
+
+    configure_git_for_pat()
 
     # Reset per-cycle diagnostic state
     _SPECIALIST_DIAG.clear()
