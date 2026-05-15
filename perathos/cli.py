@@ -4,9 +4,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__
-from .bundle import create_bundle, sign_bundle, verify_bundle
-from .inspector import inspect_bundle
+from . import __version__, prove, sign, verify, inspect
 from .signing import generate_keypair, verify_signature
 from .storage import (
     list_bundles,
@@ -47,17 +45,17 @@ def keygen():
               help="Original prompt / input that produced TEXT (default: empty).")
 @click.option("--sign", is_flag=True, help="Sign integrity_hash with local Ed25519 key.")
 @click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON.")
-def prove(text: str, input_text: str, sign: bool, as_json: bool):
+def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
     """Generate a VRL Proof Bundle for TEXT (treated as AI output)."""
-    bundle = create_bundle(output_text=text, input_text=input_text)
+    bundle = prove(output_text=text, input_text=input_text)
 
-    if sign:
+    if sign_flag:
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError as exc:
             click.echo(f"ERROR: {exc}", err=True)
             sys.exit(1)
-        bundle = sign_bundle(bundle, sk_hex)
+        bundle = sign(bundle, sk_hex)
 
     path = save_bundle(bundle)
 
@@ -72,7 +70,7 @@ def prove(text: str, input_text: str, sign: bool, as_json: bool):
     click.echo(f"trace_hash     {bundle['trace_hash']}")
     click.echo(f"integrity_hash {bundle['integrity_hash']}")
     click.echo(f"issued_at      {bundle['issued_at']}")
-    if sign:
+    if sign_flag:
         sig = bundle["provider_signature"]
         click.echo(f"signature      {sig['signature'][:32]}…")
         click.echo(f"verify_key     {sig['verify_key']}")
@@ -84,7 +82,7 @@ def prove(text: str, input_text: str, sign: bool, as_json: bool):
 @click.option("--file", "file_path", type=click.Path(exists=True), metavar="PATH",
               help="Path to a JSON bundle file (instead of bundle_id).")
 @click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON on success.")
-def verify(bundle_id: str, file_path: str, as_json: bool):
+def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file."""
     if file_path and bundle_id:
         click.echo("ERROR: Specify either BUNDLE_ID or --file, not both.", err=True)
@@ -109,7 +107,7 @@ def verify(bundle_id: str, file_path: str, as_json: bool):
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
-    valid, err = verify_bundle(bundle)
+    valid, err = verify(bundle)
     if not valid:
         click.echo(f"INVALID  {err}", err=True)
         sys.exit(1)
@@ -138,7 +136,7 @@ def inspect_cmd(bundle_id: str):
     except FileNotFoundError as exc:
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(1)
-    inspect_bundle(bundle)
+    inspect(bundle)
 
 
 @cli.command(name="list")
