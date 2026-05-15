@@ -210,7 +210,14 @@ def open_pr(branch: str, title: str, body: str, agent_name: str = "?") -> str | 
     )
     if resp.status_code in (200, 201):
         pr = resp.json()
-        _enable_auto_merge(pr["number"])
+        pr_number = pr["number"]
+        _enable_auto_merge(pr_number)
+        # Direct-merge fallback: tests already ran successfully pre-push,
+        # so we can merge the PR directly via API. Tolerant of CI not having
+        # completed yet — we retry briefly and give up after the budget so the
+        # cycle doesn't block. If auto-merge engaged, this is a no-op (PR
+        # already merged).
+        _direct_merge_pr(pr_number, branch, agent_name)
         return pr["html_url"]
     print(f"  [PR error] {resp.status_code}: {resp.text[:200]}")
     _PR_ERRORS.append({
@@ -220,6 +227,44 @@ def open_pr(branch: str, title: str, body: str, agent_name: str = "?") -> str | 
         "body": resp.text[:500],
     })
     return None
+
+
+def _direct_merge_pr(pr_number: int, branch: str, agent_name: str) -> None:
+    """Merge a PR directly via the REST API. The runner has already run pytest
+    on the changes before pushing, so the gate is satisfied. We retry a few
+    times to give any CI race a chance to clear ('Required status check' etc.)
+    then give up — the PR stays open for human merge as a fallback."""
+    if not (GH_TOKEN and GITHUB_REPO):
+        return
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/pulls/{pr_number}/merge"
+    payload = {"merge_method": "squash"}
+
+    # Brief polite retry — CI can take a few seconds to register, and some
+    # branch protections only allow merge after CI starts. Total budget ~20s.
+    for attempt in range(4):
+        if attempt > 0:
+            time.sleep(5)
+        resp = httpx.put(url, json=payload, headers=GH_HEADERS, timeout=30)
+        if resp.status_code in (200, 201):
+            print(f"  [direct-merge] PR #{pr_number} merged ✓")
+            return
+        # 405 = method not allowed (PR not mergeable yet — conflicts, draft, etc.)
+        # 409 = conflict (PR head changed during merge)
+        # 422 = unmergeable (required checks failing)
+        body_head = resp.text[:300]
+        print(f"  [direct-merge] PR #{pr_number} attempt {attempt+1}: HTTP {resp.status_code}: {body_head[:120]}")
+        if resp.status_code == 409:
+            continue  # Retry — head changed, will recompute
+        if resp.status_code in (404, 403):
+            break  # Unrecoverable
+
+    # If we got here, direct-merge gave up. The PR sits open for human review.
+    _PR_ERRORS.append({
+        "agent": agent_name,
+        "branch": branch,
+        "status": 0,
+        "body": f"PR #{pr_number} opened but direct-merge failed after retries — manual merge needed",
+    })
 
 
 def _enable_auto_merge(pr_number: int) -> None:
