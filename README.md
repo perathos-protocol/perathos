@@ -102,6 +102,32 @@ if not valid:
         # handle tamper detection
 ```
 
+### CLI error messages from `perathos verify`
+
+The `perathos verify` command prints status to stdout and errors to stderr:
+
+| Output | Meaning | Exit Code |
+|---|---|---|
+| `VALID_UNSIGNED <bundle_id>` | Bundle hash chain is valid, no signature present | 0 |
+| `VALID_SIGNED <bundle_id>`<br/>`verify_key <hex>` | Bundle hash chain is valid and signature is valid | 0 |
+| `INVALID <error_code>` | Hash chain verification failed (see verify() codes above) | 1 |
+| `ERROR: Bundle not found: <id>` | Bundle ID not in local storage | 1 |
+| `ERROR: Invalid JSON in <path>: <error>` | --file path contains invalid JSON | 1 |
+| `ERROR: Specify either BUNDLE_ID or --file, not both.` | Both BUNDLE_ID and --file were given | 2 |
+| `ERROR: Specify either BUNDLE_ID or --file.` | Neither BUNDLE_ID nor --file was given | 2 |
+
+Example CLI session:
+```bash
+$ perathos verify 550e8400-e29b-41d4-a716-446655440000
+VALID_UNSIGNED  550e8400-e29b-41d4-a716-446655440000
+
+$ perathos verify nonexistent-id
+ERROR: Bundle not found: nonexistent-id
+Run: perathos list
+$ echo $?
+1
+```
+
 ### `verify_signature()` error codes
 
 Returned by `perathos.verify_signature(integrity_hash, provider_signature)`:
@@ -111,7 +137,9 @@ Returned by `perathos.verify_signature(integrity_hash, provider_signature)`:
 | `""` (empty) | Signature is valid | No error; first element is `True` |
 | `ERR_BAD_SIGNATURE` | Signature is invalid (doesn't match the integrity_hash) | Provider signature is forged or the hash was tampered after signing; reject |
 | `ERR_MISSING_SIG_FIELD:<field>` | A required signature field is missing (`verify_key` or `signature`) | Signature structure is invalid; reject |
-| `ERR_SIGNATURE_INVALID:<error>` | Cryptographic verification raised an exception | Key encoding or signature format is invalid; reject |
+| `ERR_INVALID_VERIFY_KEY:<error>` | The verify_key is not a valid 64-char hex string | Signature structure is corrupt; reject |
+| `ERR_INVALID_HASH:<error>` | The integrity_hash is not a valid 64-char hex string | Bundle is corrupted; reject |
+| `ERR_INVALID_SIGNATURE:<error>` | Signature format is invalid or cryptographic check failed | Key or signature encoding is wrong; reject |
 
 Example:
 ```python
@@ -126,6 +154,21 @@ if valid and "provider_signature" in bundle:
     else:
         print(f"Signature verification failed: {sig_err}")
 ```
+
+### CLI error messages from `perathos prove --sign`
+
+The `perathos prove --sign` command requires a signing key. If it is missing:
+
+```bash
+$ perathos prove "some text" --sign
+ERROR: No signing key found.
+Run: perathos keygen
+Then use: perathos prove TEXT --sign
+$ echo $?
+1
+```
+
+Always run `perathos keygen` first to create the signing key in `~/.perathos/keys/signing.key`.
 
 ## License
 
