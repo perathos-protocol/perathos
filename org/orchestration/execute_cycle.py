@@ -592,7 +592,12 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
     passed, output = run_tests()
     if not passed:
         print(f"  [FAIL] tests failed — reverting\n{output[-1000:]}")
+        # Full revert: tracked changes AND untracked files. Without -fd, a
+        # specialist that creates NEW files (e.g. tests/test_X.py) that break
+        # pytest will leave those files behind after revert, cascading failure
+        # into every subsequent specialist in the same cycle.
         subprocess.run(["git", "checkout", "--", "."], cwd=ROOT)
+        subprocess.run(["git", "clean", "-fd"], cwd=ROOT)
         _SPECIALIST_DIAG[name] = {
             "reason": "tests failed — changes reverted",
             "raw_head": output[-1500:],  # last 1500 chars of pytest output
@@ -646,6 +651,11 @@ def main() -> None:
     # Reset per-cycle diagnostic state
     _SPECIALIST_DIAG.clear()
     _PR_ERRORS.clear()
+
+    # Defensive: ensure working tree is clean before the cycle starts. Stops
+    # any leftover untracked files (from prior failures) from poisoning tests.
+    subprocess.run(["git", "checkout", "--", "."], cwd=ROOT, check=False)
+    subprocess.run(["git", "clean", "-fd"], cwd=ROOT, check=False)
 
     context = build_codebase_context()
     git_log = build_git_log()
