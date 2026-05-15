@@ -1,8 +1,10 @@
 import json
 import sys
+from pathlib import Path
 
 import click
 
+from . import __version__
 from .bundle import create_bundle, sign_bundle, verify_bundle
 from .inspector import inspect_bundle
 from .signing import generate_keypair, verify_signature
@@ -16,6 +18,7 @@ from .storage import (
 
 
 @click.group()
+@click.version_option(version=__version__)
 def cli():
     """Perathos — cryptographic proof layer for AI outputs."""
 
@@ -77,14 +80,32 @@ def prove(text: str, input_text: str, sign: bool, as_json: bool):
 
 
 @cli.command()
-@click.argument("bundle_id")
+@click.argument("bundle_id", required=False)
+@click.option("--file", "file_path", type=click.Path(exists=True), metavar="PATH",
+              help="Path to a JSON bundle file (instead of bundle_id).")
 @click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON on success.")
-def verify(bundle_id: str, as_json: bool):
-    """Verify a VRL Proof Bundle by BUNDLE_ID."""
+def verify(bundle_id: str, file_path: str, as_json: bool):
+    """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file."""
+    if file_path and bundle_id:
+        click.echo("ERROR: Specify either BUNDLE_ID or --file, not both.", err=True)
+        sys.exit(2)
+
+    if not file_path and not bundle_id:
+        click.echo("ERROR: Specify either BUNDLE_ID or --file.", err=True)
+        sys.exit(2)
+
     try:
-        bundle = load_bundle(bundle_id)
+        if file_path:
+            bundle = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            display_id = file_path
+        else:
+            bundle = load_bundle(bundle_id)
+            display_id = bundle_id
     except FileNotFoundError as exc:
         click.echo(f"ERROR: {exc}", err=True)
+        sys.exit(1)
+    except json.JSONDecodeError as exc:
+        click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
@@ -99,10 +120,10 @@ def verify(bundle_id: str, as_json: bool):
         if not sig_valid:
             click.echo(f"INVALID  {sig_err}", err=True)
             sys.exit(1)
-        click.echo(f"VALID_SIGNED  {bundle_id}")
+        click.echo(f"VALID_SIGNED  {display_id}")
         click.echo(f"              verify_key {bundle['provider_signature']['verify_key']}")
     else:
-        click.echo(f"VALID_UNSIGNED  {bundle_id}")
+        click.echo(f"VALID_UNSIGNED  {display_id}")
 
     if as_json:
         click.echo(json.dumps(bundle, indent=2, sort_keys=True))
