@@ -221,6 +221,8 @@ def _enable_auto_merge(pr_number: int) -> None:
 # ── master orchestrator ───────────────────────────────────────────────────────
 
 _LAST_MASTER_RAW = ""
+# Per-cycle dict of {specialist_name: {"reason": str, "raw_head": str}} populated during run_agent
+_SPECIALIST_DIAG: dict[str, dict[str, str]] = {}
 
 
 def run_master(context: str, git_log: str) -> dict:
@@ -373,10 +375,30 @@ def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str], 
     next_3 = brief.get("next_3_cycles", "")
     blockers = brief.get("blockers_or_decisions_needed", "") or "_None_"
 
-    specialists_summary = "\n".join(
-        f"- {'✅' if ok else '❌'} `{name}`" for name, ok in results.items()
-    )
+    def _spec_line(n: str, ok: bool) -> str:
+        if ok:
+            return f"- ✅ `{n}`"
+        diag = _SPECIALIST_DIAG.get(n)
+        if diag:
+            return f"- ❌ `{n}` — {diag.get('reason', 'unknown failure')}"
+        return f"- ❌ `{n}`"
+
+    specialists_summary = "\n".join(_spec_line(name, ok) for name, ok in results.items())
     pr_section = "\n".join(f"- {url}" for url in pr_urls) if pr_urls else "_No PRs opened this cycle._"
+
+    # Build per-specialist diagnostic dump for failures with raw output
+    diag_blocks = []
+    for name, ok in results.items():
+        if ok:
+            continue
+        diag = _SPECIALIST_DIAG.get(name)
+        if not diag or not diag.get("raw_head"):
+            continue
+        diag_blocks.append(
+            f"<details><summary>📋 <code>{name}</code> raw output (first 1500 chars)</summary>\n\n"
+            f"```\n{diag['raw_head'][:1500]}\n```\n\n</details>"
+        )
+    diag_section = "\n\n".join(diag_blocks)
 
     comment_body = (
         f"### {headline}\n\n"
@@ -387,7 +409,8 @@ def post_cycle_brief(brief: dict, results: dict[str, bool], pr_urls: list[str], 
         f"---\n\n"
         f"**Specialist results this cycle**\n{specialists_summary}\n\n"
         f"**PRs opened**\n{pr_section}\n\n"
-        f"_Posted at {datetime.now(timezone.utc).isoformat()} UTC by the master agent._"
+        + (f"---\n\n**Specialist diagnostics**\n\n{diag_section}\n\n" if diag_section else "")
+        + f"_Posted at {datetime.now(timezone.utc).isoformat()} UTC by the master agent._"
     )
 
     httpx.post(
@@ -428,10 +451,14 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
         user_message = f"## Current codebase\n\n{context}"
 
     print("  Calling LLM…")
+    raw_for_diag = ""
     try:
         raw = call_llm(system_prompt, user_message)
+        raw_for_diag = raw or ""
+        print(f"  raw response head: {raw_for_diag[:200].replace(chr(10), ' ')}")
     except Exception as exc:
         print(f"  [error] LLM call failed: {exc}")
+        _SPECIALIST_DIAG[name] = {"reason": f"LLM call exception: {exc}", "raw_head": ""}
         return False, None
 
     print("  Parsing response…")
@@ -440,6 +467,7 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
     except Exception as exc:
         print(f"  [error] JSON parse failed: {exc}")
         print(f"  Raw output (first 500 chars):\n{raw[:500]}")
+        _SPECIALIST_DIAG[name] = {"reason": f"JSON parse failed: {exc}", "raw_head": raw_for_diag[:1500]}
         return False, None
 
     task = result.get("task", "improvement")
@@ -451,6 +479,10 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
 
     if not files:
         print("  [skip] no files to write")
+        _SPECIALIST_DIAG[name] = {
+            "reason": f"specialist returned valid JSON but empty files list (task='{task}')",
+            "raw_head": raw_for_diag[:1500],
+        }
         return False, None
 
     if DRY_RUN:
@@ -470,6 +502,10 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
     if not passed:
         print(f"  [FAIL] tests failed — reverting\n{output[-1000:]}")
         subprocess.run(["git", "checkout", "--", "."], cwd=ROOT)
+        _SPECIALIST_DIAG[name] = {
+            "reason": "tests failed — changes reverted",
+            "raw_head": output[-1500:],  # last 1500 chars of pytest output
+        }
         return False, None
     print("  Tests passed ✓")
 
@@ -511,6 +547,9 @@ def main() -> None:
     print(f"Time    : {datetime.now(timezone.utc).isoformat()}")
     print(f"Filter  : {AGENT_FILTER}")
     print(f"Dry run : {DRY_RUN}")
+
+    # Reset per-cycle diagnostic state
+    _SPECIALIST_DIAG.clear()
 
     context = build_codebase_context()
     git_log = build_git_log()
