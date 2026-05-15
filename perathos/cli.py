@@ -46,16 +46,23 @@ def keygen():
 @click.option("--sign", is_flag=True, help="Sign integrity_hash with local Ed25519 key.")
 @click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON.")
 def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
-    """Generate a VRL Proof Bundle for TEXT (treated as AI output)."""
+    """Generate a VRL Proof Bundle for TEXT (treated as AI output).
+    
+    TEXT is the AI-generated output you want to prove. --input is optional and specifies
+    the original prompt or request that produced TEXT.
+    
+    Examples:
+        perathos prove "The capital of France is Paris."
+        perathos prove "The answer is 42." --input "What is the answer?"
+        perathos prove "Hello world." --sign --json
+    """
     bundle = prove(output_text=text, input_text=input_text)
 
     if sign_flag:
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("ERROR: No signing key found.", err=True)
-            click.echo("Run: perathos keygen", err=True)
-            click.echo("Then use: perathos prove TEXT --sign", err=True)
+            click.echo("ERROR: Key not found. Run: perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -87,7 +94,7 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
 def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file."""
     if file_path and bundle_id:
-        click.echo("ERROR: Specify either BUNDLE_ID or --file, not both.", err=True)
+        click.echo("ERROR: Use either BUNDLE_ID or --file, not both. See: perathos verify --help", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
@@ -107,6 +114,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
+        click.echo("Try: perathos list to see valid bundle IDs", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
