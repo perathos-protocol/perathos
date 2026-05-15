@@ -1,3 +1,10 @@
+"""VRL Proof Bundle creation and verification logic.
+
+Handles the construction of tamper-evident bundles that capture the hash chain
+from input/output through execution trace to the integrity root, plus optional
+Ed25519 cryptographic signatures. All hashes are SHA-256 and deterministically
+encoded to ensure offline verifiability.
+"""
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -14,20 +21,51 @@ _MODEL_DESCRIPTOR = "perathos-demo-model:sha256-deterministic:v1"
 
 
 def _sha256(data: bytes) -> str:
+    """Compute SHA-256 digest of bytes and return as hex string.
+
+    Args:
+        data: Bytes to hash.
+
+    Returns:
+        Lowercase hex-encoded SHA-256 digest.
+    """
     return hashlib.sha256(data).hexdigest()
 
 
 def ai_id() -> str:
-    """Stable AI identity: SHA-256 of the model descriptor string."""
+    """Stable AI identity: SHA-256 of the model descriptor string.
+
+    Returns:
+        Lowercase hex-encoded SHA-256 of the hardcoded model descriptor.
+        In production, this would reflect actual model weights and serving config.
+    """
     return _sha256(_MODEL_DESCRIPTOR.encode("utf-8"))
 
 
 def create_bundle(output_text: str, input_text: str = "") -> dict:
-    """
-    Build a VRL Proof Bundle for a given AI output.
+    """Build a VRL Proof Bundle for a given AI output.
 
-    input_text defaults to "" for the prove-from-output-only CLI use case.
-    In a real pipeline, pass the prompt/request that produced output_text.
+    Constructs a tamper-evident bundle by hashing the input and output,
+    capturing execution metadata in a trace, and computing an integrity root
+    hash. The bundle_id is derived deterministically via UUIDv5 from the
+    integrity hash, so it is reconstructable offline without any state.
+
+    Args:
+        output_text: The AI-generated text to prove (e.g., model completion).
+        input_text: Original prompt or request that produced output_text.
+            Defaults to empty string for prove-from-output-only use cases.
+
+    Returns:
+        A dictionary containing:
+            - bundle_id: UUIDv5 derived from integrity_hash.
+            - ai_id: SHA-256 of the model descriptor.
+            - input_hash: SHA-256 of input_text.
+            - output_hash: SHA-256 of output_text.
+            - trace_hash: SHA-256 of execution metadata.
+            - integrity_hash: SHA-256 of the canonical integrity payload.
+            - issued_at: ISO 8601 timestamp (UTC).
+            - proof_system: String identifier for the hash scheme ("sha256-deterministic").
+            - _trace: Verbatim execution metadata dict (used by verifiers).
     """
     issued_at = datetime.now(timezone.utc).isoformat()
     proof_system = "sha256-deterministic"
@@ -78,9 +116,21 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
 
 
 def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
-    """
-    Attach an Ed25519 provider_signature over integrity_hash and return
-    the updated bundle. Does not mutate the original dict.
+    """Attach an Ed25519 provider_signature over integrity_hash.
+
+    Computes an Ed25519 signature on the raw bytes of integrity_hash and
+    adds it to the bundle as a provider_signature field. Does not mutate
+    the input bundle; returns a new dict with the signature attached.
+
+    Args:
+        bundle: A bundle dict from create_bundle() (or compatible structure).
+        signing_key_hex: 64-character hex-encoded Ed25519 signing key.
+
+    Returns:
+        A new dict with all fields from bundle plus a "provider_signature" field:
+            - algorithm: "ed25519"
+            - verify_key: 64-character hex-encoded public key
+            - signature: 128-character hex-encoded signature bytes
     """
     from .signing import sign_hash  # local import to avoid circular deps
     sig = sign_hash(bundle["integrity_hash"], signing_key_hex)
@@ -88,12 +138,21 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
 
 
 def verify_bundle(bundle: dict) -> tuple[bool, str]:
-    """
-    Recompute all hashes from stored data and check they match.
+    """Recompute all hashes from stored data and check they match.
 
-    Returns (True, "") on success or (False, "ERR_CODE") on any failure.
-    Does not re-hash the original input/output text — those are gone.
-    Verifies the chain: _trace → trace_hash → integrity_hash → bundle_id.
+    Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id.
+    Does not re-hash the original input/output text (those are gone); only checks
+    that the stored hashes are self-consistent and form a valid chain.
+
+    Args:
+        bundle: A bundle dict from create_bundle() (optionally with signature).
+
+    Returns:
+        A tuple (valid, error_code) where:
+            - valid is True and error_code is "" on successful verification.
+            - valid is False and error_code is a string like "ERR_TRACE_HASH_MISMATCH"
+              or "ERR_MISSING_TRACE" on any failure. Check for 'ERR' substring to
+              detect invalid bundles.
     """
     try:
         trace = bundle.get("_trace")
