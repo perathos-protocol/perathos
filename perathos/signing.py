@@ -23,6 +23,31 @@ def generate_keypair() -> tuple[str, str]:
     return sk_hex, vk_hex
 
 
+def _validate_hex_hash(value: str, name: str, length: int = 64) -> None:
+    """Validate that a value is a valid hex string of exact length.
+
+    Args:
+        value: The string to validate.
+        name: The name of the parameter (for error messages).
+        length: Expected length in characters (default 64 for SHA-256 hex).
+
+    Raises:
+        ValueError: If value is not exactly `length` hex characters.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string, got {type(value).__name__}")
+    if len(value) != length:
+        raise ValueError(
+            f"{name} must be exactly {length} hex characters, got {len(value)}"
+        )
+    try:
+        int(value, 16)
+    except ValueError:
+        raise ValueError(
+            f"{name} must be valid hex characters (0-9, a-f), got: {value}"
+        )
+
+
 def sign_hash(integrity_hash: str, signing_key_hex: str) -> dict:
     """Sign the raw bytes of an integrity_hash with Ed25519.
 
@@ -39,7 +64,13 @@ def sign_hash(integrity_hash: str, signing_key_hex: str) -> dict:
             - algorithm: "ed25519"
             - verify_key: 64-character hex-encoded public key (derived from signing_key)
             - signature: 128-character hex-encoded signature bytes
+
+    Raises:
+        ValueError: If integrity_hash or signing_key_hex are not valid 64-char hex strings.
     """
+    _validate_hex_hash(integrity_hash, "integrity_hash", 64)
+    _validate_hex_hash(signing_key_hex, "signing_key_hex", 64)
+
     sk = nacl.signing.SigningKey(signing_key_hex, encoder=nacl.encoding.HexEncoder)
     signed = sk.sign(bytes.fromhex(integrity_hash))
     return {
@@ -68,14 +99,38 @@ def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[boo
               or "ERR_MISSING_SIG_FIELD" if verification fails.
     """
     try:
+        _validate_hex_hash(integrity_hash, "integrity_hash", 64)
+    except ValueError as exc:
+        return False, f"ERR_INVALID_HASH:{exc}"
+
+    try:
+        verify_key = provider_signature["verify_key"]
+        _validate_hex_hash(verify_key, "verify_key", 64)
+    except ValueError as exc:
+        return False, f"ERR_INVALID_VERIFY_KEY:{exc}"
+    except KeyError as exc:
+        return False, f"ERR_MISSING_SIG_FIELD:{exc}"
+
+    try:
+        signature_hex = provider_signature["signature"]
+        if not isinstance(signature_hex, str):
+            return False, f"ERR_INVALID_SIGNATURE:signature must be a string"
+        if len(signature_hex) != 128:
+            return False, f"ERR_INVALID_SIGNATURE:signature must be 128 hex chars, got {len(signature_hex)}"
+        try:
+            int(signature_hex, 16)
+        except ValueError:
+            return False, f"ERR_INVALID_SIGNATURE:signature must be valid hex"
+    except KeyError as exc:
+        return False, f"ERR_MISSING_SIG_FIELD:{exc}"
+
+    try:
         vk = nacl.signing.VerifyKey(
-            provider_signature["verify_key"], encoder=nacl.encoding.HexEncoder
+            verify_key, encoder=nacl.encoding.HexEncoder
         )
-        vk.verify(bytes.fromhex(integrity_hash), bytes.fromhex(provider_signature["signature"]))
+        vk.verify(bytes.fromhex(integrity_hash), bytes.fromhex(signature_hex))
         return True, ""
     except nacl.exceptions.BadSignatureError:
         return False, "ERR_BAD_SIGNATURE"
-    except KeyError as exc:
-        return False, f"ERR_MISSING_SIG_FIELD:{exc}"
     except Exception as exc:
         return False, f"ERR_SIGNATURE_INVALID:{exc}"
