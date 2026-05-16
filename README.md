@@ -259,6 +259,103 @@ bundle = prove("Hello world.")
 inspect(bundle)
 ```
 
+### Storage API
+
+The `perathos.storage` module provides functions to save and load bundles from disk, as well as manage signing keys.
+
+#### `save_bundle(bundle)`
+
+Save a bundle to JSON file in `~/.perathos/bundles/`.
+
+**Args:**
+  - `bundle` (dict): A bundle dict from `prove()` (optionally signed).
+
+**Returns:**
+  - `Path`: Path object pointing to the saved JSON file.
+
+**Example:**
+```python
+from perathos import prove
+from perathos.storage import save_bundle, load_bundle
+
+bundle = prove("The capital of France is Paris.")
+path = save_bundle(bundle)  # Saves to ~/.perathos/bundles/{bundle_id}.json
+print(f"Saved to {path}")
+
+# Later, load it back:
+loaded = load_bundle(bundle["bundle_id"])
+print(f"Loaded: {loaded['bundle_id']}")
+```
+
+#### `load_bundle(bundle_id)`
+
+Load a bundle from disk by its UUID.
+
+**Args:**
+  - `bundle_id` (str): The bundle's UUID (e.g., `"550e8400-e29b-41d4-a716-446655440000"`).
+
+**Returns:**
+  - dict: The parsed bundle dict with all fields.
+
+**Raises:**
+  - `FileNotFoundError`: If no bundle file exists for the given ID.
+  - `json.JSONDecodeError`: If the JSON file is corrupted.
+
+**Example:**
+```python
+from perathos.storage import load_bundle
+from perathos import verify, inspect
+
+bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
+valid, err = verify(bundle)
+if valid:
+    inspect(bundle)
+```
+
+#### `list_bundles()`
+
+List all locally stored bundles, newest first.
+
+**Returns:**
+  - list[Path]: List of Path objects for all `.json` files in `~/.perathos/bundles/`, sorted by modification time (newest first).
+
+**Example:**
+```python
+from perathos.storage import list_bundles, load_bundle
+from perathos import inspect
+
+bundles = list_bundles()
+if bundles:
+    most_recent_path = bundles[0]
+    bundle_id = most_recent_path.stem  # filename without .json
+    bundle = load_bundle(bundle_id)
+    inspect(bundle)
+else:
+    print("No bundles found. Run: perathos prove 'output text'")
+```
+
+#### `generate_keypair()` and key management
+
+Generate a signing keypair and load it from disk.
+
+**Example:**
+```python
+from perathos.signing import generate_keypair
+from perathos.storage import save_keypair, load_signing_key, load_verify_key
+from perathos import prove, sign
+
+# Generate a new keypair
+sk, vk = generate_keypair()
+sk_path, vk_path = save_keypair(sk, vk)
+print(f"Keys saved to {sk_path.parent}")
+
+# Later, load and use the key:
+sk = load_signing_key()
+bundle = prove("Some output")
+signed = sign(bundle, sk)
+print(f"Signed with key: {signed['provider_signature']['verify_key']}")
+```
+
 ## How it works
 
 ```
@@ -329,6 +426,178 @@ if valid and "provider_signature" in bundle:
         print(f"Signature valid. Provider: {bundle['provider_signature']['verify_key']}")
     else:
         print(f"Signature verification failed: {sig_err}")
+```
+
+## Troubleshooting
+
+### "Signing key not found" error
+
+**Symptom:** When running `perathos prove --sign`, you get:
+```
+ERROR: Signing key not found.
+Run: perathos keygen
+```
+
+**Cause:** You haven't generated a keypair yet, or the key file was deleted.
+
+**Solution:** Generate a keypair with:
+```bash
+perathos keygen
+```
+This creates `~/.perathos/keys/signing.key` and `~/.perathos/keys/verify.key`.
+
+**In Python:**
+```python
+from perathos.storage import load_signing_key
+
+try:
+    sk = load_signing_key()
+except FileNotFoundError:
+    from perathos.signing import generate_keypair
+    from perathos.storage import save_keypair
+    sk, vk = generate_keypair()
+    save_keypair(sk, vk)
+    print("Keypair generated and saved.")
+```
+
+### "Bundle not found" error
+
+**Symptom:** When running `perathos verify <bundle_id>` or `perathos inspect <bundle_id>`, you get:
+```
+ERROR: Bundle not found: 550e8400-e29b-41d4-a716-446655440000
+Run: perathos list
+```
+
+**Cause:** The bundle UUID doesn't exist in `~/.perathos/bundles/`, or you mistyped the UUID.
+
+**Solution:** List all available bundles:
+```bash
+perathos list
+```
+Copy the correct UUID from the output and use it with `verify` or `inspect`.
+
+**In Python:**
+```python
+from perathos.storage import load_bundle, list_bundles
+
+try:
+    bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
+except FileNotFoundError:
+    print("Bundle not found. Available bundles:")
+    for path in list_bundles():
+        print(f"  {path.stem}")
+```
+
+### "Invalid JSON" error
+
+**Symptom:** When running `perathos verify --file bundle.json`, you get:
+```
+ERROR: Invalid JSON in /path/to/bundle.json: Expecting value: line 1 column 1 (char 0)
+```
+
+**Cause:** The file is not valid JSON, is empty, or is corrupted.
+
+**Solution:**
+1. Check the file exists and is readable:
+   ```bash
+   cat /path/to/bundle.json | head -20
+   ```
+2. Validate the JSON syntax using a tool:
+   ```bash
+   python -m json.tool /path/to/bundle.json > /dev/null
+   ```
+   If no error, the JSON is valid.
+3. Ensure the file was exported correctly from `perathos prove --json` or another Perathos instance.
+
+**In Python:**
+```python
+import json
+from pathlib import Path
+
+try:
+    bundle = json.loads(Path("/path/to/bundle.json").read_text())
+except json.JSONDecodeError as e:
+    print(f"Invalid JSON: {e}")
+    print("Try: perathos prove 'output text' --json > bundle.json")
+```
+
+### Bundle verification fails with "ERR_TRACE_HASH_MISMATCH"
+
+**Symptom:** When running `perathos verify <bundle_id>`, you get:
+```
+INVALID  ERR_TRACE_HASH_MISMATCH
+```
+
+**Cause:** The `_trace` dict in the bundle was manually modified or corrupted.
+
+**Solution:** Do not manually edit bundle JSON files. Always use `perathos prove` to create new bundles. If you need to recover the original output, check your AI service's logs or re-run the prompt.
+
+### Bundle verification fails with "ERR_INTEGRITY_HASH_MISMATCH"
+
+**Symptom:** When running `perathos verify <bundle_id>`, you get:
+```
+INVALID  ERR_INTEGRITY_HASH_MISMATCH
+```
+
+**Cause:** One or more fields in the bundle (ai_id, input_hash, output_hash, issued_at, etc.) were modified after the bundle was created.
+
+**Solution:** Do not manually edit bundle files. Bundles are read-only once created. If you need a different output, create a new bundle with `perathos prove`.
+
+### Signature verification fails with "ERR_BAD_SIGNATURE"
+
+**Symptom:** When running `perathos verify <bundle_id>`, you get:
+```
+INVALID  ERR_BAD_SIGNATURE
+```
+
+**Cause:** The bundle's `provider_signature` doesn't match the `integrity_hash`, or the signature was tampered with.
+
+**Solution:** Do not manually edit bundle files. If you suspect the bundle was modified after signing, contact the provider and ask for the original bundle. Verify the provider's public key (listed in the error output) matches your trusted key.
+
+**In Python:**
+```python
+from perathos import verify, verify_signature
+from perathos.storage import load_bundle
+
+bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
+valid, err = verify(bundle)
+if valid and "provider_signature" in bundle:
+    sig_valid, sig_err = verify_signature(bundle["integrity_hash"], bundle["provider_signature"])
+    if not sig_valid:
+        print(f"Signature verification failed: {sig_err}")
+        print(f"Provider key: {bundle['provider_signature']['verify_key']}")
+        print("Do not trust this bundle. Contact the provider to confirm.")
+```
+
+### Keys directory has wrong permissions
+
+**Symptom:** On Unix/Linux, the file `~/.perathos/keys/signing.key` is readable by other users, which is a security risk.
+
+**Cause:** The key file was created with incorrect permissions (not 0o600).
+
+**Solution:** Manually fix permissions:
+```bash
+chmod 600 ~/.perathos/keys/signing.key
+chmod 700 ~/.perathos/keys
+```
+
+### Bundle is too old or issued_at is in the future
+
+**Symptom:** You notice a bundle was issued at a timestamp that seems wrong (very old, or in the future).
+
+**Cause:** The system clock was wrong when the bundle was created, or you're verifying a bundle from a different system.
+
+**Action:** The `issued_at` field is part of the integrity hash, so changing it will break verification. Perathos doesn't enforce time windows; bundle validity depends only on the hash chain, not on the timestamp. If you need time-based validation, add your own checks:
+```python
+from datetime import datetime, timezone
+from perathos.storage import load_bundle
+
+bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
+issued = datetime.fromisoformat(bundle["issued_at"])
+now = datetime.now(timezone.utc)
+age = (now - issued).total_seconds()
+if age > 86400:  # older than 1 day
+    print(f"Warning: Bundle is {age / 86400:.1f} days old.")
 ```
 
 ## License
