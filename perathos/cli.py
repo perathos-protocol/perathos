@@ -36,8 +36,8 @@ def keygen():
         __import__("pathlib").Path.home() / ".perathos" / "keys" / "signing.key"
     )
     if sk_path.exists():
-        click.echo(f"ERROR: Key already exists at {sk_path}", err=True)
-        click.echo("Run: perathos keygen --rotate", err=True)
+        click.echo(f"ERROR: Signing key already exists at {sk_path}", err=True)
+        click.echo("To rotate: rm ~/.perathos/keys/signing.key && perathos keygen", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -84,7 +84,8 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("ERROR: Signing key not found.", err=True)
+            sk_path = Path.home() / ".perathos" / "keys" / "signing.key"
+            click.echo(f"ERROR: Signing key not found at {sk_path}", err=True)
             click.echo("Run: perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
