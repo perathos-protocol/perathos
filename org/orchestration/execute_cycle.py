@@ -114,14 +114,42 @@ def build_git_log() -> str:
 
 # ── LLM caller ────────────────────────────────────────────────────────────────
 
+CACHE_BOUNDARY = "<<<CACHE_BOUNDARY>>>"
+
+
+def _build_cached_messages(user: str) -> list[dict]:
+    """Split user message at CACHE_BOUNDARY into a cacheable prefix (codebase
+    context, identical across all specialists in the cycle) and a variable
+    suffix (per-specialist task). Falls back to a single uncached block if
+    the marker is absent.
+    """
+    if CACHE_BOUNDARY not in user:
+        return [{"role": "user", "content": user}]
+    prefix, suffix = user.split(CACHE_BOUNDARY, 1)
+    return [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prefix.rstrip(), "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": suffix.lstrip()},
+        ],
+    }]
+
+
+def _build_cached_system(system: str) -> list[dict]:
+    """Mark the agent system prompt as cacheable for the initial + self-review
+    pair on the same agent within the 5-minute cache TTL.
+    """
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
 def call_anthropic(system: str, user: str) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16384,  # Specialists write full file content — 8192 was truncating
-        system=system,
-        messages=[{"role": "user", "content": user}],
+        system=_build_cached_system(system),
+        messages=_build_cached_messages(user),
     )
     return msg.content[0].text
 
@@ -326,9 +354,13 @@ def run_master(context: str, git_log: str) -> dict:
         if end != -1:
             system_prompt = system_prompt[end + 3:].strip()
 
+    # Codebase context is identical across all specialist calls in this
+    # cycle — put it FIRST as the cacheable prefix, then the boundary marker,
+    # then variable per-call bits.
     user_message = (
-        f"## Recent git history (last 30 commits)\n\n{git_log}\n\n"
-        f"## Current codebase\n\n{context}"
+        f"## Current codebase\n\n{context}\n\n"
+        f"{CACHE_BOUNDARY}\n\n"
+        f"## Recent git history (last 30 commits)\n\n{git_log}"
     )
 
     print("  Analyzing codebase…")
@@ -531,12 +563,15 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
         if end != -1:
             system_prompt = system_prompt[end + 3:].strip()
 
+    # Codebase context goes FIRST so it's the cacheable prefix. CACHE_BOUNDARY
+    # marker, then per-specialist task suffix.
     if assignment:
         user_message = (
+            f"## Current codebase\n\n{context}\n\n"
+            f"{CACHE_BOUNDARY}\n\n"
             f"## Your assigned task for this cycle\n\n"
             f"{assignment}\n\n"
-            f"Execute this specific task. Do not pick a different one.\n\n"
-            f"## Current codebase\n\n{context}"
+            f"Execute this specific task. Do not pick a different one."
         )
     else:
         user_message = f"## Current codebase\n\n{context}"
