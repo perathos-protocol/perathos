@@ -133,7 +133,8 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbos
             sk_hex = load_signing_key()
         except FileNotFoundError:
             click.echo("ERROR: Signing key not found.", err=True)
-            click.echo("To generate a keypair, run: perathos keygen", err=True)
+            click.echo("To generate a keypair, run:", err=True)
+            click.echo("  perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -212,12 +213,15 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Did you mean to create one? Try: perathos prove <output_text>", err=True)
-        click.echo("To see existing bundles: perathos list", err=True)
+        click.echo("To create a new bundle:", err=True)
+        click.echo("  perathos prove '<output_text>'", err=True)
+        click.echo("To list existing bundles:", err=True)
+        click.echo("  perathos list", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
-        click.echo("Ensure the file contains valid JSON.", err=True)
+        click.echo("Ensure the file contains valid JSON. Try:", err=True)
+        click.echo(f"  python -m json.tool {file_path}", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
@@ -261,7 +265,8 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("To see available bundles: perathos list", err=True)
+        click.echo("To see available bundles:", err=True)
+        click.echo("  perathos list", err=True)
         sys.exit(1)
     inspect(bundle)
 
