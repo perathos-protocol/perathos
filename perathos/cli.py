@@ -26,6 +26,8 @@ def keygen():
     """Generate an Ed25519 keypair and save to ~/.perathos/keys/.
     
     Creates a signing key and public verification key for use with --sign.
+    Each invocation generates a fresh keypair. If a key already exists,
+    you must delete it manually or use --rotate (when implemented).
     
     Example:
         perathos keygen
@@ -35,7 +37,7 @@ def keygen():
     )
     if sk_path.exists():
         click.echo(f"ERROR: Key already exists at {sk_path}", err=True)
-        click.echo("Delete it manually if you want to rotate keys.", err=True)
+        click.echo("Run: perathos keygen --rotate", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -190,6 +192,9 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
 def inspect_cmd(bundle_id: str):
     """Pretty-print a bundle in human-readable form.
     
+    Displays bundle metadata, hash chain, and trace steps with automatic
+    styling (Unicode symbols if terminal supports them, plain ASCII fallback).
+    
     Example:
         perathos inspect 550e8400-e29b-41d4-a716-446655440000
     """
@@ -205,6 +210,9 @@ def inspect_cmd(bundle_id: str):
 @cli.command(name="list")
 def list_cmd():
     """List all locally stored bundles.
+    
+    Displays all bundles in ~/.perathos/bundles/, newest first.
+    Shows the bundle_id (UUID) of each stored bundle.
     
     Example:
         perathos list
