@@ -34,8 +34,8 @@ def keygen():
         __import__("pathlib").Path.home() / ".perathos" / "keys" / "signing.key"
     )
     if sk_path.exists():
-        click.echo(f"Key already exists at {sk_path}")
-        click.echo("Delete it manually if you want to rotate keys.")
+        click.echo(f"ERROR: Key already exists at {sk_path}", err=True)
+        click.echo("Delete it manually if you want to rotate keys.", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -48,14 +48,16 @@ def keygen():
 @cli.command()
 @click.argument("text")
 @click.option("--input", "input_text", default="", metavar="INPUT",
-              help="Original prompt / input that produced TEXT (default: empty). Example: --input 'What is the capital of France?'")
-@click.option("--sign", is_flag=True, help="Sign integrity_hash with local Ed25519 key.")
-@click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON.")
+              help="Original prompt / input that produced TEXT. Example: --input 'What is the capital of France?'")
+@click.option("--sign", is_flag=True, 
+              help="Sign integrity_hash with local Ed25519 key (run: perathos keygen first).")
+@click.option("--json", "as_json", is_flag=True, 
+              help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
-    """Generate a VRL Proof Bundle for TEXT (treated as AI output).
+    """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
-    TEXT is the AI-generated output you want to prove. --input is optional and specifies
-    the original prompt or request that produced TEXT.
+    TEXT is the AI-generated output you want to prove. --input specifies the optional
+    original prompt or request that produced TEXT.
     
     Examples:
         perathos prove "The capital of France is Paris."
@@ -96,21 +98,29 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
 @cli.command()
 @click.argument("bundle_id", required=False)
 @click.option("--file", "file_path", type=click.Path(exists=True), metavar="PATH",
-              help="Path to a JSON bundle file (instead of bundle_id).")
-@click.option("--json", "as_json", is_flag=True, help="Print the full bundle JSON on success.")
+              help="Path to a JSON bundle file. Example: --file bundle.json")
+@click.option("--json", "as_json", is_flag=True, 
+              help="Print the full bundle as JSON on success. Example: perathos verify <id> --json")
 def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
+    
+    Verify stored bundle by its UUID, or load and verify from a JSON file.
+    Exit code 0 = valid, 1 = invalid, 2 = usage error.
     
     Examples:
         perathos verify 550e8400-e29b-41d4-a716-446655440000
         perathos verify --file bundle.json
+        perathos verify 550e8400-e29b-41d4-a716-446655440000 --json
     """
     if file_path and bundle_id:
-        click.echo("ERROR: Use either BUNDLE_ID or --file, not both. See: perathos verify --help", err=True)
+        click.echo("ERROR: Use either BUNDLE_ID or --file, not both.", err=True)
+        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000", err=True)
+        click.echo("Example: perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
         click.echo("ERROR: Specify either BUNDLE_ID or --file.", err=True)
+        click.echo("Run: perathos verify --help", err=True)
         sys.exit(2)
 
     try:
@@ -122,11 +132,11 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list to see stored bundle IDs", err=True)
+        click.echo("Run: perathos list", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
-        click.echo("Ensure the file is valid JSON. Run: perathos list to see valid bundle IDs", err=True)
+        click.echo(f"Ensure the file contains valid JSON.", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
@@ -162,7 +172,7 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list to see stored bundle IDs", err=True)
+        click.echo("Run: perathos list", err=True)
         sys.exit(1)
     inspect(bundle)
 
