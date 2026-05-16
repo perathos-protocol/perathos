@@ -41,6 +41,21 @@ def _explain_error(error_code: str) -> str:
     return error_code
 
 
+def _format_hash(h: str, verbose: bool) -> str:
+    """Format a hash for display.
+    
+    Args:
+        h: Full hash string (typically 64 hex chars).
+        verbose: If True, show full hash; if False, show first 8 chars with ellipsis.
+    
+    Returns:
+        Formatted hash string.
+    """
+    if verbose:
+        return h
+    return f"{h[:8]}..."
+
+
 @click.group()
 @click.version_option(version=__version__)
 def cli():
@@ -83,7 +98,9 @@ def keygen():
               help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Creates a SIGNED bundle.")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
-def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
+@click.option("--verbose", is_flag=True,
+              help="Display full 64-character hashes instead of truncated 8-character previews.")
+def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbose: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
     Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
@@ -126,17 +143,19 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
         click.echo(json.dumps(bundle, indent=2, sort_keys=True))
         return
 
-    click.echo(f"bundle_id      {bundle['bundle_id']}")
-    click.echo(f"ai_id          {bundle['ai_id']}")
-    click.echo(f"input_hash     {bundle['input_hash']}")
-    click.echo(f"output_hash    {bundle['output_hash']}")
-    click.echo(f"trace_hash     {bundle['trace_hash']}")
-    click.echo(f"integrity_hash {bundle['integrity_hash']}")
+    click.echo(f"bundle_id      {_format_hash(bundle['bundle_id'], verbose)}")
+    click.echo(f"ai_id          {_format_hash(bundle['ai_id'], verbose)}")
+    click.echo(f"input_hash     {_format_hash(bundle['input_hash'], verbose)}")
+    click.echo(f"output_hash    {_format_hash(bundle['output_hash'], verbose)}")
+    click.echo(f"trace_hash     {_format_hash(bundle['trace_hash'], verbose)}")
+    click.echo(f"integrity_hash {_format_hash(bundle['integrity_hash'], verbose)}")
     click.echo(f"issued_at      {bundle['issued_at']}")
     if sign_flag:
         sig = bundle["provider_signature"]
-        click.echo(f"signature      {sig['signature'][:32]}…")
-        click.echo(f"verify_key     {sig['verify_key']}")
+        sig_display = _format_hash(sig['signature'], verbose)
+        click.echo(f"signature      {sig_display}")
+        vk_display = _format_hash(sig['verify_key'], verbose)
+        click.echo(f"verify_key     {vk_display}")
     click.echo(f"saved          {path}")
 
 
@@ -146,7 +165,9 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
               help="Path to a JSON bundle file. Example: --file bundle.json")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON on success. Example: perathos verify <id> --json")
-def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
+@click.option("--verbose", is_flag=True,
+              help="Display full 64-character hashes instead of truncated 8-character previews.")
+def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
     Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
@@ -216,7 +237,8 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
             click.echo(f"Reason: {explanation}", err=True)
             sys.exit(1)
         click.echo(f"VALID_SIGNED  {display_id}")
-        click.echo(f"              verify_key {bundle['provider_signature']['verify_key']}")
+        vk_display = _format_hash(bundle['provider_signature']['verify_key'], verbose)
+        click.echo(f"              verify_key {vk_display}")
     else:
         click.echo(f"VALID_UNSIGNED  {display_id}")
 
