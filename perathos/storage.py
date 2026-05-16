@@ -2,7 +2,21 @@
 
 Manages persistent storage under ~/.perathos/ with subdirectories for
 bundles (as JSON files) and keys (as hex-encoded text files). Enforces
-restrictive file permissions on signing keys where supported.
+restrictive file permissions on signing keys where supported (Unix mode 0o600).
+On Windows, filesystem ACLs are used.
+
+This module is the persistence layer: bundles are created in memory
+(perathos.bundle) and then saved here for long-term storage and later
+retrieval (e.g., for offline verification). Keys are also stored here
+for use with signing commands.
+
+Directory structure:
+    ~/.perathos/
+        bundles/       (JSON files, one per bundle_id)
+            <uuid>.json
+        keys/          (hex-encoded text files)
+            signing.key       (Ed25519 private key, mode 0o600)
+            verify.key        (Ed25519 public key)
 """
 import json
 import os

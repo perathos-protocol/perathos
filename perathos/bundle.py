@@ -23,11 +23,19 @@ _MODEL_DESCRIPTOR = "perathos-demo-model:sha256-deterministic:v1"
 def _sha256(data: bytes) -> str:
     """Compute SHA-256 digest of bytes and return as hex string.
 
+    Used internally for all hash operations in the bundle: input, output,
+    trace, and integrity payload. The result is always a 64-character
+    lowercase hex string suitable for use in bundles and hashing chains.
+
     Args:
         data: Bytes to hash.
 
     Returns:
-        Lowercase hex-encoded SHA-256 digest.
+        Lowercase hex-encoded SHA-256 digest (64 characters).
+
+    Examples:
+        _sha256(b"hello") → "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        _sha256(b"") → "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     """
     return hashlib.sha256(data).hexdigest()
 
@@ -40,9 +48,16 @@ def ai_id() -> str:
     reflect actual model weights fingerprint and serving configuration,
     enabling verifiers to confirm which model produced a given output.
 
+    The model descriptor is a colon-separated string:
+        <name>:<proof_system>:<version>
+    Example: "openai-gpt4-serving:sha256-deterministic:v20240101"
+
     Returns:
-        Lowercase hex-encoded SHA-256 of the hardcoded model descriptor.
+        Lowercase hex-encoded SHA-256 (64 characters) of the model descriptor.
         In production, this would reflect actual model weights and serving config.
+
+    Examples:
+        ai_id() → "7f9c2ba4e88fb81860ea5e70f527f31f..." (deterministic, always same)
     """
     return _sha256(_MODEL_DESCRIPTOR.encode("utf-8"))
 
