@@ -28,8 +28,29 @@ from pathlib import Path
 def bundles_dir() -> Path:
     """Return the Perathos bundles directory, creating it if necessary.
 
+    The bundles directory is where all proof bundles are stored as JSON files.
+    Returns a Path object pointing to ~/.perathos/bundles/ with parents created.
+    The returned directory is guaranteed to exist after this call.
+
     Returns:
         Path object for ~/.perathos/bundles/, with parents created.
+        Example: /home/user/.perathos/bundles/ on Linux, /Users/user/.perathos/bundles/ on macOS,
+        or C:\\Users\\user\\.perathos\\bundles on Windows.
+
+    Raises:
+        OSError: If the directory cannot be created (permission denied, disk full, etc.).
+        PermissionError: If the parent directories exist but cannot be written to.
+
+    Examples:
+        from perathos.storage import bundles_dir
+
+        d = bundles_dir()
+        print(d)
+        # Output: /home/user/.perathos/bundles
+
+        # List all bundles by iterating the directory:
+        for json_file in d.glob("*.json"):
+            print(json_file.stem)  # bundle_id (UUID)
     """
     d = Path.home() / ".perathos" / "bundles"
     d.mkdir(parents=True, exist_ok=True)
@@ -49,6 +70,7 @@ def save_bundle(bundle: dict) -> Path:
 
     Returns:
         Path object pointing to the saved JSON file.
+        Example: /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
 
     Raises:
         KeyError: If bundle is missing the 'bundle_id' field.
@@ -85,7 +107,7 @@ def load_bundle(bundle_id: str) -> dict:
         bundle_id: UUID string (the bundle's bundle_id field, e.g., "550e8400-e29b-41d4-a716-446655440000").
 
     Returns:
-        Parsed bundle dict with all fields including 'bundle_id', 'integrity_hash', '_trace', etc.
+        dict: Parsed bundle dict with all fields including 'bundle_id', 'integrity_hash', '_trace', etc.
         If the bundle was saved with a signature, the 'provider_signature' field will be present.
 
     Raises:
@@ -123,7 +145,7 @@ def list_bundles() -> list[Path]:
     Useful for displaying available bundles or cleaning up old ones.
 
     Returns:
-        List of Path objects for all .json files in ~/.perathos/bundles/,
+        list[Path]: List of Path objects for all .json files in ~/.perathos/bundles/,
         sorted by modification time descending (newest first).
         Returns an empty list if the bundles directory is empty or doesn't exist yet.
 
@@ -145,17 +167,27 @@ def list_bundles() -> list[Path]:
     return sorted(bundles_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-# ── key storage ───────────────────────────────────────────────────────────────
+# ── key storage ───────────────────────────────────────────────────────────
 
 def keys_dir() -> Path:
     """Return the Perathos keys directory, creating it with secure permissions.
 
-    On Unix-like systems, the directory is created with mode 0o700 (owner-only).
-    On Windows, permissions are enforced by NTFS ACLs.
+    On Unix-like systems (Linux, macOS), the directory is created with mode 0o700
+    (drwx------), meaning only the owner can read, write, or list files in this
+    directory. This protects your private signing key from being read by other
+    users on the same system. On Windows, permissions are enforced by NTFS ACLs
+    instead of POSIX mode bits.
+
+    Why 0o700? Your signing key is secret. If another user on the same machine
+    reads your key file, they can forge signatures claiming to come from you.
+    Mode 0o700 prevents this by restricting directory access to the owner only.
+
     This function is called automatically by save_keypair() and key loading functions.
 
     Returns:
-        Path object for ~/.perathos/keys/, with parents created.
+        Path object for ~/.perathos/keys/, with parents created and secure permissions applied.
+        Example: /home/user/.perathos/keys/ on Linux, /Users/user/.perathos/keys/ on macOS,
+        or C:\\Users\\user\\.perathos\\keys on Windows.
 
     Raises:
         OSError: If the directory cannot be created (permission denied, disk full, etc.).
@@ -166,6 +198,12 @@ def keys_dir() -> Path:
 
         key_path = keys_dir() / "custom.key"
         print(f"Keys are stored in: {keys_dir()}")
+
+        # On Unix, verify the permissions:
+        import os, stat
+        d = keys_dir()
+        mode = stat.S_IMODE(os.stat(d).st_mode)
+        print(f"Directory mode: {oct(mode)}")  # Should print: 0o700
     """
     d = Path.home() / ".perathos" / "keys"
     d.mkdir(parents=True, exist_ok=True)
@@ -189,8 +227,8 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
         verify_key_hex: 64-character hex-encoded public key (from generate_keypair()).
 
     Returns:
-        Tuple (signing_key_path, verify_key_path) pointing to the saved files.
-        Both are Path objects; convert to str if needed.
+        tuple[Path, Path]: Tuple (signing_key_path, verify_key_path) pointing to the saved files.
+        Example: (/home/user/.perathos/keys/signing.key, /home/user/.perathos/keys/verify.key)
 
     Raises:
         ValueError: If keys are not 64-character hex strings.
@@ -232,8 +270,14 @@ def load_signing_key() -> str:
     The key is stored as a 64-character hex string (32 bytes of key material).
     This key is used with sign_bundle() or the CLI's --sign flag.
 
+    The signing key is your private key and must be kept secret. Do not share
+    it or commit it to version control. On Unix-like systems, the file is
+    stored with mode 0o600 (owner read-only) to prevent other users from
+    reading it.
+
     Returns:
-        64-character hex-encoded Ed25519 private key, whitespace stripped.
+        str: 64-character hex-encoded Ed25519 private key, whitespace stripped.
+        Example: "a7f9c2ba4e88fb81860ea5e70f527f31f..."
 
     Raises:
         FileNotFoundError: If the signing key has not been generated (run 'perathos keygen').
@@ -243,7 +287,8 @@ def load_signing_key() -> str:
         On Unix-like systems, the signing key file is stored with mode 0o600 (owner read-only).
         This ensures that only the file owner can read the private key. If you see a
         PermissionError when loading the key, verify that ~/.perathos/keys/signing.key
-        is readable by your user and check the file permissions with: chmod 600 ~/.perathos/keys/signing.key
+        is readable by your user and check the file permissions with:
+        chmod 600 ~/.perathos/keys/signing.key
 
     Examples:
         from perathos.storage import load_signing_key
@@ -275,7 +320,8 @@ def load_verify_key() -> str:
     to check signatures created with the corresponding signing key.
 
     Returns:
-        64-character hex-encoded Ed25519 public key, whitespace stripped.
+        str: 64-character hex-encoded Ed25519 public key, whitespace stripped.
+        Example: "a7f9c2ba4e88fb81860ea5e70f527f31f..."
 
     Raises:
         FileNotFoundError: If the verify key has not been generated (run 'perathos keygen').

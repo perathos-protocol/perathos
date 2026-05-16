@@ -563,6 +563,93 @@ except json.JSONDecodeError as e:
     print("Try: perathos prove 'output text' --json > bundle.json")
 ```
 
+### Bundle or key file corruption
+
+**Symptom:** A bundle file is missing fields, has malformed JSON, or a key file is truncated. Examples:
+
+```
+ERROR: Invalid JSON in ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json: ...
+ERROR: Bundle verification failed: ERR_MISSING_FIELD:output_hash
+```
+
+**Cause:** Bundle or key files can become corrupted due to:
+- Disk write errors, power loss, or I/O failure during save.
+- Manual editing that introduced syntax errors or deleted fields.
+- File truncation due to process interruption.
+- Filesystem corruption (rare, but possible on unreliable storage).
+
+**Solution:** Manually inspect and recover from corrupted files.
+
+#### Inspect a potentially corrupted bundle
+
+Use Python or `jq` to check the file structure:
+
+```bash
+# View the raw file:
+cat ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+
+# Validate JSON syntax:
+python -m json.tool ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+
+# Or use jq (if installed):
+jq . ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+```
+
+If the file is valid JSON but is missing required fields (like `integrity_hash`, `_trace`, `bundle_id`), the bundle is corrupted and **cannot be recovered**. The original AI output is lost.
+
+#### Recover by re-creating the bundle
+
+If the bundle is corrupted and you have the original input and output text:
+
+```bash
+# Recreate the bundle:
+perathos prove "<original output text>" --input "<original input text>" --sign
+
+# The bundle will have a new bundle_id but the same integrity_hash
+# (since it's derived from the same input/output).
+```
+
+#### Inspect a potentially corrupted key file
+
+Key files should be 64-character hex strings (for Ed25519 keys). Check the file:
+
+```bash
+# View the file:
+cat ~/.perathos/keys/signing.key
+
+# Check it's 64 hex characters:
+wc -c ~/.perathos/keys/signing.key  # Should be 65 (64 chars + newline)
+hex_string=$(cat ~/.perathos/keys/signing.key)
+echo "${#hex_string}")  # Should be 64
+echo "$hex_string" | grep -E '^[0-9a-f]{64}$'  # Should match
+```
+
+If the key file is truncated (fewer than 64 characters) or contains non-hex characters, it's corrupted:
+
+```bash
+# Regenerate the keypair (this will lose the old key):
+rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key
+perathos keygen
+
+# Warning: Any bundles signed with the old key cannot be verified with the new key.
+```
+
+#### Prevention
+
+To prevent corruption:
+
+1. **Use reliable storage.** Avoid network filesystems with latency or flaky connections.
+2. **Keep backups.** Regularly backup `~/.perathos/keys/` (your private key is irreplaceable).
+   ```bash
+   cp -r ~/.perathos/keys ~/perathos-keys-backup
+   ```
+3. **Do not edit bundle files manually.** Only Perathos should modify bundles.
+4. **Check disk health.** If corruption happens repeatedly, run filesystem checks:
+   ```bash
+   sudo fsck /  # On Linux (unmounted)
+   # Or use Disk Utility on macOS
+   ```
+
 ### Bundle verification fails with "ERR_TRACE_HASH_MISMATCH"
 
 **Symptom:** When running `perathos verify <bundle_id>`, you get:
