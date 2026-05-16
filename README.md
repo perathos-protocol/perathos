@@ -649,6 +649,16 @@ To prevent corruption:
    sudo fsck /  # On Linux (unmounted)
    # Or use Disk Utility on macOS
    ```
+5. **Monitor disk space.** Ensure your home directory has sufficient free space to avoid incomplete writes:
+   ```bash
+   df -h ~
+   ```
+6. **Use checksums.** For critical bundles, store a separate SHA-256 checksum:
+   ```bash
+   sha256sum ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json > bundle.sha256
+   # Later, verify:
+   sha256sum -c bundle.sha256
+   ```
 
 ### Bundle verification fails with "ERR_TRACE_HASH_MISMATCH"
 
@@ -708,6 +718,17 @@ if valid and "provider_signature" in bundle:
 ```bash
 chmod 600 ~/.perathos/keys/signing.key
 chmod 700 ~/.perathos/keys
+```
+
+**In Python:**
+```python
+import os
+from perathos.storage import keys_dir
+
+sk_path = keys_dir() / "signing.key"
+os.chmod(sk_path, 0o600)
+os.chmod(keys_dir(), 0o700)
+print("Permissions fixed.")
 ```
 
 ### Bundle is too old or issued_at is in the future
