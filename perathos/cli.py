@@ -56,13 +56,25 @@ def keygen():
 def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
-    TEXT is the AI-generated output you want to prove. --input specifies the optional
-    original prompt or request that produced TEXT.
+    Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
+    cryptographic signature (requires running 'perathos keygen' first).
+    
+    TEXT is the AI-generated output you want to prove. Specify --input to include
+    the optional original prompt or request that produced TEXT. Both prove modes
+    (signed and unsigned) produce a tamper-evident bundle stored locally.
     
     Examples:
         perathos prove "The capital of France is Paris."
+            → Creates an UNSIGNED proof bundle
+        
         perathos prove "The answer is 42." --input "What is the answer?"
-        perathos prove "Hello world." --sign --json
+            → UNSIGNED bundle with input prompt included
+        
+        perathos prove "Hello world." --sign
+            → Creates a SIGNED proof bundle (requires keygen)
+        
+        perathos prove "Output text." --sign --json
+            → SIGNED bundle, output as full JSON instead of summary
     """
     bundle = prove(output_text=text, input_text=input_text)
 
@@ -104,13 +116,26 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
 def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
-    Verify stored bundle by its UUID, or load and verify from a JSON file.
-    Exit code 0 = valid, 1 = invalid, 2 = usage error.
+    Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
+    or loads and verifies a bundle from an external JSON file via --file.
+    
+    Exit codes:
+        0 = Bundle is valid (hash chain verified, signature valid if present)
+        1 = Bundle is invalid (tamper detection, hash mismatch, bad signature)
+        2 = Usage error (missing arguments, conflicting options)
+    
+    For stored bundles: Use BUNDLE_ID (the bundle's UUID).
+    For external JSON files: Use --file <path> instead of BUNDLE_ID.
     
     Examples:
         perathos verify 550e8400-e29b-41d4-a716-446655440000
-        perathos verify --file bundle.json
+            → Verify a stored bundle by its UUID
+        
+        perathos verify --file /path/to/exported_bundle.json
+            → Verify a bundle from a JSON file (e.g., exported from another system)
+        
         perathos verify 550e8400-e29b-41d4-a716-446655440000 --json
+            → Verify and display full bundle JSON on success
     """
     if file_path and bundle_id:
         click.echo("ERROR: Use either BUNDLE_ID or --file, not both.", err=True)
