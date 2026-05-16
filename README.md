@@ -48,12 +48,94 @@ Bundles are stored locally at `~/.perathos/bundles/`.
 
 ## Python API
 
-```python
-from perathos import prove, verify, sign
+### `prove(output_text, input_text="")`
 
-bundle = prove("The capital of France is Paris.", input_text="What is the capital of France?")
-bundle = sign(bundle)           # attach Ed25519 signature
-valid, err = verify(bundle)     # True, ""
+Build a VRL Proof Bundle for a given AI output.
+
+**Args:**
+  - `output_text` (str): The AI-generated text to prove (e.g., model completion).
+  - `input_text` (str, optional): Original prompt or request that produced output_text. Defaults to empty string.
+
+**Returns:**
+  - dict: A bundle containing `bundle_id`, `ai_id`, `input_hash`, `output_hash`, `trace_hash`, `integrity_hash`, `issued_at`, `proof_system`, and `_trace`.
+
+**Example:**
+```python
+from perathos import prove
+
+bundle = prove(
+    output_text="The capital of France is Paris.",
+    input_text="What is the capital of France?"
+)
+print(bundle["bundle_id"])
+```
+
+### `sign(bundle, signing_key_hex)`
+
+Attach an Ed25519 provider_signature over integrity_hash.
+
+**Args:**
+  - `bundle` (dict): A bundle dict from `prove()` (or compatible structure).
+  - `signing_key_hex` (str): 64-character hex-encoded Ed25519 signing key.
+
+**Returns:**
+  - dict: A new dict with all fields from bundle plus a `provider_signature` field containing `algorithm`, `verify_key`, and `signature`.
+
+**Raises:**
+  - `ValueError`: If `signing_key_hex` is not a valid 64-character hex string.
+
+**Example:**
+```python
+from perathos import prove, sign
+from perathos.signing import generate_keypair
+
+sk, vk = generate_keypair()
+bundle = prove("The answer is 42.")
+signed_bundle = sign(bundle, sk)
+print(f"Signed with key: {signed_bundle['provider_signature']['verify_key']}")
+```
+
+### `verify(bundle)`
+
+Recompute all hashes from stored data and check they match.
+
+**Args:**
+  - `bundle` (dict): A bundle dict from `prove()` (optionally with signature).
+
+**Returns:**
+  - tuple[bool, str]: A tuple `(valid, error_code)` where:
+    - `valid` is `True` and `error_code` is `""` on successful verification.
+    - `valid` is `False` and `error_code` is a string like `"ERR_TRACE_HASH_MISMATCH"` or `"ERR_MISSING_TRACE"` on failure.
+
+**Example:**
+```python
+from perathos import prove, verify
+
+bundle = prove("Output text here.")
+valid, err = verify(bundle)
+
+if valid:
+    print("Bundle is valid!")
+else:
+    print(f"Verification failed: {err}")
+```
+
+### `inspect(bundle)`
+
+Pretty-print a bundle in human-readable form.
+
+**Args:**
+  - `bundle` (dict): Bundle dict from `prove()` or loaded via `perathos.storage.load_bundle()`.
+
+**Returns:**
+  - None (prints to stdout)
+
+**Example:**
+```python
+from perathos import prove, inspect
+
+bundle = prove("Hello world.")
+inspect(bundle)
 ```
 
 ## How it works
@@ -111,7 +193,8 @@ Returned by `perathos.verify_signature(integrity_hash, provider_signature)`:
 | `""` (empty) | Signature is valid | No error; first element is `True` |
 | `ERR_BAD_SIGNATURE` | Signature is invalid (doesn't match the integrity_hash) | Provider signature is forged or the hash was tampered after signing; reject |
 | `ERR_MISSING_SIG_FIELD:<field>` | A required signature field is missing (`verify_key` or `signature`) | Signature structure is invalid; reject |
-| `ERR_SIGNATURE_INVALID:<error>` | Cryptographic verification raised an exception | Key encoding or signature format is invalid; reject |
+| `ERR_INVALID_VERIFY_KEY:<error>` | The verify_key is not a valid 64-character hex string | Key format is invalid; reject |
+| `ERR_INVALID_SIGNATURE:<error>` | The signature is not a valid 128-character hex string or cryptographic verification raised an exception | Signature format or key encoding is invalid; reject |
 
 Example:
 ```python
