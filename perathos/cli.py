@@ -75,6 +75,9 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
         perathos prove "Hello world." --sign
             → Creates a SIGNED proof bundle (requires keygen)
         
+        perathos prove "Paris is the capital." --input "What is the capital of France?" --sign
+            → SIGNED bundle with both input and signature
+        
         perathos prove "Output text." --sign --json
             → SIGNED bundle, output as full JSON instead of summary
     """
@@ -84,9 +87,7 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            sk_path = Path.home() / ".perathos" / "keys" / "signing.key"
-            click.echo(f"ERROR: Signing key not found at {sk_path}", err=True)
-            click.echo("Run: perathos keygen", err=True)
+            click.echo("ERROR: Signing key not found. Run: perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -165,7 +166,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
-        click.echo(f"Ensure the file contains valid JSON.", err=True)
+        click.echo("Ensure the file contains valid JSON.", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
