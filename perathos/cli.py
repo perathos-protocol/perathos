@@ -37,7 +37,9 @@ def keygen():
     )
     if sk_path.exists():
         click.echo(f"ERROR: Signing key already exists at {sk_path}", err=True)
-        click.echo("To rotate: rm ~/.perathos/keys/signing.key && perathos keygen", err=True)
+        click.echo("To rotate, delete and regenerate:", err=True)
+        click.echo(f"  rm {sk_path}", err=True)
+        click.echo("  perathos keygen", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -87,7 +89,8 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("ERROR: Signing key not found. Run: perathos keygen", err=True)
+            click.echo("ERROR: Signing key not found.", err=True)
+            click.echo("Run: perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -162,7 +165,8 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list to see available bundles.", err=True)
+        click.echo("Did you mean to create one? Try: perathos prove <output_text>", err=True)
+        click.echo("To see existing bundles: perathos list", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
