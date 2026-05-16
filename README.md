@@ -30,6 +30,127 @@ perathos inspect <bundle_id>
 perathos list
 ```
 
+## CLI Examples
+
+### Basic workflow
+
+```bash
+# 1. Generate a keypair (one-time setup)
+$ perathos keygen
+signing key  /home/user/.perathos/keys/signing.key
+verify key   /home/user/.perathos/keys/verify.key
+verify_key   a7f9c2ba4e88fb81860ea5e70f527f31f...
+
+# 2. Prove an unsigned bundle
+$ perathos prove "The capital of France is Paris."
+bundle_id      550e8400-e29b-41d4-a716-446655440000
+ai_id          7f9c2ba4e88fb81860ea5e70f527f31f...
+input_hash     e3b0c44298fc1c149afbf4c8996fb92427...
+output_hash    a665a45920422f9d417e4867efdc4fb8a...
+trace_hash     d4735e3a265e16eee03f59718b9b5d03c...
+integrity_hash 2cf24dba5fb0a30e26e83b2ac5b9e29e1...
+issued_at      2024-01-15T14:30:45.123456+00:00
+saved          /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+
+# 3. Verify the bundle
+$ perathos verify 550e8400-e29b-41d4-a716-446655440000
+VALID_UNSIGNED  550e8400-e29b-41d4-a716-446655440000
+
+# 4. Inspect for human readability
+$ perathos inspect 550e8400-e29b-41d4-a716-446655440000
+
+  Bundle ID : 550e8400-e29b-41d4-a716-446655440000
+  Issued    : 2024-01-15 14:30:45 UTC
+  Model     : sha256-deterministic v1 (perathos-demo-model)
+  Signature : UNSIGNED
+
+  Hash Chain
+    input     : e3b0c442...
+    output    : a665a459...
+    trace     : d4735e3a...
+    integrity : 2cf24dba...
+
+  Trace
+    step 1 · hash_input    → e3b0c442...
+    step 2 · hash_output   → a665a459...
+    step 3 · hash_trace    → d4735e3a...
+    step 4 · integrity     → 2cf24dba...
+    step 5 · bundle_id     → uuid5(550e8400...)
+```
+
+### Signed bundles
+
+```bash
+# Prove with Ed25519 signature attached
+$ perathos prove "Answer to life, universe, everything." --sign
+bundle_id      a1b2c3d4-e5f6-41d4-a716-446655440000
+ai_id          7f9c2ba4e88fb81860ea5e70f527f31f...
+input_hash     e3b0c44298fc1c149afbf4c8996fb92427...
+output_hash    8ac76b3e93bafcccb12adc14c9b58c1f...
+trace_hash     d4735e3a265e16eee03f59718b9b5d03c...
+integrity_hash 2cf24dba5fb0a30e26e83b2ac5b9e29e1...
+issued_at      2024-01-15T14:35:20.654321+00:00
+signature      9d8f4c2a7e1b9c5d3f8a6b2e4d7c1a9b2...
+verify_key     a7f9c2ba4e88fb81860ea5e70f527f31f...
+saved          /home/user/.perathos/bundles/a1b2c3d4-e5f6-41d4-a716-446655440000.json
+
+# Verify signed bundle (checks both hash chain + signature)
+$ perathos verify a1b2c3d4-e5f6-41d4-a716-446655440000
+VALID_SIGNED  a1b2c3d4-e5f6-41d4-a716-446655440000
+              verify_key a7f9c2ba4e88fb81860ea5e70f527f31f...
+```
+
+### With input prompt
+
+```bash
+# Include the original prompt/input in the bundle
+$ perathos prove "Paris." --input "What is the capital of France?"
+bundle_id      c5d6e7f8-a9b0-41d4-a716-446655440000
+ai_id          7f9c2ba4e88fb81860ea5e70f527f31f...
+input_hash     3a6eb0790484a6b6fade7e7f45bb43db...
+output_hash    6e85c630ee3a3fd26f65c8f8ff9b1c4a...
+...
+```
+
+### JSON output
+
+```bash
+# Output full bundle as JSON (useful for piping or storage)
+$ perathos prove "Output text" --sign --json
+{
+  "ai_id": "7f9c2ba4e88fb81860ea5e70f527f31f...",
+  "bundle_id": "550e8400-e29b-41d4-a716-446655440000",
+  "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427...",
+  "integrity_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1...",
+  "issued_at": "2024-01-15T14:30:45.123456+00:00",
+  "output_hash": "a665a45920422f9d417e4867efdc4fb8a...",
+  "proof_system": "sha256-deterministic",
+  "provider_signature": {
+    "algorithm": "ed25519",
+    "signature": "9d8f4c2a7e1b9c5d3f8a6b2e4d7c1a9b2...",
+    "verify_key": "a7f9c2ba4e88fb81860ea5e70f527f31f..."
+  },
+  "trace_hash": "d4735e3a265e16eee03f59718b9b5d03c...",
+  "_trace": {
+    "input_length": 0,
+    "model_descriptor": "perathos-demo-model:sha256-deterministic:v1",
+    "output_length": 11,
+    "proof_system": "sha256-deterministic"
+  }
+}
+```
+
+### Verify from external file
+
+```bash
+# Verify a bundle exported from another system
+$ perathos verify --file /path/to/bundle.json
+VALID_UNSIGNED  /path/to/bundle.json
+
+# Verify and display full bundle
+$ perathos verify --file bundle.json --json
+```
+
 ## What's in a bundle
 
 Each bundle captures:
