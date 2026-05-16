@@ -15,6 +15,32 @@ from .storage import (
 )
 
 
+# Error code explanations
+_ERROR_EXPLANATIONS = {
+    "ERR_MISSING_TRACE": "Bundle is missing execution metadata. The bundle file may be corrupted.",
+    "ERR_TRACE_HASH_MISMATCH": "Execution metadata was tampered with. The bundle has been modified since creation.",
+    "ERR_INTEGRITY_HASH_MISMATCH": "Bundle fields (model, timestamps, or hashes) were tampered with. Do not trust this bundle.",
+    "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed. The bundle_id must match the integrity hash.",
+    "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect.",
+}
+
+
+def _explain_error(error_code: str) -> str:
+    """Return human-readable explanation for an error code.
+    
+    Args:
+        error_code: Error code string (e.g., "ERR_TRACE_HASH_MISMATCH").
+    
+    Returns:
+        Human-readable explanation, or the original error code if no explanation exists.
+    """
+    # Handle error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash")
+    base_code = error_code.split(":")[0]
+    if base_code in _ERROR_EXPLANATIONS:
+        return _ERROR_EXPLANATIONS[base_code]
+    return error_code
+
+
 @click.group()
 @click.version_option(version=__version__)
 def cli():
@@ -90,7 +116,7 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
             sk_hex = load_signing_key()
         except FileNotFoundError:
             click.echo("ERROR: Signing key not found.", err=True)
-            click.echo("Run: perathos keygen", err=True)
+            click.echo("To generate a keypair, run: perathos keygen", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -176,14 +202,18 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     # Step 1: hash-chain verification (always)
     valid, err = verify(bundle)
     if not valid:
+        explanation = _explain_error(err)
         click.echo(f"INVALID  {err}", err=True)
+        click.echo(f"Reason: {explanation}", err=True)
         sys.exit(1)
 
     # Step 2: signature verification (only if present)
     if "provider_signature" in bundle:
         sig_valid, sig_err = verify_signature(bundle["integrity_hash"], bundle["provider_signature"])
         if not sig_valid:
+            explanation = _explain_error(sig_err)
             click.echo(f"INVALID  {sig_err}", err=True)
+            click.echo(f"Reason: {explanation}", err=True)
             sys.exit(1)
         click.echo(f"VALID_SIGNED  {display_id}")
         click.echo(f"              verify_key {bundle['provider_signature']['verify_key']}")
@@ -209,7 +239,7 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list to see available bundles.", err=True)
+        click.echo("To see available bundles: perathos list", err=True)
         sys.exit(1)
     inspect(bundle)
 
