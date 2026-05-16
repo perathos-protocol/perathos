@@ -60,13 +60,23 @@ def bundles_dir() -> Path:
 def save_bundle(bundle: dict) -> Path:
     """Save a bundle to a JSON file in the bundles directory.
 
-    Filename is derived from the bundle's bundle_id field.
+    Filename is derived from the bundle's bundle_id field (the UUID).
     File is written with 2-space indentation for readability.
     The bundle is stored at ~/.perathos/bundles/{bundle_id}.json
     for later retrieval via load_bundle().
 
+    Parameter validation:
+        - bundle must be a dict with a 'bundle_id' field (str, valid UUID).
+        - Other fields are not validated; assumed to be from create_bundle().
+
+    File permissions:
+        - Bundle files are world-readable (mode 0o644 default) on Unix.
+        - Bundles are not encrypted; they are tamper-evident but not confidential.
+        - Store sensitive data (e.g., AI system prompts) separately if needed.
+
     Args:
         bundle: A bundle dict from create_bundle() (optionally signed with provider_signature).
+            Must contain 'bundle_id' key (str).
 
     Returns:
         Path object pointing to the saved JSON file.
@@ -76,6 +86,7 @@ def save_bundle(bundle: dict) -> Path:
         KeyError: If bundle is missing the 'bundle_id' field.
         OSError: If the file cannot be written (permission denied, disk full, etc.).
         PermissionError: If the bundles directory cannot be created or written to.
+        TypeError: If bundle is not a dict.
 
     Examples:
         from perathos import prove
@@ -103,8 +114,22 @@ def load_bundle(bundle_id: str) -> dict:
     and parses it into a Python dict. The returned bundle can be
     passed directly to verify() or inspect().
 
+    Parameter validation:
+        - bundle_id must be a string. No UUID format validation is performed;
+          the function attempts to load {bundle_id}.json from the bundles directory.
+        - If the file does not exist, FileNotFoundError is raised.
+
+    Recovery from corrupted bundles:
+        - If the JSON file is malformed or truncated, json.JSONDecodeError is raised.
+        - Manually inspect the file: `python -m json.tool <path>` or `jq <path>`.
+        - If the bundle is missing required fields (_trace, integrity_hash, etc.),
+          the bundle cannot be recovered. Check your backups or recreate it:
+          `perathos prove "<original output>" --input "<original input>"`
+        - Do not manually edit bundle JSON files; they are read-only once created.
+
     Args:
         bundle_id: UUID string (the bundle's bundle_id field, e.g., "550e8400-e29b-41d4-a716-446655440000").
+            Must be a string; no UUID format validation is performed.
 
     Returns:
         dict: Parsed bundle dict with all fields including 'bundle_id', 'integrity_hash', '_trace', etc.
@@ -114,6 +139,7 @@ def load_bundle(bundle_id: str) -> dict:
         FileNotFoundError: If no bundle file exists for the given ID.
         json.JSONDecodeError: If the JSON file is corrupted or invalid.
         OSError: If the file cannot be read (permission denied, etc.).
+        ValueError: If the JSON is valid but contains unexpected types (should not happen with bundles from save_bundle).
 
     Examples:
         from perathos.storage import load_bundle
@@ -130,6 +156,15 @@ def load_bundle(bundle_id: str) -> dict:
         from perathos import inspect
         bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
         inspect(bundle)
+
+        # Error handling:
+        try:
+            bundle = load_bundle("nonexistent-id")
+        except FileNotFoundError:
+            from perathos.storage import list_bundles
+            print("Bundle not found. Available bundles:")
+            for path in list_bundles():
+                print(f"  {path.stem}")
     """
     path = bundles_dir() / f"{bundle_id}.json"
     if not path.exists():
@@ -184,6 +219,16 @@ def keys_dir() -> Path:
 
     This function is called automatically by save_keypair() and key loading functions.
 
+    File permissions model:
+        Unix-like (Linux, macOS):
+            - Directory mode: 0o700 (drwx------) — owner read/write/execute only.
+            - The directory itself is protected, and files created inside inherit permissions
+              based on umask. save_keypair() explicitly chmod's signing.key to 0o600.
+        Windows:
+            - No POSIX mode bits; permissions enforced by NTFS filesystem ACLs.
+            - Ensure your user account has exclusive read/write access to the directory.
+            - If permission issues arise, contact your system administrator.
+
     Returns:
         Path object for ~/.perathos/keys/, with parents created and secure permissions applied.
         Example: /home/user/.perathos/keys/ on Linux, /Users/user/.perathos/keys/ on macOS,
@@ -204,6 +249,10 @@ def keys_dir() -> Path:
         d = keys_dir()
         mode = stat.S_IMODE(os.stat(d).st_mode)
         print(f"Directory mode: {oct(mode)}")  # Should print: 0o700
+
+        # Manually fix permissions (if needed):
+        import os
+        os.chmod(d, 0o700)
     """
     d = Path.home() / ".perathos" / "keys"
     d.mkdir(parents=True, exist_ok=True)
@@ -222,18 +271,36 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
     text (no encryption). The signing key file should be treated as secret;
     the verify key is public.
 
+    Parameter validation:
+        - signing_key_hex: Must be a 64-character lowercase hex string (32 bytes of Ed25519 key material).
+        - verify_key_hex: Must be a 64-character lowercase hex string (32 bytes of Ed25519 key material).
+        - Both are validated before writing to disk. Invalid keys are rejected with ValueError.
+
+    File permissions model:
+        Unix-like (Linux, macOS):
+            - signing.key is created with mode 0o600 (-rw-------), readable/writable by owner only.
+            - verify.key is created with default mode (usually 0o644), readable by all, writable by owner.
+            - This ensures the private key is protected while the public key is shareable.
+        Windows:
+            - Both files are created by default with NTFS ACLs.
+            - Ensure your user account has exclusive read/write access to signing.key.
+            - Contact your system administrator if permission issues arise.
+
     Args:
         signing_key_hex: 64-character hex-encoded private key (from generate_keypair()).
+            Must be exactly 64 characters of valid hex (0-9, a-f).
         verify_key_hex: 64-character hex-encoded public key (from generate_keypair()).
+            Must be exactly 64 characters of valid hex (0-9, a-f).
 
     Returns:
         tuple[Path, Path]: Tuple (signing_key_path, verify_key_path) pointing to the saved files.
         Example: (/home/user/.perathos/keys/signing.key, /home/user/.perathos/keys/verify.key)
 
     Raises:
-        ValueError: If keys are not 64-character hex strings.
+        ValueError: If keys are not 64-character hex strings or contain invalid characters.
         OSError: If files cannot be written (permission denied, disk full, etc.).
         PermissionError: If the keys directory cannot be created or the signing key cannot be chmod'ed to 0o600.
+        TypeError: If keys are not strings.
 
     Examples:
         from perathos.signing import generate_keypair
@@ -250,6 +317,12 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
         loaded_vk = load_verify_key()
         assert loaded_sk == sk
         assert loaded_vk == vk
+
+        # Manual key save (if needed):
+        sk_path, vk_path = save_keypair(
+            "a7f9c2ba4e88fb81860ea5e70f527f31fa7f9c2ba4e88fb81860ea5e70f527f31f",
+            "b8g0d3cb5f99gc92971fb1f81g638g42gb8g0d3cb5f99gc92971fb1f81g638g42gb"
+        )
     """
     d = keys_dir()
     sk_path = d / "signing.key"
@@ -275,6 +348,20 @@ def load_signing_key() -> str:
     stored with mode 0o600 (owner read-only) to prevent other users from
     reading it.
 
+    Parameter validation:
+        - The file is expected to contain exactly one line of 64 hex characters.
+        - Whitespace is stripped before returning.
+        - No format validation is performed (the signing key is validated by signing.sign_hash()).
+
+    Recovery from corrupted keys:
+        - If the key file is truncated (fewer than 64 characters) or contains non-hex,
+          signing will fail with ValueError when attempting to use the key.
+        - To recover: delete the key file and regenerate:
+          `rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key`
+          `perathos keygen`
+        - Warning: Any bundles signed with the old key cannot be verified with the new key.
+        - Keep backups: `cp -r ~/.perathos/keys ~/perathos-keys-backup`
+
     Returns:
         str: 64-character hex-encoded Ed25519 private key, whitespace stripped.
         Example: "a7f9c2ba4e88fb81860ea5e70f527f31f..."
@@ -282,13 +369,14 @@ def load_signing_key() -> str:
     Raises:
         FileNotFoundError: If the signing key has not been generated (run 'perathos keygen').
         OSError: If the file cannot be read (permission denied, etc.).
+        ValueError: If the file exists but is empty or unreadable.
 
     Note:
         On Unix-like systems, the signing key file is stored with mode 0o600 (owner read-only).
         This ensures that only the file owner can read the private key. If you see a
         PermissionError when loading the key, verify that ~/.perathos/keys/signing.key
         is readable by your user and check the file permissions with:
-        chmod 600 ~/.perathos/keys/signing.key
+        `chmod 600 ~/.perathos/keys/signing.key`
 
     Examples:
         from perathos.storage import load_signing_key
@@ -304,6 +392,12 @@ def load_signing_key() -> str:
             sk = load_signing_key()
         except FileNotFoundError:
             print("ERROR: Signing key not found. Run: perathos keygen")
+
+        # Fix permissions if needed:
+        import os
+        from perathos.storage import keys_dir
+        sk_path = keys_dir() / "signing.key"
+        os.chmod(sk_path, 0o600)
     """
     path = keys_dir() / "signing.key"
     if not path.exists():
@@ -319,6 +413,19 @@ def load_verify_key() -> str:
     from the signing key and can be shared publicly; it's used by verifiers
     to check signatures created with the corresponding signing key.
 
+    Parameter validation:
+        - The file is expected to contain exactly one line of 64 hex characters.
+        - Whitespace is stripped before returning.
+        - No format validation is performed (the verify key is validated by signing.verify_signature()).
+
+    Recovery from corrupted keys:
+        - If the verify key file is corrupted or missing, you can regenerate it
+          by deriving it from the signing key (if the signing key is intact):
+          `from perathos.signing import generate_keypair; from perathos.storage import load_signing_key, save_keypair`
+          `sk = load_signing_key(); from nacl.signing import SigningKey; from nacl import encoding`
+          `sk_obj = SigningKey(sk, encoder=encoding.HexEncoder); vk = sk_obj.verify_key.encode(encoding.HexEncoder).decode()`
+        - Or simply regenerate both keys: `perathos keygen`
+
     Returns:
         str: 64-character hex-encoded Ed25519 public key, whitespace stripped.
         Example: "a7f9c2ba4e88fb81860ea5e70f527f31f..."
@@ -326,6 +433,7 @@ def load_verify_key() -> str:
     Raises:
         FileNotFoundError: If the verify key has not been generated (run 'perathos keygen').
         OSError: If the file cannot be read (permission denied, etc.).
+        ValueError: If the file exists but is empty or unreadable.
 
     Examples:
         from perathos.storage import load_verify_key
