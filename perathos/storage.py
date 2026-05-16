@@ -53,6 +53,7 @@ def save_bundle(bundle: dict) -> Path:
     Raises:
         KeyError: If bundle is missing the 'bundle_id' field.
         OSError: If the file cannot be written (permission denied, disk full, etc.).
+        PermissionError: If the bundles directory cannot be created or written to.
 
     Examples:
         from perathos import prove
@@ -156,6 +157,10 @@ def keys_dir() -> Path:
     Returns:
         Path object for ~/.perathos/keys/, with parents created.
 
+    Raises:
+        OSError: If the directory cannot be created (permission denied, disk full, etc.).
+        PermissionError: If the directory exists but cannot be chmod'ed to 0o700 on Unix systems.
+
     Examples:
         from perathos.storage import keys_dir
 
@@ -190,6 +195,7 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
     Raises:
         ValueError: If keys are not 64-character hex strings.
         OSError: If files cannot be written (permission denied, disk full, etc.).
+        PermissionError: If the keys directory cannot be created or the signing key cannot be chmod'ed to 0o600.
 
     Examples:
         from perathos.signing import generate_keypair
@@ -232,6 +238,12 @@ def load_signing_key() -> str:
     Raises:
         FileNotFoundError: If the signing key has not been generated (run 'perathos keygen').
         OSError: If the file cannot be read (permission denied, etc.).
+
+    Note:
+        On Unix-like systems, the signing key file is stored with mode 0o600 (owner read-only).
+        This ensures that only the file owner can read the private key. If you see a
+        PermissionError when loading the key, verify that ~/.perathos/keys/signing.key
+        is readable by your user and check the file permissions with: chmod 600 ~/.perathos/keys/signing.key
 
     Examples:
         from perathos.storage import load_signing_key

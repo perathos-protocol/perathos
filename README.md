@@ -164,8 +164,28 @@ Each bundle captures:
 | `trace_hash` | SHA-256 of execution metadata |
 | `integrity_hash` | SHA-256 of the canonical integrity payload — the tamper-evident root |
 | `provider_signature` | Optional Ed25519 signature over `integrity_hash` |
+| `_trace` | Execution metadata dict (model descriptor, proof system, input/output lengths) |
 
-Bundles are stored locally at `~/.perathos/bundles/`.
+Bundles are stored locally as JSON files at `~/.perathos/bundles/{bundle_id}.json`.
+
+### Directory Structure
+
+Perathos stores all data under `~/.perathos/` with the following layout:
+
+```
+~/.perathos/
+├── bundles/              (JSON proof bundles)
+│   ├── 550e8400-...json  (one file per bundle_id UUID)
+│   ├── a1b2c3d4-...json
+│   └── ...
+└── keys/                 (Ed25519 keypair)
+    ├── signing.key       (private key, mode 0o600)
+    └── verify.key        (public key)
+```
+
+**Bundles:** Each bundle is a JSON file named after its UUID (the `bundle_id` field). Files are human-readable and self-contained; you can copy a bundle file to another system and verify it offline without any network calls or local state.
+
+**Keys:** The `signing.key` file contains your private Ed25519 key (64 hex characters). On Unix-like systems, it is stored with restrictive permissions (mode 0o600, readable only by the owner) for security. The `verify.key` file contains the public key and can be shared.
 
 ## Python API
 
@@ -355,6 +375,28 @@ bundle = prove("Some output")
 signed = sign(bundle, sk)
 print(f"Signed with key: {signed['provider_signature']['verify_key']}")
 ```
+
+#### File Permissions & Security
+
+The signing key file (`~/.perathos/keys/signing.key`) is your private key and should be protected carefully. Perathos enforces this with:
+
+**Unix-like systems (Linux, macOS):**
+  - The `keys/` directory is created with mode `0o700` (drwx------), readable/writable/executable by owner only.
+  - The `signing.key` file is created with mode `0o600` (-rw-------), readable/writable by owner only.
+  - If you see a PermissionError when loading the key, verify the file is readable: `chmod 600 ~/.perathos/keys/signing.key`
+
+**Windows:**
+  - The `keys/` directory permissions are enforced by NTFS filesystem ACLs (not POSIX mode).
+  - Ensure your user account has exclusive read/write access to the `%USERPROFILE%\.perathos\keys\` directory.
+  - File permissions are best-effort; contact your system administrator if you encounter permission issues.
+
+**Why 0o600?**
+  - Mode `0o600` means the file is readable and writable by the owner only.
+  - This prevents other users on the same system from reading your private key via filesystem access.
+  - If another user gains access to your private key, they can forge signatures claiming to come from your key.
+  - Always treat your private key as you would treat a password or SSH private key: keep it secret and protected.
+
+**Never share your signing key.** The `verify.key` file (public key) can be shared freely and used by others to verify your signatures. The `signing.key` file (private key) must be kept secret.
 
 ## How it works
 
