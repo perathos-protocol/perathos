@@ -52,7 +52,7 @@ def keygen():
 @click.option("--input", "input_text", default="", metavar="INPUT",
               help="Original prompt / input that produced TEXT. Example: --input 'What is the capital of France?'")
 @click.option("--sign", is_flag=True, 
-              help="Sign integrity_hash with local Ed25519 key (run: perathos keygen first).")
+              help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Creates a SIGNED bundle.")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool):
@@ -142,8 +142,9 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
     """
     if file_path and bundle_id:
         click.echo("ERROR: Use either BUNDLE_ID or --file, not both.", err=True)
-        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000", err=True)
-        click.echo("Example: perathos verify --file bundle.json", err=True)
+        click.echo("Examples:", err=True)
+        click.echo("  perathos verify 550e8400-e29b-41d4-a716-446655440000", err=True)
+        click.echo("  perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
@@ -160,7 +161,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list", err=True)
+        click.echo("Run: perathos list to see available bundles.", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
@@ -203,7 +204,7 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("Run: perathos list", err=True)
+        click.echo("Run: perathos list to see available bundles.", err=True)
         sys.exit(1)
     inspect(bundle)
 
