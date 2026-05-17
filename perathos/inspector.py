@@ -16,6 +16,11 @@ _EMPTY_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 def _stdout_encoding() -> str:
     """Get the encoding of stdout, defaulting to ASCII.
 
+    Returns the encoding name that stdout is configured to use. This is used
+    to determine whether the terminal can render Unicode characters. If stdout
+    does not have an encoding attribute, defaults to ASCII (a safe fallback
+    for environments where encoding info is unavailable).
+
     Returns:
         Encoding name (e.g., 'utf-8', 'ascii').
     """
@@ -25,8 +30,13 @@ def _stdout_encoding() -> str:
 def _unicode_ok() -> bool:
     """Check if the terminal can render the Unicode characters we want.
 
+    Tests whether stdout can encode the specific Unicode characters used by
+    Perathos for pretty-printing: ✓ (checkmark), → (arrow), and · (bullet).
+    If the terminal cannot render these, the function returns False and the
+    plain-text ASCII fallback renderer is used instead.
+
     Returns:
-        True if stdout can encode ✓, →, and · characters.
+        True if stdout can encode ✓, →, and · characters; False otherwise.
     """
     try:
         "✓→·".encode(_stdout_encoding())
@@ -37,6 +47,10 @@ def _unicode_ok() -> bool:
 
 def _short(h: str, n: int = 8) -> str:
     """Truncate a hash to n characters and add ellipsis.
+
+    Useful for displaying long hashes (e.g., 64-character SHA-256 digests)
+    in a human-readable format. By default shows first 8 characters plus "..."
+    for brevity in terminal output.
 
     Args:
         h: Full hash string (typically 64 hex chars).
@@ -51,6 +65,9 @@ def _short(h: str, n: int = 8) -> str:
 def _fmt_ts(issued_at: str) -> str:
     """Format an ISO 8601 timestamp for human display.
 
+    Converts an ISO 8601 timestamp string (as stored in bundle["issued_at"])
+    into a human-friendly format: "YYYY-MM-DD HH:MM:SS UTC".
+
     Args:
         issued_at: ISO 8601 timestamp string (e.g., from bundle["issued_at"]).
 
@@ -63,6 +80,10 @@ def _fmt_ts(issued_at: str) -> str:
 
 def _fmt_model(bundle: dict) -> str:
     """Extract and format the model descriptor for display.
+
+    Reads the model descriptor from bundle["_trace"]["model_descriptor"],
+    parses its colon-separated components, and formats them for human display.
+    Falls back to proof_system if model_descriptor is unavailable.
 
     Args:
         bundle: Bundle dict with optional _trace field.
@@ -81,6 +102,10 @@ def _fmt_model(bundle: dict) -> str:
 def _hash_annotation(h: str) -> str:
     """Return annotation string if the hash is special (e.g., empty string).
 
+    Checks if a hash matches the special SHA-256(empty string) value and returns
+    an annotation explaining what it represents. Used to help readers understand
+    why certain hashes appear in the chain (e.g., when input text is empty).
+
     Args:
         h: Hash string (typically 64 hex chars).
 
@@ -92,6 +117,10 @@ def _hash_annotation(h: str) -> str:
 
 def _steps(bundle: dict) -> list[tuple[int, str, str]]:
     """Extract the hash chain trace steps for display.
+
+    Reads the hash fields from a bundle and formats them as a list of
+    (step_num, operation_label, short_result) tuples suitable for rendering
+    the hash chain trace in the inspector output.
 
     Args:
         bundle: Bundle dict with hash fields.
@@ -112,6 +141,10 @@ def _steps(bundle: dict) -> list[tuple[int, str, str]]:
 
 def _plain(bundle: dict, *, uni: bool) -> None:
     """Render bundle as plain text to stdout.
+
+    Outputs a human-readable bundle representation using plain ASCII or
+    Unicode characters (if terminal supports them). No colors or styling,
+    suitable for terminals without rich/ANSI support.
 
     Args:
         bundle: Bundle dict to display.

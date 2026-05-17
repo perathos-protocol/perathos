@@ -339,12 +339,57 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
 def _validate_hex_key(key_value: str, key_name: str) -> None:
     """Validate that a loaded key is exactly 64 hex characters.
 
+    This function is called internally by load_signing_key() and load_verify_key()
+    to ensure that key files on disk have the correct format: a 64-character
+    lowercase hex string representing 32 bytes of Ed25519 key material.
+
+    Validation contract:
+        - The key_value string must be exactly 64 characters long.
+        - All characters must be valid hex digits (0-9, a-f; uppercase rejected).
+        - If validation fails, a ValueError is raised with a clear message
+          suggesting how to recover (delete and regenerate the keypair).
+
+    Why this matters:
+        - Ed25519 keys are 32 bytes = 64 hex characters (each byte = 2 hex chars).
+        - If a key file is truncated (fewer than 64 chars), it's corrupted and cannot
+          be used. The only recovery is to delete and regenerate.
+        - If a key file contains non-hex characters, it's corrupted or was manually
+          edited incorrectly.
+        - This function catches these issues early before attempting cryptographic
+          operations (which would fail with cryptic library errors).
+
     Args:
         key_value: The key string to validate (should be stripped of whitespace).
-        key_name: Name of the key for error messages ("signing key" or "verify key").
+            Typically loaded from a key file via path.read_text().strip().
+        key_name: Name of the key for error messages (e.g., "signing key" or "verify key").
+            Used in error messages to help users identify which key file is broken.
 
     Raises:
         ValueError: If the key is not exactly 64 hex characters.
+            The error message includes:
+            - The expected length (64) and actual length
+            - A suggestion to delete and regenerate the keypair
+            - Recovery command line: rm ~/.perathos/keys/signing.key ... && perathos keygen
+
+    Examples:
+        from perathos.storage import _validate_hex_key
+
+        # Valid key:
+        _validate_hex_key("a" * 64, "signing key")  # Passes silently
+
+        # Invalid key (too short):
+        try:
+            _validate_hex_key("a" * 32, "signing key")
+        except ValueError as e:
+            print(e)
+            # Output: Invalid signing key: expected 64 hex characters, got 32. ...
+
+        # Invalid key (non-hex):
+        try:
+            _validate_hex_key("z" * 64, "verify key")
+        except ValueError as e:
+            print(e)
+            # Output: Invalid verify key: contains non-hex characters. ...
     """
     if len(key_value) != 64:
         raise ValueError(
