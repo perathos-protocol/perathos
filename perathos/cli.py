@@ -12,6 +12,7 @@ from .storage import (
     load_signing_key,
     save_bundle,
     save_keypair,
+    keys_dir,
 )
 
 
@@ -56,6 +57,21 @@ def _format_hash(h: str, verbose: bool) -> str:
     return f"{h[:8]}..."
 
 
+def _list_available_bundles() -> str:
+    """Return a formatted string listing all available bundles.
+    
+    Returns:
+        A formatted string with bundle list, or a message if no bundles exist.
+    """
+    bundles = list_bundles()
+    if not bundles:
+        return "No bundles found. To create a bundle, run:\n  perathos prove '<output_text>'"
+    lines = ["Available bundles:"]
+    for path in bundles:
+        lines.append(f"  {path.stem}")
+    return "\n".join(lines)
+
+
 @click.group()
 @click.version_option(version=__version__)
 def cli():
@@ -73,14 +89,15 @@ def keygen():
     Example:
         perathos keygen
     """
-    sk_path = (
-        __import__("pathlib").Path.home() / ".perathos" / "keys" / "signing.key"
-    )
+    sk_path = keys_dir() / "signing.key"
     if sk_path.exists():
         click.echo(f"ERROR: Signing key already exists at {sk_path}", err=True)
-        click.echo("To rotate, delete and regenerate:", err=True)
-        click.echo(f"  rm {sk_path}", err=True)
+        click.echo("", err=True)
+        click.echo("To rotate your keypair, delete the old keys and regenerate:", err=True)
+        click.echo(f"  rm {keys_dir() / 'signing.key'} {keys_dir() / 'verify.key'}", err=True)
         click.echo("  perathos keygen", err=True)
+        click.echo("", err=True)
+        click.echo("WARNING: Bundles signed with the old key will no longer verify.", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -132,9 +149,14 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbos
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("ERROR: Signing key not found.", err=True)
+            sk_path = keys_dir() / "signing.key"
+            click.echo(f"ERROR: Signing key not found at {sk_path}", err=True)
+            click.echo("", err=True)
             click.echo("To generate a keypair, run:", err=True)
             click.echo("  perathos keygen", err=True)
+            click.echo("", err=True)
+            click.echo("Then retry with --sign:", err=True)
+            click.echo(f"  perathos prove '{text}' --sign", err=True)
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
@@ -194,6 +216,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     """
     if file_path and bundle_id:
         click.echo("ERROR: Use either BUNDLE_ID or --file, not both.", err=True)
+        click.echo("", err=True)
         click.echo("Examples:", err=True)
         click.echo("  perathos verify 550e8400-e29b-41d4-a716-446655440000", err=True)
         click.echo("  perathos verify --file bundle.json", err=True)
@@ -201,6 +224,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
 
     if not file_path and not bundle_id:
         click.echo("ERROR: Specify either BUNDLE_ID or --file.", err=True)
+        click.echo("", err=True)
         click.echo("Run: perathos verify --help", err=True)
         sys.exit(2)
 
@@ -213,15 +237,20 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("To create a new bundle:", err=True)
+        click.echo("", err=True)
+        click.echo("To create a new bundle, run:", err=True)
         click.echo("  perathos prove '<output_text>'", err=True)
-        click.echo("To list existing bundles:", err=True)
-        click.echo("  perathos list", err=True)
+        click.echo("", err=True)
+        click.echo(_list_available_bundles(), err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
+        click.echo("", err=True)
         click.echo("Ensure the file contains valid JSON. Try:", err=True)
         click.echo(f"  python -m json.tool {file_path}", err=True)
+        click.echo("", err=True)
+        click.echo("Or export a fresh bundle:", err=True)
+        click.echo("  perathos prove '<output_text>' --json > bundle.json", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
@@ -265,8 +294,11 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("To see available bundles:", err=True)
+        click.echo("", err=True)
+        click.echo("To see available bundles, run:", err=True)
         click.echo("  perathos list", err=True)
+        click.echo("", err=True)
+        click.echo(_list_available_bundles(), err=True)
         sys.exit(1)
     inspect(bundle)
 
@@ -284,6 +316,9 @@ def list_cmd():
     bundles = list_bundles()
     if not bundles:
         click.echo("No bundles found in ~/.perathos/bundles/")
+        click.echo("")
+        click.echo("To create a new bundle, run:")
+        click.echo("  perathos prove '<output_text>'")
         return
     for path in bundles:
         click.echo(path.stem)
