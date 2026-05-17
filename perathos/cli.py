@@ -176,17 +176,18 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
     if text == "-":
         text = sys.stdin.read()
     
-    # Handle input_text: --input takes precedence over --input-file
+    # Handle input_text: --input and --input-file are mutually exclusive
+    if input_text and input_file:
+        click.echo("ERROR: Use either --input or --input-file, not both.", err=True)
+        sys.exit(2)
+    
     if input_file:
-        if input_text:  # --input was explicitly provided
-            click.echo("ERROR: Use either --input or --input-file, not both.", err=True)
-            sys.exit(2)
         try:
             input_text = Path(input_file).read_text(encoding="utf-8")
         except FileNotFoundError:
             click.echo(f"ERROR: Input file not found: {input_file}", err=True)
             sys.exit(1)
-        except Exception as exc:
+        except OSError as exc:
             click.echo(f"ERROR: Failed to read input file: {exc}", err=True)
             sys.exit(1)
     
@@ -209,7 +210,7 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
         try:
             Path(output_file).write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
             saved_path = output_file
-        except Exception as exc:
+        except OSError as exc:
             click.echo(f"ERROR: Failed to write output file: {exc}", err=True)
             sys.exit(1)
     else:
