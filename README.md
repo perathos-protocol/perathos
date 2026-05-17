@@ -2,6 +2,43 @@
 
 Cryptographic proof layer for AI outputs. Every AI response gets a tamper-evident bundle — a hash chain + optional Ed25519 signature — that can be verified offline with no network calls.
 
+## What Problem Does This Solve?
+
+When an AI system generates critical output (legal advice, medical information, financial recommendations), you need proof that:
+1. The output hasn't been tampered with after creation (integrity).
+2. You can verify this proof offline, without trusting a central authority (deterministic hashing).
+3. Optionally, the AI provider cryptographically committed to the output (Ed25519 signature).
+
+Perathos solves this by creating a tamper-evident bundle for each output. If any field changes after the bundle is created, the hash chain breaks and verification fails.
+
+## Quick Start
+
+Get a proof bundle in 5 steps:
+
+```bash
+# 1. Install
+pip install perathos
+
+# 2. Generate a signing keypair (one-time setup)
+perathos keygen
+
+# 3. Prove an AI output
+perathos prove "The capital of France is Paris."
+# Output: bundle_id 550e8400-e29b-41d4-a716-446655440000 saved
+
+# 4. Verify the bundle
+perathos verify 550e8400-e29b-41d4-a716-446655440000
+# Output: VALID_UNSIGNED  550e8400-e29b-41d4-a716-446655440000
+
+# 5. Inspect it (human-readable)
+perathos inspect 550e8400-e29b-41d4-a716-446655440000
+```
+
+To add a cryptographic signature:
+```bash
+perathos prove "The answer is 42." --sign
+```
+
 ## Install
 
 ```bash
