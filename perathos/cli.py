@@ -124,28 +124,36 @@ def keygen():
 
 
 @cli.command()
-@click.argument("text")
+@click.argument("text", required=False)
 @click.option("--input", "input_text", default="", metavar="INPUT",
               help="Original prompt / input that produced TEXT. Example: --input 'What is the capital of France?'")
+@click.option("--input-file", type=click.Path(exists=True), metavar="PATH",
+              help="Read input_text from file instead of --input. Example: --input-file prompt.txt")
+@click.option("--output-file", type=click.Path(), metavar="PATH",
+              help="Write bundle JSON to file instead of saving to ~/.perathos/bundles/. Example: --output-file bundle.json")
 @click.option("--sign", is_flag=True, 
               help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Example: perathos prove 'output' --sign")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 @click.option("--verbose", is_flag=True,
               help="Display full 64-character hashes instead of truncated 8-character previews.")
-def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbose: bool):
+def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool, as_json: bool, verbose: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
     Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
     cryptographic signature (requires running 'perathos keygen' first).
     
-    TEXT is the AI-generated output you want to prove. Specify --input to include
-    the optional original prompt or request that produced TEXT. Both prove modes
-    (signed and unsigned) produce a tamper-evident bundle stored locally.
+    TEXT is the AI-generated output you want to prove. If TEXT is '-', reads from stdin.
+    Specify --input to include the optional original prompt or request that produced TEXT.
+    Both prove modes (signed and unsigned) produce a tamper-evident bundle stored locally
+    by default (unless --output-file is specified).
     
     Examples:
         perathos prove "The capital of France is Paris."
             → Creates an UNSIGNED proof bundle
+        
+        perathos prove - < output.txt
+            → Reads output from stdin, creates UNSIGNED bundle
         
         perathos prove "The answer is 42." --input "What is the answer?"
             → UNSIGNED bundle with input prompt included
@@ -153,12 +161,35 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbos
         perathos prove "Hello world." --sign
             → Creates a SIGNED proof bundle (requires keygen)
         
-        perathos prove "Paris is the capital." --input "What is the capital of France?" --sign
-            → SIGNED bundle with both input and signature
+        perathos prove "Output text." --input-file prompt.txt --sign
+            → Reads input from file, creates SIGNED bundle
         
-        perathos prove "Output text." --sign --json
-            → SIGNED bundle, output as full JSON instead of summary
+        perathos prove - --input-file prompt.txt --output-file bundle.json
+            → Reads output from stdin, input from file, writes bundle to file
     """
+    # Handle TEXT and stdin reading
+    if text is None:
+        click.echo("ERROR: TEXT argument is required unless reading from stdin.", err=True)
+        click.echo("Usage: perathos prove <text> or perathos prove - (for stdin)", err=True)
+        sys.exit(2)
+    
+    if text == "-":
+        text = sys.stdin.read()
+    
+    # Handle input_text: --input takes precedence over --input-file
+    if input_file:
+        if input_text:  # --input was explicitly provided
+            click.echo("ERROR: Use either --input or --input-file, not both.", err=True)
+            sys.exit(2)
+        try:
+            input_text = Path(input_file).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            click.echo(f"ERROR: Input file not found: {input_file}", err=True)
+            sys.exit(1)
+        except Exception as exc:
+            click.echo(f"ERROR: Failed to read input file: {exc}", err=True)
+            sys.exit(1)
+    
     bundle = prove(output_text=text, input_text=input_text)
 
     if sign_flag:
@@ -175,7 +206,16 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbos
             sys.exit(1)
         bundle = sign(bundle, sk_hex)
 
-    path = save_bundle(bundle)
+    # Handle output: --output-file or default save_bundle()
+    if output_file:
+        try:
+            Path(output_file).write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
+            saved_path = output_file
+        except Exception as exc:
+            click.echo(f"ERROR: Failed to write output file: {exc}", err=True)
+            sys.exit(1)
+    else:
+        saved_path = str(save_bundle(bundle))
 
     if as_json:
         click.echo(json.dumps(bundle, indent=2, sort_keys=True))
@@ -194,7 +234,7 @@ def prove_cmd(text: str, input_text: str, sign_flag: bool, as_json: bool, verbos
         click.echo(f"signature      {sig_display}")
         vk_display = _format_hash(sig['verify_key'], verbose)
         click.echo(f"verify_key     {vk_display}")
-    click.echo(f"saved          {path}")
+    click.echo(f"saved          {saved_path}")
 
 
 @cli.command()
