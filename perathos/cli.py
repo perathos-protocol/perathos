@@ -84,20 +84,29 @@ def keygen():
     
     Creates a signing key and public verification key for use with --sign.
     Each invocation generates a fresh keypair. If a key already exists,
-    you must delete it manually or use --rotate (when implemented).
+    you must delete it manually (support for --rotate coming soon).
+    
+    The keypair is stored locally:
+        signing.key   (private key, protected with mode 0o600)
+        verify.key    (public key)
+    
+    After keygen, sign and prove bundles with:
+        perathos prove '<output_text>' --sign
     
     Example:
         perathos keygen
+        perathos prove 'Hello world.' --sign
     """
     sk_path = keys_dir() / "signing.key"
     if sk_path.exists():
         click.echo(f"ERROR: Signing key already exists at {sk_path}", err=True)
         click.echo("", err=True)
-        click.echo("To rotate your keypair, delete the old keys and regenerate:", err=True)
+        click.echo("To generate a new keypair, delete the existing keys:", err=True)
         click.echo(f"  rm {keys_dir() / 'signing.key'} {keys_dir() / 'verify.key'}", err=True)
         click.echo("  perathos keygen", err=True)
         click.echo("", err=True)
         click.echo("WARNING: Bundles signed with the old key will no longer verify.", err=True)
+        click.echo("(Key rotation support is planned for a future release.)", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -105,6 +114,9 @@ def keygen():
     click.echo(f"signing key  {sk_path}")
     click.echo(f"verify key   {vk_path}")
     click.echo(f"verify_key   {vk_hex}")
+    click.echo("")
+    click.echo("✓ Keypair saved. To sign bundles, run:")
+    click.echo("  perathos prove '<output_text>' --sign")
 
 
 @cli.command()
