@@ -336,6 +336,32 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
     return sk_path, vk_path
 
 
+def _validate_hex_key(key_value: str, key_name: str) -> None:
+    """Validate that a loaded key is exactly 64 hex characters.
+
+    Args:
+        key_value: The key string to validate (should be stripped of whitespace).
+        key_name: Name of the key for error messages ("signing key" or "verify key").
+
+    Raises:
+        ValueError: If the key is not exactly 64 hex characters.
+    """
+    if len(key_value) != 64:
+        raise ValueError(
+            f"Invalid {key_name}: expected 64 hex characters, got {len(key_value)}. "
+            f"The key file may be corrupted. To recover, delete and regenerate: "
+            f"rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key && perathos keygen"
+        )
+    try:
+        int(key_value, 16)
+    except ValueError:
+        raise ValueError(
+            f"Invalid {key_name}: contains non-hex characters. "
+            f"The key file may be corrupted. To recover, delete and regenerate: "
+            f"rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key && perathos keygen"
+        )
+
+
 def load_signing_key() -> str:
     """Load the signing (private) key from disk.
 
@@ -351,11 +377,12 @@ def load_signing_key() -> str:
     Parameter validation:
         - The file is expected to contain exactly one line of 64 hex characters.
         - Whitespace is stripped before returning.
-        - No format validation is performed (the signing key is validated by signing.sign_hash()).
+        - The key is validated to be exactly 64 hex characters. If not, ValueError
+          is raised with a clear message suggesting how to recover.
 
     Recovery from corrupted keys:
-        - If the key file is truncated (fewer than 64 characters) or contains non-hex,
-          signing will fail with ValueError when attempting to use the key.
+        - If the key file is truncated (fewer than 64 characters), contains non-hex,
+          or is empty, ValueError is raised with recovery instructions.
         - To recover: delete the key file and regenerate:
           `rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key`
           `perathos keygen`
@@ -368,8 +395,8 @@ def load_signing_key() -> str:
 
     Raises:
         FileNotFoundError: If the signing key has not been generated (run 'perathos keygen').
+        ValueError: If the key file is empty, truncated, or contains non-hex characters.
         OSError: If the file cannot be read (permission denied, etc.).
-        ValueError: If the file exists but is empty or unreadable.
 
     Note:
         On Unix-like systems, the signing key file is stored with mode 0o600 (owner read-only).
@@ -392,6 +419,8 @@ def load_signing_key() -> str:
             sk = load_signing_key()
         except FileNotFoundError:
             print("ERROR: Signing key not found. Run: perathos keygen")
+        except ValueError as e:
+            print(f"ERROR: {e}")
 
         # Fix permissions if needed:
         import os
@@ -402,7 +431,9 @@ def load_signing_key() -> str:
     path = keys_dir() / "signing.key"
     if not path.exists():
         raise FileNotFoundError("No signing key found — run: perathos keygen")
-    return path.read_text(encoding="utf-8").strip()
+    key_value = path.read_text(encoding="utf-8").strip()
+    _validate_hex_key(key_value, "signing key")
+    return key_value
 
 
 def load_verify_key() -> str:
@@ -416,7 +447,8 @@ def load_verify_key() -> str:
     Parameter validation:
         - The file is expected to contain exactly one line of 64 hex characters.
         - Whitespace is stripped before returning.
-        - No format validation is performed (the verify key is validated by signing.verify_signature()).
+        - The key is validated to be exactly 64 hex characters. If not, ValueError
+          is raised with a clear message suggesting how to recover.
 
     Recovery from corrupted keys:
         - If the verify key file is corrupted or missing, you can regenerate it
@@ -432,8 +464,8 @@ def load_verify_key() -> str:
 
     Raises:
         FileNotFoundError: If the verify key has not been generated (run 'perathos keygen').
+        ValueError: If the key file is empty, truncated, or contains non-hex characters.
         OSError: If the file cannot be read (permission denied, etc.).
-        ValueError: If the file exists but is empty or unreadable.
 
     Examples:
         from perathos.storage import load_verify_key
@@ -453,4 +485,6 @@ def load_verify_key() -> str:
     path = keys_dir() / "verify.key"
     if not path.exists():
         raise FileNotFoundError("No verify key found — run: perathos keygen")
-    return path.read_text(encoding="utf-8").strip()
+    key_value = path.read_text(encoding="utf-8").strip()
+    _validate_hex_key(key_value, "verify key")
+    return key_value
