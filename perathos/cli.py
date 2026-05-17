@@ -291,7 +291,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"[ERROR] Invalid JSON in {file_path}: {exc}", err=True)
-        click.echo("Next step: Check the file is valid JSON:", err=True)
+        click.echo("Next step: Validate the file with:", err=True)
         click.echo(f"  python -m json.tool {file_path}", err=True)
         sys.exit(1)
 
