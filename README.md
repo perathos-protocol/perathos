@@ -67,6 +67,86 @@ perathos inspect <bundle_id>
 perathos list
 ```
 
+## CLI Design
+
+The Perathos CLI follows standard Unix conventions for exit codes and output formatting:
+
+### Exit Codes
+
+All commands respect the following exit code contract:
+
+| Exit Code | Meaning | Examples |
+|-----------|---------|----------|
+| `0` | Success — bundle valid, operation completed | `perathos verify <id>` returns VALID; `perathos prove` creates bundle |
+| `1` | Bundle or file error — verification failed, bundle corrupted, file not found | Hash mismatch detected; bundle missing fields; JSON file invalid |
+| `2` | Usage error — invalid arguments or conflicting options | `perathos verify` with both BUNDLE_ID and `--file`; missing required argument |
+
+Example exit code usage in scripts:
+
+```bash
+#!/bin/bash
+perathos verify "550e8400-e29b-41d4-a716-446655440000"
+case $? in
+  0) echo "✓ Bundle is valid" ;;
+  1) echo "✗ Bundle verification failed (tampered or corrupted)" ; exit 1 ;;
+  2) echo "✗ Usage error (check arguments)" ; exit 2 ;;
+esac
+```
+
+### Output Formatting
+
+By default, Perathos truncates long hashes (SHA-256 digests are 64 hex characters) to the first 8 characters plus "..." for readability in the terminal. Use `--verbose` to display full hashes.
+
+#### Truncated Output (default)
+
+Useful for human review and terminal readability:
+
+```bash
+$ perathos prove "The capital of France is Paris."
+bundle_id      550e8400...
+ai_id          7f9c2ba4...
+input_hash     e3b0c442...
+output_hash    a665a459...
+trace_hash     d4735e3a...
+integrity_hash 2cf24dba...
+issued_at      2024-01-15T14:30:45.123456+00:00
+saved          /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+```
+
+#### Full Hash Output (`--verbose`)
+
+For scripting, verification, and audit logs, use `--verbose` to display complete hashes:
+
+```bash
+$ perathos prove "The capital of France is Paris." --verbose
+bundle_id      550e8400-e29b-41d4-a716-446655440000
+ai_id          7f9c2ba4e88fb81860ea5e70f527f31fa7f9c2ba4e88fb81860ea5e70f527f31f
+input_hash     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+output_hash    a665a45920422f9d417e4867efdc4fb8a067e80b0456b3a9c52c1e4e81e2f4de
+trace_hash     d4735e3a265e16eee03f59718b9b5d03c3d5e41ffa31f52c3e7d8e3b0f9a4b1c
+integrity_hash 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+issued_at      2024-01-15T14:30:45.123456+00:00
+saved          /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+```
+
+#### Verification with `--verbose`
+
+When verifying, `--verbose` also displays the full public key for signed bundles:
+
+```bash
+$ perathos verify 550e8400-e29b-41d4-a716-446655440000 --verbose
+VALID_SIGNED  550e8400-e29b-41d4-a716-446655440000
+              verify_key a7f9c2ba4e88fb81860ea5e70f527f31fa7f9c2ba4e88fb81860ea5e70f527f31f
+```
+
+Without `--verbose`, the key is truncated:
+
+```bash
+$ perathos verify 550e8400-e29b-41d4-a716-446655440000
+VALID_SIGNED  550e8400-e29b-41d4-a716-446655440000
+              verify_key a7f9c2ba...
+```
+
 ## CLI Examples
 
 ### Basic workflow

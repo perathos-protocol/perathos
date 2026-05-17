@@ -29,11 +29,15 @@ _ERROR_EXPLANATIONS = {
 def _explain_error(error_code: str) -> str:
     """Return human-readable explanation for an error code.
     
+    Maps error codes (e.g., "ERR_TRACE_HASH_MISMATCH") to user-friendly explanations.
+    Handles error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash") by
+    extracting the base code. Returns the original error code if no explanation exists.
+    
     Args:
         error_code: Error code string (e.g., "ERR_TRACE_HASH_MISMATCH").
     
     Returns:
-        Human-readable explanation, or the original error code if no explanation exists.
+        Human-readable explanation string, or the original error code if unmapped.
     """
     # Handle error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash")
     base_code = error_code.split(":")[0]
@@ -43,14 +47,17 @@ def _explain_error(error_code: str) -> str:
 
 
 def _format_hash(h: str, verbose: bool) -> str:
-    """Format a hash for display.
+    """Format a hash for display based on verbosity setting.
+    
+    In normal mode, truncates to first 8 characters with ellipsis for compact output.
+    In verbose mode, displays the full hash (typically 64 hex characters for SHA-256).
     
     Args:
         h: Full hash string (typically 64 hex chars).
         verbose: If True, show full hash; if False, show first 8 chars with ellipsis.
     
     Returns:
-        Formatted hash string.
+        Formatted hash string (either full or truncated with "...").
     """
     if verbose:
         return h
@@ -59,6 +66,9 @@ def _format_hash(h: str, verbose: bool) -> str:
 
 def _list_available_bundles() -> str:
     """Return a formatted string listing all available bundles.
+    
+    Scans the local bundles directory and formats the list of stored bundle UUIDs.
+    If no bundles exist, suggests how to create one with the prove command.
     
     Returns:
         A formatted string with bundle list, or a message if no bundles exist.
@@ -256,7 +266,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
         click.echo(f"  python -m json.tool {file_path}", err=True)
         click.echo("", err=True)
         click.echo("Or export a fresh bundle:", err=True)
-        click.echo("  perathos prove '<output_text>' --json > bundle.json", err=True)
+        click.echo(f"  perathos prove '<output_text>' --json > bundle.json", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
