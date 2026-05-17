@@ -106,9 +106,9 @@ def keygen():
     """
     sk_path = keys_dir() / "signing.key"
     if sk_path.exists():
-        click.echo("ERROR: Signing key already exists.", err=True)
+        click.echo("[ERROR] signing.key already exists.", err=True)
         click.echo("", err=True)
-        click.echo("To generate a new keypair, delete the existing keys:", err=True)
+        click.echo("To replace it, run:", err=True)
         click.echo(f"  rm {keys_dir() / 'signing.key'} {keys_dir() / 'verify.key'}", err=True)
         click.echo("  perathos keygen", err=True)
         sys.exit(1)
@@ -196,9 +196,7 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("ERROR: Signing key not found.", err=True)
-            click.echo("", err=True)
-            click.echo("To generate a keypair, run:", err=True)
+            click.echo("[ERROR] Signing key not found. To generate a keypair, run:", err=True)
             click.echo("  perathos keygen", err=True)
             click.echo("", err=True)
             click.echo("Then sign your bundle with:", err=True)
@@ -270,17 +268,13 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
             → Verify and display full bundle JSON on success
     """
     if file_path and bundle_id:
-        click.echo("ERROR: Use either BUNDLE_ID or --file, not both.", err=True)
-        click.echo("", err=True)
-        click.echo("Examples:", err=True)
-        click.echo("  perathos verify 550e8400-e29b-41d4-a716-446655440000", err=True)
-        click.echo("  perathos verify --file bundle.json", err=True)
+        click.echo("[ERROR] Use either BUNDLE_ID or --file, not both.", err=True)
+        click.echo("Try: perathos verify --help", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
-        click.echo("ERROR: Specify either BUNDLE_ID or --file.", err=True)
-        click.echo("", err=True)
-        click.echo("Run: perathos verify --help", err=True)
+        click.echo("[ERROR] Specify either BUNDLE_ID or --file.", err=True)
+        click.echo("Try: perathos verify --help", err=True)
         sys.exit(2)
 
     try:
@@ -291,29 +285,21 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
             bundle = load_bundle(bundle_id)
             display_id = bundle_id
     except FileNotFoundError:
-        click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("", err=True)
+        click.echo(f"[ERROR] Bundle not found: {bundle_id}", err=True)
         click.echo("Next step: List your bundles with:", err=True)
         click.echo("  perathos list", err=True)
-        click.echo("", err=True)
-        click.echo("Or create a new one:", err=True)
-        click.echo("  perathos prove '<output_text>'", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
-        click.echo(f"ERROR: Invalid JSON in {file_path}: {exc}", err=True)
-        click.echo("", err=True)
+        click.echo(f"[ERROR] Invalid JSON in {file_path}: {exc}", err=True)
         click.echo("Next step: Check the file is valid JSON:", err=True)
         click.echo(f"  python -m json.tool {file_path}", err=True)
-        click.echo("", err=True)
-        click.echo("Or export a fresh bundle:", err=True)
-        click.echo(f"  perathos prove '<output_text>' --json > bundle.json", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
     valid, err = verify(bundle)
     if not valid:
         explanation = _explain_error(err)
-        click.echo(f"INVALID  {err}", err=True)
+        click.echo(f"[ERROR] INVALID  {err}", err=True)
         click.echo(f"Reason: {explanation}", err=True)
         sys.exit(1)
 
@@ -322,7 +308,7 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
         sig_valid, sig_err = verify_signature(bundle["integrity_hash"], bundle["provider_signature"])
         if not sig_valid:
             explanation = _explain_error(sig_err)
-            click.echo(f"INVALID  {sig_err}", err=True)
+            click.echo(f"[ERROR] INVALID  {sig_err}", err=True)
             click.echo(f"Reason: {explanation}", err=True)
             sys.exit(1)
         click.echo(f"VALID_SIGNED  {display_id}")
@@ -349,8 +335,7 @@ def inspect_cmd(bundle_id: str):
     try:
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
-        click.echo(f"ERROR: Bundle not found: {bundle_id}", err=True)
-        click.echo("", err=True)
+        click.echo(f"[ERROR] Bundle not found: {bundle_id}", err=True)
         click.echo("Next step: List your bundles with:", err=True)
         click.echo("  perathos list", err=True)
         sys.exit(1)
