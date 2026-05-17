@@ -304,43 +304,236 @@ Perathos stores all data under `~/.perathos/` with the following layout:
 
 **Keys:** The `signing.key` file contains your private Ed25519 key (64 hex characters). On Unix-like systems, it is stored with restrictive permissions (mode 0o600, readable only by the owner) for security. The `verify.key` file contains the public key and can be shared.
 
-## Python API
+## Python Library Usage
+
+Perathos exposes a clean Python API for building tamper-evident bundles programmatically. All public functions are importable from the top-level `perathos` package.
+
+### Basic Example: Prove and Verify
+
+The simplest workflow — create a bundle and verify its integrity:
+
+```python
+from perathos import prove, verify
+
+# Step 1: Create a proof bundle
+bundle = prove(
+    output_text="The capital of France is Paris.",
+    input_text="What is the capital of France?"
+)
+print(f"Bundle ID: {bundle['bundle_id']}")
+print(f"Output hash: {bundle['output_hash'][:8]}...")
+
+# Step 2: Verify the bundle (checks hash chain integrity)
+valid, error = verify(bundle)
+
+if valid:
+    print("✓ Bundle is valid and tamper-evident")
+else:
+    print(f"✗ Verification failed: {error}")
+    # Possible errors: ERR_TRACE_HASH_MISMATCH, ERR_INTEGRITY_HASH_MISMATCH, etc.
+```
+
+### Signed Bundles: Sign and Verify Signature
+
+Add cryptographic proof of provenance with Ed25519 signatures:
+
+```python
+from perathos import prove, sign, verify
+from perathos.signing import generate_keypair, verify_signature
+
+# Step 1: Generate a keypair (one-time)
+sk, vk = generate_keypair()
+print(f"Signing key (PRIVATE): {sk[:8]}...")
+print(f"Verify key (PUBLIC):   {vk[:8]}...")
+
+# Step 2: Create and sign a bundle
+bundle = prove(output_text="The answer is 42.")
+signed_bundle = sign(bundle, sk)  # Returns new dict with provider_signature
+
+print(f"Bundle signed: {signed_bundle['provider_signature']['algorithm']}")
+print(f"Signature: {signed_bundle['provider_signature']['signature'][:8]}...")
+
+# Step 3: Verify both hash chain and signature
+valid, err = verify(signed_bundle)
+if not valid:
+    print(f"Hash chain invalid: {err}")
+    exit(1)
+
+sig_valid, sig_err = verify_signature(
+    signed_bundle["integrity_hash"],
+    signed_bundle["provider_signature"]
+)
+
+if sig_valid:
+    print("✓ Hash chain and signature both valid")
+else:
+    print(f"✗ Signature verification failed: {sig_err}")
+```
+
+### Persistent Storage: Save and Load Bundles
+
+Store bundles on disk for later verification and inspection:
+
+```python
+from perathos import prove, verify, inspect
+from perathos.storage import save_bundle, load_bundle, list_bundles
+
+# Step 1: Create and save a bundle
+bundle = prove(
+    output_text="Critical analysis of market conditions.",
+    input_text="Analyze the recent market downturn."
+)
+path = save_bundle(bundle)
+print(f"Bundle saved to: {path}")
+# Output: /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+
+# Step 2: List all saved bundles
+bundles = list_bundles()
+for bundle_path in bundles:
+    print(f"Bundle: {bundle_path.stem}")  # stem is the UUID without .json
+
+# Step 3: Load a bundle by its ID
+loaded = load_bundle(bundle["bundle_id"])
+valid, err = verify(loaded)
+print(f"Loaded bundle is valid: {valid}")
+
+# Step 4: Pretty-print for human review
+inspect(loaded)
+```
+
+### Error Handling: Detecting Tampered Bundles
+
+Proper error handling patterns for production code:
+
+```python
+from perathos import prove, verify
+from perathos.storage import load_bundle
+import json
+
+def safe_verify_bundle(bundle_id: str) -> bool:
+    """Load and verify a bundle, with detailed error handling."""
+    try:
+        # Load from disk
+        bundle = load_bundle(bundle_id)
+    except FileNotFoundError:
+        print(f"ERROR: Bundle {bundle_id} not found on disk.")
+        return False
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Bundle file is corrupted JSON: {e}")
+        return False
+
+    # Verify hash chain
+    valid, error_code = verify(bundle)
+    
+    if not valid:
+        # Map error codes to user-friendly messages
+        error_messages = {
+            "ERR_MISSING_TRACE": "Bundle is missing execution metadata (corrupted).",
+            "ERR_TRACE_HASH_MISMATCH": "Execution metadata was tampered with.",
+            "ERR_INTEGRITY_HASH_MISMATCH": "Bundle fields were tampered with (critical).",
+            "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed.",
+        }
+        message = error_messages.get(error_code, f"Unknown error: {error_code}")
+        print(f"✗ Bundle verification FAILED")
+        print(f"  Error: {message}")
+        return False
+    
+    print(f"✓ Bundle {bundle_id} is valid and tamper-evident.")
+    return True
+
+# Usage
+if safe_verify_bundle("550e8400-e29b-41d4-a716-446655440000"):
+    print("Safe to use this output.")
+else:
+    print("Do not trust this output.")
+```
+
+### Working with Signing Keys on Disk
+
+Load and manage Ed25519 keys persistently:
+
+```python
+from perathos import prove, sign
+from perathos.signing import generate_keypair
+from perathos.storage import save_keypair, load_signing_key, load_verify_key
+
+# One-time setup: generate and save keypair
+sk, vk = generate_keypair()
+sk_path, vk_path = save_keypair(sk, vk)
+print(f"Keys saved to {sk_path.parent}")
+
+# Later, load the signing key and use it
+sk = load_signing_key()  # Raises FileNotFoundError if not found
+bundle = prove("Important output")
+signed = sign(bundle, sk)
+print(f"Signed with key: {load_verify_key()[:8]}...")
+```
+
+## API Reference
+
+Complete documentation of all public functions in the Perathos library.
 
 ### `prove(output_text, input_text="")`
 
 Build a VRL Proof Bundle for a given AI output.
 
+Constructs a tamper-evident bundle by hashing the input and output,
+capturing execution metadata in a trace, and computing an integrity root
+hash. The bundle_id is derived deterministically via UUIDv5 from the
+integrity hash, so it is reconstructable offline without any state.
+
 **Args:**
-  - `output_text` (str): The AI-generated text to prove (e.g., model completion).
-  - `input_text` (str, optional): Original prompt or request that produced output_text. Defaults to empty string.
+- `output_text` (str): The AI-generated text to prove (e.g., model completion).
+- `input_text` (str, optional): Original prompt or request that produced output_text. Defaults to empty string for prove-from-output-only use cases.
 
 **Returns:**
-  - dict: A bundle containing `bundle_id`, `ai_id`, `input_hash`, `output_hash`, `trace_hash`, `integrity_hash`, `issued_at`, `proof_system`, and `_trace`.
+- dict: A bundle dictionary containing:
+  - `bundle_id` (str): UUIDv5 derived from integrity_hash.
+  - `ai_id` (str): SHA-256 of the model descriptor.
+  - `input_hash` (str): SHA-256 of input_text (64 hex chars).
+  - `output_hash` (str): SHA-256 of output_text (64 hex chars).
+  - `trace_hash` (str): SHA-256 of execution metadata (64 hex chars).
+  - `integrity_hash` (str): SHA-256 of the canonical integrity payload (64 hex chars).
+  - `issued_at` (str): ISO 8601 timestamp (UTC).
+  - `proof_system` (str): Hash scheme identifier ("sha256-deterministic").
+  - `_trace` (dict): Execution metadata (model descriptor, lengths, etc.).
+
+**Raises:**
+- None (always succeeds; no external dependencies)
 
 **Example:**
 ```python
 from perathos import prove
 
 bundle = prove(
-    output_text="The capital of France is Paris.",
+    output_text="Paris is the capital of France.",
     input_text="What is the capital of France?"
 )
-print(bundle["bundle_id"])
+print(f"Bundle ID: {bundle['bundle_id']}")
+print(f"Output hash: {bundle['output_hash']}")
 ```
 
 ### `sign(bundle, signing_key_hex)`
 
 Attach an Ed25519 provider_signature over integrity_hash.
 
+Computes an Ed25519 signature on the raw bytes of integrity_hash and
+adds it to the bundle as a provider_signature field. Does not mutate
+the input bundle; returns a new dict with the signature attached.
+
 **Args:**
-  - `bundle` (dict): A bundle dict from `prove()` (or compatible structure).
-  - `signing_key_hex` (str): 64-character hex-encoded Ed25519 signing key.
+- `bundle` (dict): A bundle dict from `prove()` (or compatible structure with `integrity_hash` field).
+- `signing_key_hex` (str): 64-character lowercase hex-encoded Ed25519 signing key (32 bytes).
 
 **Returns:**
-  - dict: A new dict with all fields from bundle plus a `provider_signature` field containing `algorithm`, `verify_key`, and `signature`.
+- dict: A new bundle dict with all fields from input bundle plus a `provider_signature` field containing:
+  - `algorithm` (str): "ed25519"
+  - `verify_key` (str): 64-character hex-encoded public key (derived from signing_key)
+  - `signature` (str): 128-character hex-encoded signature bytes
 
 **Raises:**
-  - `ValueError`: If `signing_key_hex` is not a valid 64-character hex string.
+- `ValueError`: If `signing_key_hex` is not a valid 64-character hex string.
+- `TypeError`: If bundle is not a dict or is missing the `integrity_hash` field.
 
 **Example:**
 ```python
@@ -350,43 +543,70 @@ from perathos.signing import generate_keypair
 sk, vk = generate_keypair()
 bundle = prove("The answer is 42.")
 signed_bundle = sign(bundle, sk)
-print(f"Signed with key: {signed_bundle['provider_signature']['verify_key']}")
+print(f"Signed with: {signed_bundle['provider_signature']['verify_key']}")
+print(f"Signature: {signed_bundle['provider_signature']['signature'][:8]}...")
 ```
 
 ### `verify(bundle)`
 
 Recompute all hashes from stored data and check they match.
 
+Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id.
+Does not re-hash the original input/output text (those are gone); only checks
+that the stored hashes are self-consistent and form a valid chain.
+Optional Ed25519 signature verification is left to `verify_signature()` function.
+
 **Args:**
-  - `bundle` (dict): A bundle dict from `prove()` (optionally with signature).
+- `bundle` (dict): A bundle dict from `prove()` (optionally with `provider_signature` field).
 
 **Returns:**
-  - tuple[bool, str]: A tuple `(valid, error_code)` where:
-    - `valid` is `True` and `error_code` is `""` on successful verification.
-    - `valid` is `False` and `error_code` is a string like `"ERR_TRACE_HASH_MISMATCH"` or `"ERR_MISSING_TRACE"` on failure.
+- tuple[bool, str]: A tuple `(valid, error_code)` where:
+  - `valid` (bool): `True` if all hashes match; `False` otherwise.
+  - `error_code` (str): Empty string "" on success; error code string on failure.
+
+**Raises:**
+- None (always returns a tuple; does not raise exceptions)
+
+**Possible error codes:**
+- `""` (empty string): Bundle is valid.
+- `"ERR_MISSING_TRACE"`: Bundle is missing the `_trace` field.
+- `"ERR_TRACE_HASH_MISMATCH"`: Recomputed trace hash doesn't match stored `trace_hash`.
+- `"ERR_INTEGRITY_HASH_MISMATCH"`: Recomputed integrity hash doesn't match stored `integrity_hash`.
+- `"ERR_BUNDLE_ID_MISMATCH"`: Reconstructed bundle_id doesn't match the stored one.
+- `"ERR_MISSING_FIELD:<field>"`: Required field is missing from bundle.
 
 **Example:**
 ```python
 from perathos import prove, verify
 
-bundle = prove("Output text here.")
-valid, err = verify(bundle)
+bundle = prove("Output text")
+valid, error_code = verify(bundle)
 
 if valid:
-    print("Bundle is valid!")
+    print("✓ Bundle is tamper-evident")
 else:
-    print(f"Verification failed: {err}")
+    if "MISMATCH" in error_code:
+        print(f"✗ Bundle was tampered with: {error_code}")
+    else:
+        print(f"✗ Verification failed: {error_code}")
 ```
 
 ### `inspect(bundle)`
 
 Pretty-print a bundle in human-readable form.
 
+Automatically selects between rich-styled output (if rich is installed and
+terminal supports Unicode) and plain-text fallback. Displays bundle metadata,
+hash chain, and trace steps with appropriate styling.
+
 **Args:**
-  - `bundle` (dict): Bundle dict from `prove()` or loaded via `perathos.storage.load_bundle()`.
+- `bundle` (dict): Bundle dict from `prove()` or loaded via `storage.load_bundle()`.
 
 **Returns:**
-  - None (prints to stdout)
+- None (prints to stdout)
+
+**Raises:**
+- None (always succeeds)
 
 **Example:**
 ```python
@@ -394,21 +614,116 @@ from perathos import prove, inspect
 
 bundle = prove("Hello world.")
 inspect(bundle)
+# Output:
+#   Bundle ID : 550e8400-e29b-41d4-a716-446655440000
+#   Issued    : 2024-01-15 14:30:45 UTC
+#   Model     : sha256-deterministic v1 (perathos-demo-model)
+#   Signature : UNSIGNED
+#   ...
 ```
 
-### Storage API
+### `generate_keypair()`
 
-The `perathos.storage` module provides functions to save and load bundles from disk, as well as manage signing keys.
+Generate a fresh Ed25519 keypair.
 
-#### `save_bundle(bundle)`
-
-Save a bundle to JSON file in `~/.perathos/bundles/`.
+Uses PyNaCl (libsodium) to generate cryptographically secure signing and
+verification keys. Keys are returned as hex-encoded strings suitable for
+storing in files or passing to signing functions.
 
 **Args:**
-  - `bundle` (dict): A bundle dict from `prove()` (optionally signed).
+- None
 
 **Returns:**
-  - `Path`: Path object pointing to the saved JSON file.
+- tuple[str, str]: A tuple `(signing_key_hex, verify_key_hex)` where each is a 64-character lowercase hex string representing 32 bytes of Ed25519 key material.
+
+**Raises:**
+- None (always succeeds; uses system CSPRNG)
+
+**Example:**
+```python
+from perathos.signing import generate_keypair
+from perathos.storage import save_keypair
+
+sk, vk = generate_keypair()
+print(f"Private key: {sk[:8]}...")
+print(f"Public key:  {vk[:8]}...")
+sk_path, vk_path = save_keypair(sk, vk)
+print(f"Saved to {sk_path.parent}")
+```
+
+### `verify_signature(integrity_hash, provider_signature)`
+
+Verify an Ed25519 signature over an integrity_hash.
+
+Uses the public verify_key stored in the provider_signature dict to
+verify that the signature is valid for the given hash. Constant-time
+comparison prevents timing attacks.
+
+**Args:**
+- `integrity_hash` (str): 64-character hex-encoded SHA-256 digest (what was signed).
+- `provider_signature` (dict): Dict with keys:
+  - `verify_key` (str): 64-character hex-encoded Ed25519 public key
+  - `signature` (str): 128-character hex-encoded signature bytes
+  - `algorithm` (str, optional): Algorithm name (e.g., "ed25519")
+
+**Returns:**
+- tuple[bool, str]: A tuple `(valid, error_code)` where:
+  - `valid` (bool): `True` if signature is valid; `False` otherwise.
+  - `error_code` (str): Empty string "" on success; error code on failure.
+
+**Raises:**
+- None (always returns a tuple; does not raise exceptions)
+
+**Possible error codes:**
+- `""` (empty string): Signature is valid.
+- `"ERR_BAD_SIGNATURE"`: Signature doesn't match the hash (forged or tampered).
+- `"ERR_MISSING_SIG_FIELD:<field>"`: Required signature field is missing.
+- `"ERR_INVALID_VERIFY_KEY:<error>"`: Verify key is not valid 64-character hex.
+- `"ERR_INVALID_SIGNATURE:<error>"`: Signature is not valid 128-character hex.
+- `"ERR_INVALID_HASH:<error>"`: Integrity hash is not valid 64-character hex.
+
+**Example:**
+```python
+from perathos import prove, sign
+from perathos.signing import generate_keypair, verify_signature
+
+sk, vk = generate_keypair()
+bundle = prove("Output")
+signed = sign(bundle, sk)
+
+# Verify the signature
+valid, err = verify_signature(
+    signed["integrity_hash"],
+    signed["provider_signature"]
+)
+
+if valid:
+    print(f"✓ Signature valid, provider key: {vk[:8]}...")
+else:
+    print(f"✗ Signature invalid: {err}")
+```
+
+### `save_bundle(bundle)`
+
+Save a bundle to a JSON file in the bundles directory.
+
+Filename is derived from the bundle's bundle_id field (the UUID).
+File is written with 2-space indentation for readability.
+The bundle is stored at `~/.perathos/bundles/{bundle_id}.json`
+for later retrieval via `load_bundle()`.
+
+**Args:**
+- `bundle` (dict): A bundle dict from `prove()` (optionally signed with provider_signature).
+  Must contain `bundle_id` key (str).
+
+**Returns:**
+- Path: Path object pointing to the saved JSON file.
+  Example: `/home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json`
+
+**Raises:**
+- `KeyError`: If bundle is missing the `bundle_id` field.
+- `TypeError`: If bundle is not a dict.
+- `OSError`: If the file cannot be written (permission denied, disk full, etc.).
 
 **Example:**
 ```python
@@ -416,104 +731,87 @@ from perathos import prove
 from perathos.storage import save_bundle, load_bundle
 
 bundle = prove("The capital of France is Paris.")
-path = save_bundle(bundle)  # Saves to ~/.perathos/bundles/{bundle_id}.json
+path = save_bundle(bundle)
 print(f"Saved to {path}")
 
-# Later, load it back:
+# Load it back:
 loaded = load_bundle(bundle["bundle_id"])
-print(f"Loaded: {loaded['bundle_id']}")
+assert loaded == bundle
 ```
 
-#### `load_bundle(bundle_id)`
+### `load_bundle(bundle_id)`
 
-Load a bundle from disk by its UUID.
+Load a bundle from disk by its bundle_id.
+
+Reads the JSON file from `~/.perathos/bundles/{bundle_id}.json`
+and parses it into a Python dict. The returned bundle can be
+passed directly to `verify()` or `inspect()`.
 
 **Args:**
-  - `bundle_id` (str): The bundle's UUID (e.g., `"550e8400-e29b-41d4-a716-446655440000"`).
+- `bundle_id` (str): The bundle's UUID (e.g., "550e8400-e29b-41d4-a716-446655440000").
+  No UUID format validation is performed; the function attempts to load
+  `{bundle_id}.json` from the bundles directory.
 
 **Returns:**
-  - dict: The parsed bundle dict with all fields.
+- dict: Parsed bundle dict with all fields including `bundle_id`, `integrity_hash`, `_trace`, etc.
+  If the bundle was saved with a signature, the `provider_signature` field will be present.
 
 **Raises:**
-  - `FileNotFoundError`: If no bundle file exists for the given ID.
-  - `json.JSONDecodeError`: If the JSON file is corrupted.
+- `FileNotFoundError`: If no bundle file exists for the given ID.
+- `json.JSONDecodeError`: If the JSON file is corrupted or invalid.
+- `OSError`: If the file cannot be read (permission denied, etc.).
 
 **Example:**
 ```python
-from perathos.storage import load_bundle
+from perathos.storage import load_bundle, list_bundles
 from perathos import verify, inspect
 
-bundle = load_bundle("550e8400-e29b-41d4-a716-446655440000")
-valid, err = verify(bundle)
-if valid:
-    inspect(bundle)
+# List all bundles
+bundles = list_bundles()
+if bundles:
+    # Load the most recent one
+    bundle_id = bundles[0].stem  # filename without .json
+    bundle = load_bundle(bundle_id)
+    
+    # Verify and inspect
+    valid, err = verify(bundle)
+    if valid:
+        inspect(bundle)
+else:
+    print("No bundles found.")
 ```
 
-#### `list_bundles()`
+### `list_bundles()`
 
 List all locally stored bundles, newest first.
 
+Scans `~/.perathos/bundles/` for all .json files and sorts them
+by modification time (most recently modified first).
+
+**Args:**
+- None
+
 **Returns:**
-  - list[Path]: List of Path objects for all `.json` files in `~/.perathos/bundles/`, sorted by modification time (newest first).
+- list[Path]: List of Path objects for all .json files in `~/.perathos/bundles/`,
+  sorted by modification time descending (newest first).
+  Returns an empty list if the bundles directory is empty or doesn't exist yet.
+
+**Raises:**
+- None (always succeeds; returns empty list if directory doesn't exist)
 
 **Example:**
 ```python
 from perathos.storage import list_bundles, load_bundle
-from perathos import inspect
+from perathos import verify
 
 bundles = list_bundles()
-if bundles:
-    most_recent_path = bundles[0]
-    bundle_id = most_recent_path.stem  # filename without .json
+for bundle_path in bundles:
+    bundle_id = bundle_path.stem  # UUID without .json
     bundle = load_bundle(bundle_id)
-    inspect(bundle)
-else:
-    print("No bundles found. Run: perathos prove 'output text'")
+    valid, _ = verify(bundle)
+    status = "✓" if valid else "✗"
+    print(f"{status} {bundle_id}")
 ```
-
-#### `generate_keypair()` and key management
-
-Generate a signing keypair and load it from disk.
-
-**Example:**
-```python
-from perathos.signing import generate_keypair
-from perathos.storage import save_keypair, load_signing_key, load_verify_key
-from perathos import prove, sign
-
-# Generate a new keypair
-sk, vk = generate_keypair()
-sk_path, vk_path = save_keypair(sk, vk)
-print(f"Keys saved to {sk_path.parent}")
-
-# Later, load and use the key:
-sk = load_signing_key()
-bundle = prove("Some output")
-signed = sign(bundle, sk)
-print(f"Signed with key: {signed['provider_signature']['verify_key']}")
-```
-
-#### File Permissions & Security
-
-The signing key file (`~/.perathos/keys/signing.key`) is your private key and should be protected carefully. Perathos enforces this with:
-
-**Unix-like systems (Linux, macOS):**
-  - The `keys/` directory is created with mode `0o700` (drwx------), readable/writable/executable by owner only.
-  - The `signing.key` file is created with mode `0o600` (-rw-------), readable/writable by owner only.
-  - If you see a PermissionError when loading the key, verify the file is readable: `chmod 600 ~/.perathos/keys/signing.key`
-
-**Windows:**
-  - The `keys/` directory permissions are enforced by NTFS filesystem ACLs (not POSIX mode).
-  - Ensure your user account has exclusive read/write access to the `%USERPROFILE%\.perathos\keys\` directory.
-  - File permissions are best-effort; contact your system administrator if you encounter permission issues.
-
-**Why 0o600?**
-  - Mode `0o600` means the file is readable and writable by the owner only.
-  - This prevents other users on the same system from reading your private key via filesystem access.
-  - If another user gains access to your private key, they can forge signatures claiming to come from your key.
-  - Always treat your private key as you would treat a password or SSH private key: keep it secret and protected.
-
-**Never share your signing key.** The `verify.key` file (public key) can be shared freely and used by others to verify your signatures. The `signing.key` file (private key) must be kept secret.
 
 ## How it works
 
