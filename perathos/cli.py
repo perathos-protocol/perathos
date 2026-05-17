@@ -105,12 +105,12 @@ def keygen():
         perathos prove 'Hello world.' --sign
     """
     sk_path = keys_dir() / "signing.key"
+    vk_path = keys_dir() / "verify.key"
     if sk_path.exists():
-        click.echo("[ERROR] signing.key already exists.", err=True)
+        click.echo(f"[ERROR] signing.key already exists at {sk_path}", err=True)
         click.echo("", err=True)
-        click.echo("To replace it, run:", err=True)
-        click.echo(f"  rm {keys_dir() / 'signing.key'} {keys_dir() / 'verify.key'}", err=True)
-        click.echo("  perathos keygen", err=True)
+        click.echo("To regenerate, run:", err=True)
+        click.echo(f"  rm {sk_path} {vk_path} && perathos keygen", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -169,8 +169,7 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
     """
     # Handle TEXT and stdin reading
     if text is None:
-        click.echo("ERROR: TEXT argument is required unless reading from stdin.", err=True)
-        click.echo("Usage: perathos prove <text> or perathos prove - (for stdin)", err=True)
+        click.echo("[ERROR] TEXT argument required. Provide output text or use `perathos prove - < file.txt` to read from stdin.", err=True)
         sys.exit(2)
     
     if text == "-":
@@ -270,12 +269,12 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     """
     if file_path and bundle_id:
         click.echo("[ERROR] Use either BUNDLE_ID or --file, not both.", err=True)
-        click.echo("Try: perathos verify --help", err=True)
+        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000 OR perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
         click.echo("[ERROR] Specify either BUNDLE_ID or --file.", err=True)
-        click.echo("Try: perathos verify --help", err=True)
+        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000 OR perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     try:
