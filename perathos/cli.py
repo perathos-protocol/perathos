@@ -105,9 +105,9 @@ def keygen():
 
     sk_hex, vk_hex = generate_keypair()
     sk_path, vk_path = save_keypair(sk_hex, vk_hex)
-    click.echo(f"signing key  {sk_path}")
-    click.echo(f"verify key   {vk_path}")
-    click.echo(f"verify_key   {vk_hex}")
+    click.echo(f"signing.key (PRIVATE — keep secret) {sk_path}")
+    click.echo(f"verify.key (PUBLIC — can be shared)  {vk_path}")
+    click.echo(f"verify_key (public; shareable)       {vk_hex}")
     click.echo("")
     click.echo("✓ Keypair saved. To sign bundles, run:")
     click.echo("  perathos prove '<output_text>' --sign")
@@ -118,7 +118,7 @@ def keygen():
 @click.option("--input", "input_text", default="", metavar="INPUT",
               help="Original prompt / input that produced TEXT. Example: --input 'What is the capital of France?'")
 @click.option("--sign", is_flag=True, 
-              help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Creates a SIGNED bundle.")
+              help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Example: perathos prove 'output' --sign")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 @click.option("--verbose", is_flag=True,
