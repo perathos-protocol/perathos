@@ -72,8 +72,10 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
 
     Args:
         output_text: The AI-generated text to prove (e.g., model completion).
+            Must be a string (empty string is allowed).
         input_text: Original prompt or request that produced output_text.
             Defaults to empty string for prove-from-output-only use cases.
+            Must be a string.
 
     Returns:
         A dictionary containing:
@@ -86,7 +88,20 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
             - issued_at: ISO 8601 timestamp (UTC).
             - proof_system: String identifier for the hash scheme ("sha256-deterministic").
             - _trace: Verbatim execution metadata dict (used by verifiers).
+
+    Raises:
+        ValueError: If output_text is not a string, or if input_text is not a string.
+        TypeError: If output_text or input_text have wrong type.
     """
+    if not isinstance(output_text, str):
+        raise ValueError(
+            f"output_text must be a string, got {type(output_text).__name__}"
+        )
+    if not isinstance(input_text, str):
+        raise ValueError(
+            f"input_text must be a string, got {type(input_text).__name__}"
+        )
+
     issued_at = datetime.now(timezone.utc).isoformat()
     proof_system = "sha256-deterministic"
 
@@ -144,14 +159,41 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
 
     Args:
         bundle: A bundle dict from create_bundle() (or compatible structure).
+            Must be a dict and must contain the 'integrity_hash' field.
         signing_key_hex: 64-character hex-encoded Ed25519 signing key.
+            Must be a string containing exactly 64 hex characters (0-9, a-f).
 
     Returns:
         A new dict with all fields from bundle plus a "provider_signature" field:
             - algorithm: "ed25519"
             - verify_key: 64-character hex-encoded public key
             - signature: 128-character hex-encoded signature bytes
+
+    Raises:
+        TypeError: If bundle is not a dict or signing_key_hex is not a string.
+        KeyError: If bundle does not contain the 'integrity_hash' field.
+        ValueError: If signing_key_hex is not a valid 64-character hex string.
     """
+    if not isinstance(bundle, dict):
+        raise TypeError(f"bundle must be a dict, got {type(bundle).__name__}")
+    if not isinstance(signing_key_hex, str):
+        raise TypeError(
+            f"signing_key_hex must be a string, got {type(signing_key_hex).__name__}"
+        )
+    if "integrity_hash" not in bundle:
+        raise KeyError("bundle must contain 'integrity_hash' field")
+
+    if len(signing_key_hex) != 64:
+        raise ValueError(
+            f"signing_key_hex must be exactly 64 hex characters, got {len(signing_key_hex)}"
+        )
+    try:
+        int(signing_key_hex, 16)
+    except ValueError:
+        raise ValueError(
+            f"signing_key_hex must contain only hex characters (0-9, a-f), got: {signing_key_hex}"
+        )
+
     from .signing import sign_hash  # local import to avoid circular deps
     sig = sign_hash(bundle["integrity_hash"], signing_key_hex)
     return {**bundle, "provider_signature": sig}
@@ -171,8 +213,7 @@ def verify_bundle(bundle: dict) -> tuple[bool, str]:
         A tuple (valid, error_code) where:
             - valid is True and error_code is "" on successful verification.
             - valid is False and error_code is a string like "ERR_TRACE_HASH_MISMATCH"
-              or "ERR_MISSING_TRACE" on any failure. Check for 'ERR' substring to
-              detect invalid bundles.
+              on any failure. Check for 'ERR' substring to detect invalid bundles.
     """
     try:
         trace = bundle.get("_trace")
