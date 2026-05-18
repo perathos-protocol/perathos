@@ -160,7 +160,7 @@ def keygen():
 @click.option("--verbose", is_flag=True,
               help="Display full 64-character hashes instead of truncated 8-character previews.")
 @click.option("--quiet", "-q", is_flag=True,
-              help="Suppress bundle output; only print the saved file path. Useful for scripting.")
+              help="Suppress bundle output; only print the saved file path. Useful for scripting. Ignored if --json is used.")
 def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool, as_json: bool, verbose: bool, quiet: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
@@ -349,6 +349,13 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
         click.echo("", err=True)
         click.echo("Next step: List your bundles with:", err=True)
         click.echo("  perathos list", err=True)
+        click.echo("", err=True)
+        available = _list_available_bundles()
+        if "No bundles" in available:
+            click.echo(available, err=True)
+            click.echo("  Example: perathos prove 'The answer is 42.'", err=True)
+        else:
+            click.echo(available, err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"[ERROR] Invalid JSON in {file_path}: {exc}", err=True)
