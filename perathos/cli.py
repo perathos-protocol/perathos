@@ -126,10 +126,13 @@ def keygen():
     sk_path = keys_dir() / "signing.key"
     vk_path = keys_dir() / "verify.key"
     if sk_path.exists():
-        click.echo(f"[ERROR] signing.key already exists at {sk_path}", err=True)
+        click.echo(f"[ERROR] Keypair already exists at {keys_dir()}", err=True)
         click.echo("", err=True)
-        click.echo("To regenerate, run:", err=True)
-        click.echo(f"  rm {sk_path} {vk_path} && perathos keygen", err=True)
+        click.echo("To regenerate, delete the old keys and run keygen again:", err=True)
+        click.echo(f"  rm {sk_path} {vk_path}", err=True)
+        click.echo("  perathos keygen", err=True)
+        click.echo("", err=True)
+        click.echo("Warning: This will invalidate all bundles signed with the old key.", err=True)
         sys.exit(1)
 
     sk_hex, vk_hex = generate_keypair()
@@ -350,8 +353,10 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     except json.JSONDecodeError as exc:
         click.echo(f"[ERROR] Invalid JSON in {file_path}: {exc}", err=True)
         click.echo("", err=True)
-        click.echo("Next step: Validate the file with:", err=True)
+        click.echo("Next step: Validate the file syntax with:", err=True)
         click.echo(f"  python -m json.tool {file_path}", err=True)
+        click.echo("", err=True)
+        click.echo("Fix any syntax errors and try again.", err=True)
         sys.exit(1)
 
     # Step 1: hash-chain verification (always)
