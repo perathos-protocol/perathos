@@ -24,6 +24,9 @@ _ERROR_EXPLANATIONS = {
     "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed or corrupted. The bundle_id field doesn't match the integrity_hash. Next step: Do not trust this bundle. Verify the source and obtain the original bundle from the provider.",
     "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect. Next step: Verify the provider's public key and ask them to confirm the bundle hasn't been modified.",
     "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
+    "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
+    "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
+    "ERR_INPUT_FILE_READ": "Failed to read input file. Check that the file is readable and not corrupted. Example: perathos prove 'output' --input-file prompt.txt",
 }
 
 
@@ -187,7 +190,13 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
     """
     # Handle TEXT and stdin reading
     if text is None:
-        click.echo("[ERROR] TEXT argument required. Provide output text or use `perathos prove - < file.txt` to read from stdin.", err=True)
+        click.echo("[ERROR] TEXT argument is required.", err=True)
+        click.echo("Provide output text directly or use '-' to read from stdin.", err=True)
+        click.echo("", err=True)
+        click.echo("Examples:", err=True)
+        click.echo("  perathos prove 'The capital of France is Paris.'", err=True)
+        click.echo("  perathos prove - < output.txt  (read from stdin)", err=True)
+        click.echo("  perathos prove 'output' --input 'prompt'", err=True)
         sys.exit(2)
     
     if text == "-":
@@ -196,6 +205,14 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
     # Handle input_text: --input and --input-file are mutually exclusive
     if input_text and input_file:
         click.echo("[ERROR] --input and --input-file are mutually exclusive. Use one or the other.", err=True)
+        click.echo("", err=True)
+        click.echo("Choose one of:", err=True)
+        click.echo("  --input 'text'            (provide inline text)", err=True)
+        click.echo("  --input-file path         (read from file)", err=True)
+        click.echo("", err=True)
+        click.echo("Examples:", err=True)
+        click.echo("  perathos prove 'output' --input 'What is the capital?'", err=True)
+        click.echo("  perathos prove 'output' --input-file prompt.txt", err=True)
         sys.exit(2)
     
     if input_file:
@@ -203,9 +220,15 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
             input_text = Path(input_file).read_text(encoding="utf-8")
         except FileNotFoundError:
             click.echo(f"[ERROR] Input file not found: {input_file}", err=True)
+            click.echo("", err=True)
+            click.echo("Check that the file exists and the path is correct.", err=True)
+            click.echo(f"Example: perathos prove 'output' --input-file {input_file}", err=True)
             sys.exit(1)
         except OSError as exc:
             click.echo(f"[ERROR] Failed to read input file: {exc}", err=True)
+            click.echo("", err=True)
+            click.echo("Check that the file is readable and not corrupted.", err=True)
+            click.echo(f"Example: perathos prove 'output' --input-file {input_file}", err=True)
             sys.exit(1)
     
     bundle = prove(output_text=text, input_text=input_text)
@@ -214,7 +237,9 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
         try:
             sk_hex = load_signing_key()
         except FileNotFoundError:
-            click.echo("[ERROR] Signing key not found. To generate a keypair, run:", err=True)
+            click.echo("[ERROR] Signing key not found.", err=True)
+            click.echo("", err=True)
+            click.echo("To generate a keypair, run:", err=True)
             click.echo("  perathos keygen", err=True)
             click.echo("", err=True)
             click.echo("Then sign your bundle with:", err=True)
@@ -291,14 +316,22 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     """
     if file_path and bundle_id:
         click.echo("[ERROR] Use either BUNDLE_ID or --file, not both.", err=True)
-        click.echo("To verify a stored bundle, omit --file: perathos verify <bundle_id>", err=True)
-        click.echo("To verify a file, omit BUNDLE_ID: perathos verify --file bundle.json", err=True)
+        click.echo("", err=True)
+        click.echo("To verify a stored bundle, omit --file:", err=True)
+        click.echo("  perathos verify <bundle_id>", err=True)
+        click.echo("", err=True)
+        click.echo("To verify a file, omit BUNDLE_ID:", err=True)
+        click.echo("  perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
         click.echo("[ERROR] Specify either BUNDLE_ID or --file.", err=True)
-        click.echo("To verify a stored bundle: perathos verify <bundle_id>", err=True)
-        click.echo("To verify a file: perathos verify --file bundle.json", err=True)
+        click.echo("", err=True)
+        click.echo("To verify a stored bundle:", err=True)
+        click.echo("  perathos verify <bundle_id>", err=True)
+        click.echo("", err=True)
+        click.echo("To verify a file:", err=True)
+        click.echo("  perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     try:
@@ -310,11 +343,13 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
             display_id = bundle_id
     except FileNotFoundError:
         click.echo(f"[ERROR] Bundle not found: {bundle_id}", err=True)
+        click.echo("", err=True)
         click.echo("Next step: List your bundles with:", err=True)
         click.echo("  perathos list", err=True)
         sys.exit(1)
     except json.JSONDecodeError as exc:
         click.echo(f"[ERROR] Invalid JSON in {file_path}: {exc}", err=True)
+        click.echo("", err=True)
         click.echo("Next step: Validate the file with:", err=True)
         click.echo(f"  python -m json.tool {file_path}", err=True)
         sys.exit(1)
@@ -360,6 +395,7 @@ def inspect_cmd(bundle_id: str):
         bundle = load_bundle(bundle_id)
     except FileNotFoundError:
         click.echo(f"[ERROR] Bundle not found: {bundle_id}", err=True)
+        click.echo("", err=True)
         click.echo("Next step: List your bundles with:", err=True)
         click.echo("  perathos list", err=True)
         sys.exit(1)
