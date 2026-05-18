@@ -153,7 +153,9 @@ def keygen():
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 @click.option("--verbose", is_flag=True,
               help="Display full 64-character hashes instead of truncated 8-character previews.")
-def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool, as_json: bool, verbose: bool):
+@click.option("--quiet", "-q", is_flag=True,
+              help="Suppress bundle output; only print the saved file path. Useful for scripting.")
+def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool, as_json: bool, verbose: bool, quiet: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
     Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
@@ -193,17 +195,17 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
     
     # Handle input_text: --input and --input-file are mutually exclusive
     if input_text and input_file:
-        click.echo("ERROR: Use either --input or --input-file, not both.", err=True)
+        click.echo("[ERROR] --input and --input-file are mutually exclusive. Use one or the other.", err=True)
         sys.exit(2)
     
     if input_file:
         try:
             input_text = Path(input_file).read_text(encoding="utf-8")
         except FileNotFoundError:
-            click.echo(f"ERROR: Input file not found: {input_file}", err=True)
+            click.echo(f"[ERROR] Input file not found: {input_file}", err=True)
             sys.exit(1)
         except OSError as exc:
-            click.echo(f"ERROR: Failed to read input file: {exc}", err=True)
+            click.echo(f"[ERROR] Failed to read input file: {exc}", err=True)
             sys.exit(1)
     
     bundle = prove(output_text=text, input_text=input_text)
@@ -226,13 +228,17 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
             Path(output_file).write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
             saved_path = output_file
         except OSError as exc:
-            click.echo(f"ERROR: Failed to write output file: {exc}", err=True)
+            click.echo(f"[ERROR] Failed to write output file: {exc}", err=True)
             sys.exit(1)
     else:
         saved_path = str(save_bundle(bundle))
 
     if as_json:
         click.echo(json.dumps(bundle, indent=2, sort_keys=True))
+        return
+
+    if quiet:
+        click.echo(saved_path)
         return
 
     click.echo(f"bundle_id      {_format_hash(bundle['bundle_id'], verbose)}")
@@ -285,12 +291,14 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
     """
     if file_path and bundle_id:
         click.echo("[ERROR] Use either BUNDLE_ID or --file, not both.", err=True)
-        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000 OR perathos verify --file bundle.json", err=True)
+        click.echo("To verify a stored bundle, omit --file: perathos verify <bundle_id>", err=True)
+        click.echo("To verify a file, omit BUNDLE_ID: perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     if not file_path and not bundle_id:
         click.echo("[ERROR] Specify either BUNDLE_ID or --file.", err=True)
-        click.echo("Example: perathos verify 550e8400-e29b-41d4-a716-446655440000 OR perathos verify --file bundle.json", err=True)
+        click.echo("To verify a stored bundle: perathos verify <bundle_id>", err=True)
+        click.echo("To verify a file: perathos verify --file bundle.json", err=True)
         sys.exit(2)
 
     try:
