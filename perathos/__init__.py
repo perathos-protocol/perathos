@@ -42,6 +42,10 @@ Returns:
         - issued_at: ISO 8601 timestamp (UTC).
         - proof_system: String identifier for the hash scheme ("sha256-deterministic").
         - _trace: Verbatim execution metadata dict (used by verifiers).
+
+Example:
+    bundle = prove("The capital of France is Paris.", input_text="What is the capital?")
+    print(f"Bundle ID: {bundle['bundle_id']}")
 """
 
 sign = sign_bundle
@@ -60,6 +64,13 @@ Returns:
         - algorithm: "ed25519"
         - verify_key: 64-character hex-encoded public key
         - signature: 128-character hex-encoded signature bytes
+
+Example:
+    from perathos.signing import generate_keypair
+    sk, vk = generate_keypair()
+    bundle = prove("Output text")
+    signed = sign(bundle, sk)
+    print(f"Signed with verify_key: {vk[:8]}...")
 """
 
 verify = verify_bundle
@@ -76,8 +87,15 @@ Returns:
     A tuple (valid, error_code) where:
         - valid is True and error_code is "" on successful verification.
         - valid is False and error_code is a string like "ERR_TRACE_HASH_MISMATCH"
-          or "ERR_MISSING_TRACE" on any failure. Check for 'ERR' substring to
-          detect invalid bundles.
+          on any failure. Check for 'ERR' substring to detect invalid bundles.
+
+Example:
+    bundle = prove("Output text")
+    valid, err = verify(bundle)
+    if valid:
+        print("✓ Bundle is tamper-evident")
+    else:
+        print(f"✗ Verification failed: {err}")
 """
 
 inspect = inspect_bundle
@@ -89,6 +107,11 @@ hash chain, and trace steps with appropriate styling.
 
 Args:
     bundle: Bundle dict from create_bundle() or loaded via storage.load_bundle().
+
+Example:
+    bundle = prove("Hello world.")
+    inspect(bundle)
+    # Prints human-readable bundle with hash chain and metadata
 """
 
 __all__ = [
