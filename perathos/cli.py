@@ -18,31 +18,47 @@ from .storage import (
 
 # Error code explanations
 _ERROR_EXPLANATIONS = {
-    "ERR_MISSING_TRACE": "Bundle is missing execution metadata. The bundle file may be corrupted.",
-    "ERR_TRACE_HASH_MISMATCH": "Execution metadata was tampered with. The bundle has been modified since creation.",
-    "ERR_INTEGRITY_HASH_MISMATCH": "Bundle fields (model, timestamps, or hashes) were tampered with. Do not trust this bundle.",
-    "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed. The bundle_id must match the integrity hash.",
-    "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect.",
+    "ERR_MISSING_TRACE": "Bundle is missing execution metadata (_trace field). The bundle file may be corrupted or truncated. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to validate JSON syntax.",
+    "ERR_TRACE_HASH_MISMATCH": "Execution metadata was tampered with. The hash chain is broken — the _trace field doesn't match trace_hash. Next step: Do not trust this bundle. Verify the source and obtain the original bundle from the provider.",
+    "ERR_INTEGRITY_HASH_MISMATCH": "Bundle fields (ai_id, input_hash, output_hash, issued_at, or trace_hash) were tampered with. The bundle has been modified since creation. Next step: Do not trust this bundle. This is a critical tamper detection.",
+    "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed or corrupted. The bundle_id field doesn't match the integrity_hash. Next step: Do not trust this bundle. Verify the source and obtain the original bundle from the provider.",
+    "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect. Next step: Verify the provider's public key and ask them to confirm the bundle hasn't been modified.",
+    "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
 }
 
 
 def _explain_error(error_code: str) -> str:
     """Return human-readable explanation for an error code.
     
-    Maps error codes (e.g., "ERR_TRACE_HASH_MISMATCH") to user-friendly explanations.
-    Handles error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash") by
-    extracting the base code. Returns the original error code if no explanation exists.
+    Maps error codes (e.g., "ERR_TRACE_HASH_MISMATCH") to user-friendly explanations
+    with actionable next steps. Handles error codes with suffixes (e.g., 
+    "ERR_MISSING_FIELD:output_hash") by extracting the base code and adding field-specific
+    context. Returns the original error code if no explanation exists.
     
     Args:
-        error_code: Error code string (e.g., "ERR_TRACE_HASH_MISMATCH").
+        error_code: Error code string (e.g., "ERR_TRACE_HASH_MISMATCH" or "ERR_MISSING_FIELD:output_hash").
     
     Returns:
-        Human-readable explanation string, or the original error code if unmapped.
+        Human-readable explanation string with next steps, or the original error code if unmapped.
+    
+    Examples:
+        _explain_error("ERR_TRACE_HASH_MISMATCH")
+        → "Execution metadata was tampered with. The hash chain is broken — ..."
+        
+        _explain_error("ERR_MISSING_FIELD:output_hash")
+        → "Bundle is missing a required field: output_hash. The bundle structure is invalid..."
     """
     # Handle error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash")
     base_code = error_code.split(":")[0]
+    
     if base_code in _ERROR_EXPLANATIONS:
-        return _ERROR_EXPLANATIONS[base_code]
+        explanation = _ERROR_EXPLANATIONS[base_code]
+        # For ERR_MISSING_FIELD, add field name to the explanation
+        if base_code == "ERR_MISSING_FIELD" and ":" in error_code:
+            field_name = error_code.split(":", 1)[1]
+            explanation = f"Bundle is missing required field: {field_name}. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present."
+        return explanation
+    
     return error_code
 
 
