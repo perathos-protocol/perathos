@@ -198,3 +198,119 @@ def test_different_outputs_produce_different_bundles():
     assert b1["bundle_id"] != b2["bundle_id"]
     assert b1["output_hash"] != b2["output_hash"]
     assert b1["integrity_hash"] != b2["integrity_hash"]
+
+
+def test_create_bundle_rejects_non_string_output():
+    try:
+        create_bundle(None)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "output_text" in str(exc)
+        assert "string" in str(exc)
+
+
+def test_create_bundle_rejects_non_string_input():
+    try:
+        create_bundle("output", input_text=123)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "input_text" in str(exc)
+        assert "string" in str(exc)
+
+
+def test_create_bundle_rejects_bytes_output():
+    try:
+        create_bundle(b"bytes output")
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "output_text" in str(exc)
+
+
+def test_create_bundle_rejects_int_output():
+    try:
+        create_bundle(42)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "output_text" in str(exc)
+        assert "int" in str(exc)
+
+
+def test_create_bundle_rejects_dict_input():
+    try:
+        create_bundle("output", input_text={"key": "value"})
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "input_text" in str(exc)
+        assert "dict" in str(exc)
+
+
+def test_create_bundle_accepts_empty_strings():
+    # Empty strings are valid (e.g., prove-from-output-only)
+    b1 = create_bundle("")
+    assert b1["output_hash"] is not None
+    
+    b2 = create_bundle("output", input_text="")
+    assert b2["input_hash"] is not None
+
+
+def test_sign_bundle_rejects_non_dict_bundle():
+    sk, _ = generate_keypair()
+    try:
+        sign_bundle("not a dict", sk)
+        assert False, "Expected TypeError"
+    except TypeError as exc:
+        assert "bundle" in str(exc)
+        assert "dict" in str(exc)
+
+
+def test_sign_bundle_rejects_non_string_key():
+    b = create_bundle("output")
+    try:
+        sign_bundle(b, 12345)
+        assert False, "Expected TypeError"
+    except TypeError as exc:
+        assert "signing_key_hex" in str(exc)
+        assert "string" in str(exc)
+
+
+def test_sign_bundle_rejects_short_key():
+    b = create_bundle("output")
+    try:
+        sign_bundle(b, "abc123")
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "signing_key_hex" in str(exc)
+        assert "64" in str(exc)
+
+
+def test_sign_bundle_rejects_long_key():
+    b = create_bundle("output")
+    long_key = "a" * 128
+    try:
+        sign_bundle(b, long_key)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "signing_key_hex" in str(exc)
+        assert "64" in str(exc)
+
+
+def test_sign_bundle_rejects_non_hex_key():
+    b = create_bundle("output")
+    invalid_key = "z" * 64
+    try:
+        sign_bundle(b, invalid_key)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "signing_key_hex" in str(exc)
+        assert "hex" in str(exc)
+
+
+def test_sign_bundle_rejects_bundle_missing_integrity_hash():
+    sk, _ = generate_keypair()
+    b = create_bundle("output")
+    del b["integrity_hash"]
+    try:
+        sign_bundle(b, sk)
+        assert False, "Expected KeyError"
+    except KeyError as exc:
+        assert "integrity_hash" in str(exc)
