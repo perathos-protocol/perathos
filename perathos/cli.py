@@ -143,7 +143,7 @@ def keygen():
 @click.argument("text", required=False)
 @click.option("--input", "input_text", default="", metavar="INPUT",
               help="Original prompt / input that produced TEXT. Example: --input 'What is the capital of France?'")
-@click.option("--input-file", type=click.Path(exists=True), metavar="PATH",
+@click.option("--input-file", type=click.Path(exists=False), metavar="PATH",
               help="Read input_text from file instead of --input. Example: --input-file prompt.txt")
 @click.option("--output-file", type=click.Path(), metavar="PATH",
               help="Write bundle JSON to file instead of saving to ~/.perathos/bundles/. Example: --output-file bundle.json")
