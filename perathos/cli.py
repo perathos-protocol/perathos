@@ -153,7 +153,7 @@ def keygen():
               help="Read input_text from file instead of --input. Example: --input-file prompt.txt")
 @click.option("--output-file", type=click.Path(), metavar="PATH",
               help="Write bundle JSON to file instead of saving to ~/.perathos/bundles/. Example: --output-file bundle.json")
-@click.option("--sign", is_flag=True, 
+@click.option("--sign", "sign_flag", is_flag=True,
               help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Example: perathos prove 'output' --sign")
 @click.option("--json", "as_json", is_flag=True, 
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
