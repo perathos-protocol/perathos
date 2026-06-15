@@ -316,7 +316,11 @@ def main() -> None:
     passed, output = run_tests()
     if not passed:
         print(f"[FAIL] fix broke tests — reverting\n{output[-1000:]}")
+        # checkout restores tracked files; clean -fd removes any NEW untracked
+        # files the fixer created (e.g. a new test) that would otherwise persist
+        # after revert and poison the working tree (mirrors execute_cycle.py).
         subprocess.run(["git", "checkout", "--", "."], cwd=ROOT)
+        subprocess.run(["git", "clean", "-fd"], cwd=ROOT)
         sys.exit(1)
     print("Tests passed ✓")
 

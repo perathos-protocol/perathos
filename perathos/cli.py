@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 
 from . import __version__, prove, sign, verify, inspect
+from .inspector import _unicode_ok
 from .signing import generate_keypair, verify_signature
 from .storage import (
     list_bundles,
@@ -25,6 +26,8 @@ _ERROR_EXPLANATIONS = {
     "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect. Next step: Verify the provider's public key and ask them to confirm the bundle hasn't been modified.",
     "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
     "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
+    "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
+    "ERR_MALFORMED_BUNDLE": "The bundle structure is malformed and could not be verified (e.g. a corrupted or hostile _trace). Next step: Obtain the original bundle from the provider; do not trust this one.",
     "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
     "ERR_INPUT_FILE_READ": "Failed to read input file. Check that the file is readable and not corrupted. Example: perathos prove 'output' --input-file prompt.txt",
 }
@@ -141,7 +144,11 @@ def keygen():
     click.echo(f"verify.key (PUBLIC — can be shared)  {vk_path}")
     click.echo(f"verify_key (public; shareable)       {vk_hex}")
     click.echo("")
-    click.echo("✓ Keypair saved. To sign bundles, run:")
+    # Guard the checkmark: a raw U+2713 crashes with UnicodeEncodeError on a
+    # Windows cp1252 console (the key is already written by this point, which
+    # made the tool look permanently broken on every subsequent keygen).
+    mark = "✓ " if _unicode_ok() else ""
+    click.echo(f"{mark}Keypair saved. To sign bundles, run:")
     click.echo("  perathos prove '<output_text>' --sign")
 
 
@@ -293,7 +300,9 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
               help="Print the full bundle as JSON on success. Example: perathos verify <id> --json")
 @click.option("--verbose", is_flag=True,
               help="Display full 64-character hashes instead of truncated 8-character previews.")
-def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
+@click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
+              help="Pin the expected signer: accept a signed bundle only if its public key matches this 64-char hex key. Prevents silent signer substitution.")
+def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, expected_verify_key: str):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
     Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
@@ -366,8 +375,9 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool):
         click.echo("Fix any syntax errors and try again.", err=True)
         sys.exit(1)
 
-    # Step 1: hash-chain verification (always)
-    valid, err = verify(bundle)
+    # Step 1: hash-chain + signature verification (verify() also validates the
+    # provider_signature when present, and pins the signer if --verify-key given)
+    valid, err = verify(bundle, expected_verify_key=expected_verify_key)
     if not valid:
         explanation = _explain_error(err)
         click.echo(f"[ERROR] INVALID  {err}", err=True)

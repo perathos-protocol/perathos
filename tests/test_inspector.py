@@ -67,19 +67,15 @@ def test_inspect_bundle_with_empty_trace(capsys):
 
 
 def test_inspect_bundle_with_none_trace(capsys):
-    """Test that inspect_bundle handles _trace=None gracefully."""
+    """inspect_bundle must NOT crash when _trace is explicitly None."""
     b = create_bundle("output")
     b["_trace"] = None
-    # Should not raise; inspect_bundle should handle None gracefully
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-        output = captured.out + captured.err
-        # If no exception, output should exist
-        assert len(output) > 0
-    except (TypeError, AttributeError):
-        # Acceptable if None causes error during rendering
-        pass
+    # Previously raised AttributeError ('NoneType' has no attribute 'get');
+    # must now render gracefully and produce output.
+    inspect_bundle(b)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert len(output) > 0
 
 
 def test_inspect_bundle_with_numeric_hashes(capsys):

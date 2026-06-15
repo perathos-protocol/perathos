@@ -40,11 +40,13 @@ def _validate_hex_hash(value: str, name: str, length: int = 64) -> None:
         raise ValueError(
             f"{name} must be exactly {length} hex characters, got {len(value)}"
         )
-    try:
-        int(value, 16)
-    except ValueError:
+    # Strict, canonical hex only: lowercase 0-9a-f. int(value, 16) would wrongly
+    # accept uppercase, a leading "0x", and surrounding whitespace — none of
+    # which are canonical SHA-256/key hex and any of which break byte-equality
+    # comparisons or bytes.fromhex() downstream.
+    if any(c not in "0123456789abcdef" for c in value):
         raise ValueError(
-            f"{name} must be valid hex characters (0-9, a-f), got: {value}"
+            f"{name} must be valid lowercase hex characters (0-9, a-f), got: {value}"
         )
 
 
@@ -114,13 +116,13 @@ def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[boo
     try:
         signature_hex = provider_signature["signature"]
         if not isinstance(signature_hex, str):
-            return False, f"ERR_INVALID_SIGNATURE:signature must be a string"
+            return False, "ERR_INVALID_SIGNATURE:signature must be a string"
         if len(signature_hex) != 128:
             return False, f"ERR_INVALID_SIGNATURE:signature must be 128 hex chars, got {len(signature_hex)}"
         try:
             int(signature_hex, 16)
         except ValueError:
-            return False, f"ERR_INVALID_SIGNATURE:signature must be valid hex"
+            return False, "ERR_INVALID_SIGNATURE:signature must be valid hex"
     except KeyError as exc:
         return False, f"ERR_MISSING_SIG_FIELD:{exc}"
 

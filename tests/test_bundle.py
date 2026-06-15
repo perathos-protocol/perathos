@@ -314,3 +314,70 @@ def test_sign_bundle_rejects_bundle_missing_integrity_hash():
         assert False, "Expected KeyError"
     except KeyError as exc:
         assert "integrity_hash" in str(exc)
+
+
+# ── signature verification through verify_bundle (regression: a forged
+#    signature on an intact hash chain used to pass verify()) ──────────────────
+
+def test_verify_accepts_validly_signed_bundle():
+    b = create_bundle("output text", input_text="prompt")
+    sk, vk = generate_keypair()
+    signed = sign_bundle(b, sk)
+    valid, err = verify_bundle(signed)
+    assert valid is True
+    assert err == ""
+
+
+def test_verify_rejects_forged_signature():
+    """A bundle with an intact chain but a forged signature must NOT verify."""
+    b = create_bundle("output text")
+    sk, vk = generate_keypair()
+    signed = sign_bundle(b, sk)
+    signed["provider_signature"]["signature"] = "0" * 128  # forged
+    valid, err = verify_bundle(signed)
+    assert valid is False
+    assert "ERR" in err
+
+
+def test_verify_rejects_substituted_signer_when_pinned():
+    """With expected_verify_key pinned, a re-sign by a different key is rejected."""
+    b = create_bundle("output text")
+    honest_sk, honest_vk = generate_keypair()
+    attacker_sk, attacker_vk = generate_keypair()
+    signed = sign_bundle(b, honest_sk)
+    # Attacker strips and re-signs the same hash with their own key.
+    resigned = sign_bundle(signed, attacker_sk)
+    # Unpinned: signature is internally valid, so it passes (caller must pin).
+    assert verify_bundle(resigned) == (True, "")
+    # Pinned to the honest key: substitution is detected.
+    valid, err = verify_bundle(resigned, expected_verify_key=honest_vk)
+    assert valid is False
+    assert err == "ERR_UNEXPECTED_SIGNER"
+
+
+def test_verify_accepts_pinned_matching_signer():
+    b = create_bundle("output text")
+    sk, vk = generate_keypair()
+    signed = sign_bundle(b, sk)
+    valid, err = verify_bundle(signed, expected_verify_key=vk)
+    assert valid is True
+    assert err == ""
+
+
+def test_verify_does_not_crash_on_mixed_key_trace():
+    """A hostile _trace with mixed-type keys must return an error, not crash."""
+    b = create_bundle("output")
+    b["_trace"] = {1: "a", "b": 2}  # json.dumps(sort_keys=True) would TypeError
+    valid, err = verify_bundle(b)
+    assert valid is False
+    assert "ERR" in err
+
+
+def test_sign_bundle_rejects_uppercase_hex_key():
+    """Hex validation is strict lowercase; uppercase keys are rejected."""
+    b = create_bundle("output")
+    try:
+        sign_bundle(b, "A" * 64)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "hex" in str(exc)

@@ -73,3 +73,57 @@ def test_verify_detects_tampering(home):
     verify = runner.invoke(cli, ["verify", "--file", str(out_file)])
     assert verify.exit_code == 1
     assert "INVALID" in verify.output
+
+
+def test_keygen_output_is_cp1252_safe(home, monkeypatch):
+    """keygen must not emit characters that crash a Windows cp1252 console.
+
+    CliRunner backs stdout with UTF-8, so it cannot reproduce the cp1252 crash
+    directly. Instead we force the no-Unicode branch and assert the output
+    encodes cleanly to cp1252 (the bug was an unguarded U+2713 checkmark).
+    """
+    monkeypatch.setattr("perathos.cli._unicode_ok", lambda: False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["keygen"])
+    assert result.exit_code == 0, result.output
+    result.output.encode("cp1252")  # must not raise UnicodeEncodeError
+
+
+def test_inspect_command(home):
+    runner = CliRunner()
+    prove = runner.invoke(cli, ["prove", "Inspect me.", "--quiet"])
+    assert prove.exit_code == 0, prove.output
+    bundle_id = prove.output.strip().splitlines()[-1]
+    bundle_id = __import__("pathlib").Path(bundle_id).stem
+    result = runner.invoke(cli, ["inspect", bundle_id])
+    assert result.exit_code == 0, result.output
+    assert "Bundle ID" in result.output
+
+
+def test_list_command(home):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["prove", "One.", "--quiet"]).exit_code == 0
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    assert len(result.output.strip()) > 0
+
+
+def test_verify_with_pinned_key(home):
+    """verify --verify-key accepts the matching signer and rejects a wrong one."""
+    runner = CliRunner()
+    assert runner.invoke(cli, ["keygen"]).exit_code == 0
+    verify_key = (home / ".perathos" / "keys" / "verify.key").read_text(encoding="utf-8").strip()
+
+    out_file = str(home / "b.json")
+    assert runner.invoke(
+        cli, ["prove", "Pinned.", "--sign", "--output-file", out_file, "--quiet"]
+    ).exit_code == 0
+
+    ok = runner.invoke(cli, ["verify", "--file", out_file, "--verify-key", verify_key])
+    assert ok.exit_code == 0, ok.output
+    assert "VALID_SIGNED" in ok.output
+
+    wrong = "f" * 64
+    bad = runner.invoke(cli, ["verify", "--file", out_file, "--verify-key", wrong])
+    assert bad.exit_code == 1
+    assert "INVALID" in bad.output

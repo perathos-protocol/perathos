@@ -187,11 +187,9 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
         raise ValueError(
             f"signing_key_hex must be exactly 64 hex characters, got {len(signing_key_hex)}"
         )
-    try:
-        int(signing_key_hex, 16)
-    except ValueError:
+    if any(c not in "0123456789abcdef" for c in signing_key_hex):
         raise ValueError(
-            f"signing_key_hex must contain only hex characters (0-9, a-f), got: {signing_key_hex}"
+            f"signing_key_hex must contain only lowercase hex characters (0-9, a-f), got: {signing_key_hex}"
         )
 
     from .signing import sign_hash  # local import to avoid circular deps
@@ -199,15 +197,22 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
     return {**bundle, "provider_signature": sig}
 
 
-def verify_bundle(bundle: dict) -> tuple[bool, str]:
+def verify_bundle(bundle: dict, expected_verify_key: str | None = None) -> tuple[bool, str]:
     """Recompute all hashes from stored data and check they match.
 
-    Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id.
-    Does not re-hash the original input/output text (those are gone); only checks
-    that the stored hashes are self-consistent and form a valid chain.
+    Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id,
+    and — if the bundle carries a provider_signature — that the Ed25519 signature
+    validates over integrity_hash. Does not re-hash the original input/output text
+    (those are gone); only checks that the stored hashes are self-consistent and
+    form a valid chain.
 
     Args:
         bundle: A bundle dict from create_bundle() (optionally with signature).
+        expected_verify_key: If given, a signed bundle is only accepted when its
+            provider_signature.verify_key equals this 64-char hex public key. This
+            pins provenance: the signature itself only proves *some* key signed the
+            hash, and verify_key lives outside integrity_hash, so without pinning an
+            attacker can strip the signature and re-sign with their own key.
 
     Returns:
         A tuple (valid, error_code) where:
@@ -241,7 +246,25 @@ def verify_bundle(bundle: dict) -> tuple[bool, str]:
         if expected_id != bundle["bundle_id"]:
             return False, "ERR_BUNDLE_ID_MISMATCH"
 
+        # Step 4: signature. A bundle that carries a provider_signature must NOT
+        # pass verification if that signature does not validate — otherwise the
+        # public verify() reports a forged signature as valid.
+        sig = bundle.get("provider_signature")
+        if sig is not None:
+            from .signing import verify_signature  # local import avoids a cycle
+            sig_valid, sig_err = verify_signature(bundle["integrity_hash"], sig)
+            if not sig_valid:
+                return False, sig_err
+            # Step 5: optional signer pinning (provenance).
+            if expected_verify_key is not None and sig.get("verify_key") != expected_verify_key:
+                return False, "ERR_UNEXPECTED_SIGNER"
+
         return True, ""
 
     except KeyError as exc:
         return False, f"ERR_MISSING_FIELD:{exc}"
+    except (TypeError, ValueError) as exc:
+        # A hostile/malformed bundle (e.g. _trace with mixed-type keys that
+        # json.dumps(sort_keys=True) cannot order) must return an error, not
+        # crash a verifier that is documented to return (False, error_code).
+        return False, f"ERR_MALFORMED_BUNDLE:{exc}"

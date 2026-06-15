@@ -91,7 +91,9 @@ def _fmt_model(bundle: dict) -> str:
     Returns:
         Human-readable model description (e.g., "sha256-deterministic v1 (perathos-demo-model)").
     """
-    descriptor = bundle.get("_trace", {}).get("model_descriptor", bundle.get("proof_system", "unknown"))
+    # `or {}` guards _trace being present but None (a missing key would use the
+    # {} default, but an explicit None would not — and None has no .get()).
+    descriptor = (bundle.get("_trace") or {}).get("model_descriptor", bundle.get("proof_system", "unknown"))
     parts = descriptor.split(":")
     if len(parts) == 3:
         name, system, version = parts
