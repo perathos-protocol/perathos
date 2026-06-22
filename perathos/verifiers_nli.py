@@ -101,6 +101,16 @@ class NLIEntailmentModel:
             best_contra = max(best_contra, p.get("contradiction", 0.0))
         return best_entail, best_contra
 
+    def predict(self, premise: str, hypothesis: str) -> "tuple[str, float, Dict[str, float]]":
+        """NLI prediction for a single pair: (predicted_role, confidence, probs).
+
+        confidence is the probability mass on the predicted class — the raw
+        signal a calibrator turns into an honest confidence_bps.
+        """
+        probs = self._probs(premise, hypothesis)
+        role = max(probs, key=probs.get)
+        return role, probs[role], probs
+
     def label(self, claim: str, evidence: List[str]) -> str:
         if not evidence:
             return UNVERIFIABLE

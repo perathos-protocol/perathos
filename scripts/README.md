@@ -3,6 +3,36 @@
 Runnable harnesses for making the Claim-Entailment verifier (124) real and its
 confidence honest. Both are standalone and run against a checkout.
 
+## Full pipeline
+
+```bash
+pip install perathos[train]
+# 1. Build {premise,hypothesis,label} JSONL (default: SNLI; see license notes)
+python scripts/prepare_nli.py --out-dir data --train 2500 --eval 800
+# 2. Baseline: evaluate the stock NLI model + report calibration
+python scripts/evaluate.py data/eval.jsonl --model cross-encoder/nli-deberta-v3-xsmall
+# 3. Fine-tune (reuses the base head's label order to protect a short run)
+python scripts/train_entailment.py data/train.jsonl --eval data/eval.jsonl \
+    --base cross-encoder/nli-deberta-v3-xsmall --out entailment-ckpt --epochs 1
+# 4. Evaluate the fine-tuned checkpoint + write a calibrator
+python scripts/evaluate.py data/eval.jsonl --model ./entailment-ckpt --calib-out calib.json
+# 5. Use it as the verifier backend
+#    nli_entailment_fn(model_name="./entailment-ckpt")
+```
+
+See [BENCHMARKS.md](BENCHMARKS.md) for measured numbers on this exact pipeline.
+
+## `prepare_nli.py` — build training/eval JSONL from a HF NLI dataset
+
+Defaults to SNLI (CC BY-SA; labels map 1:1 to entailment/neutral/contradiction).
+For a fully permissive shippable model, write a loader for the MIT sets
+(FActScore, RAGTruth) per [../docs/research/TRAINING_DATA.md](../docs/research/TRAINING_DATA.md).
+
+## `evaluate.py` — accuracy + calibration of a checkpoint
+
+Reports accuracy on a held-out set and ECE (before/after temperature scaling),
+optionally writing a calibrator JSON the verifier can apply.
+
 ## `calibrate.py` — fit honest confidence (no heavy deps)
 
 A verifier's raw score is not the probability its verdict is correct. Fit a

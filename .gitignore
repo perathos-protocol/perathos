@@ -11,3 +11,11 @@ venv/
 .ruff_cache/
 htmlcov/
 .coverage
+
+# Verifier training artifacts (datasets, checkpoints, calibrators) — never commit
+data/
+*-ckpt/
+entailment-ckpt/
+calib*.json
+tmp_*/
+tmp_*.json

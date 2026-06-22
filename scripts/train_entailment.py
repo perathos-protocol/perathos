@@ -76,6 +76,18 @@ def main() -> None:
     )
 
     tok = AutoTokenizer.from_pretrained(args.base)
+    model = AutoModelForSequenceClassification.from_pretrained(args.base, num_labels=len(LABELS))
+
+    # If the base already has an entailment/neutral/contradiction head, REUSE its
+    # label order so the pretrained head stays aligned (forcing our order would
+    # scramble it and waste a short fine-tune). Otherwise install our mapping.
+    cfg_l2i = {str(k).lower(): int(v) for k, v in (model.config.label2id or {}).items()}
+    if set(LABELS).issubset(cfg_l2i):
+        label2id = {name: cfg_l2i[name] for name in LABELS}
+    else:
+        label2id = dict(LABEL2ID)
+        model.config.label2id = label2id
+        model.config.id2label = {i: n for n, i in label2id.items()}
 
     class NLIDataset(Dataset):
         def __init__(self, rows):
@@ -92,16 +104,11 @@ def main() -> None:
                 return_tensors="pt",
             )
             item = {k: v.squeeze(0) for k, v in enc.items()}
-            item["labels"] = torch.tensor(LABEL2ID[r["label"]])
+            item["labels"] = torch.tensor(label2id[r["label"]])
             return item
 
     train_ds = NLIDataset(load_jsonl(args.train))
     eval_ds = NLIDataset(load_jsonl(args.eval_path)) if args.eval_path else None
-
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.base, num_labels=len(LABELS),
-        id2label={i: n for n, i in LABEL2ID.items()}, label2id=LABEL2ID,
-    )
 
     def metrics(eval_pred):
         logits, labels = eval_pred
