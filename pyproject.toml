@@ -17,6 +17,9 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 agents = ["httpx>=0.27,<0.29", "anthropic>=0.39,<1.0"]
 # Optional real NLI entailment verifier (heavy; not pulled by `pip install perathos`).
 nli = ["transformers>=4.40", "torch>=2.0"]
+# Fine-tuning the entailment model (scripts/train_entailment.py) — adds the
+# HuggingFace Trainer stack on top of the inference deps.
+train = ["transformers>=4.40", "torch>=2.0", "accelerate>=1.1.0", "datasets>=2.0", "scikit-learn>=1.0"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
