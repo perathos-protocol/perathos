@@ -8,6 +8,7 @@ the `--sign` flag's click-derived parameter name did not match the function
 signature. These tests invoke the commands via click's CliRunner so that class
 of bug is caught.
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -94,7 +95,7 @@ def test_inspect_command(home):
     prove = runner.invoke(cli, ["prove", "Inspect me.", "--quiet"])
     assert prove.exit_code == 0, prove.output
     bundle_id = prove.output.strip().splitlines()[-1]
-    bundle_id = __import__("pathlib").Path(bundle_id).stem
+    bundle_id = Path(bundle_id).stem
     result = runner.invoke(cli, ["inspect", bundle_id])
     assert result.exit_code == 0, result.output
     assert "Bundle ID" in result.output
@@ -127,3 +128,42 @@ def test_verify_with_pinned_key(home):
     bad = runner.invoke(cli, ["verify", "--file", out_file, "--verify-key", wrong])
     assert bad.exit_code == 1
     assert "INVALID" in bad.output
+
+
+def test_prove_with_evidence_runs_verification(home):
+    """`prove --evidence-text` runs the pipeline and binds a verdict."""
+    runner = CliRunner()
+    out_file = str(home / "v.json")
+    r = runner.invoke(cli, [
+        "prove", "The capital of France is Paris.",
+        "--evidence-text", "The capital of France is Paris, its largest city.",
+        "--output-file", out_file,
+    ])
+    assert r.exit_code == 0, r.output
+    assert "verdict" in r.output
+    bundle = json.loads(Path(out_file).read_text(encoding="utf-8"))
+    assert "verification" in bundle
+    # the bound verification survives offline verification
+    verify = runner.invoke(cli, ["verify", "--file", out_file])
+    assert verify.exit_code == 0, verify.output
+
+
+def test_prove_with_samples_runs_verification(home):
+    runner = CliRunner()
+    r = runner.invoke(cli, [
+        "prove", "The sky is blue.",
+        "--sample-text", "The sky is blue.",
+        "--sample-text", "The sky appears blue.",
+        "--json",
+    ])
+    assert r.exit_code == 0, r.output
+    bundle = json.loads(r.output)
+    ids = [rec["verifier_id"] for rec in bundle["verification"]["verdict_records"]]
+    assert 122 in ids  # Cross-Examiner ran
+
+
+def test_doctor_runs(home):
+    r = CliRunner().invoke(cli, ["doctor"])
+    assert r.exit_code == 0, r.output
+    assert "perathos" in r.output
+    assert "python" in r.output

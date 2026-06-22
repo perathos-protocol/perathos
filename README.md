@@ -1,6 +1,8 @@
 # Perathos
 
-Cryptographic proof layer for AI outputs. Every AI response gets a tamper-evident bundle — a hash chain + optional Ed25519 signature — that can be verified offline with no network calls.
+Cryptographic proof layer for AI outputs. Every AI response gets a tamper-evident bundle — a hash chain + optional Ed25519 signature — that can be verified offline with no network calls. A pluggable **multi-verifier pipeline** can additionally attach hallucination/factuality verdicts (self-consistency, claim-level entailment) that are bound into the signed bundle, so the verdicts are reproducible and tamper-evident too.
+
+> **Evidence, not guarantee.** A `PASS` means the configured verifiers found no problem with the evidence they had — not that the output is true. `INCONCLUSIVE` ("not enough evidence") is a first-class outcome, never silently promoted to PASS. See [docs/ENTERPRISE_FAQ.md](docs/ENTERPRISE_FAQ.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## What Problem Does This Solve?
 
@@ -39,6 +41,50 @@ To add a cryptographic signature:
 perathos prove "The answer is 42." --sign
 ```
 
+## Verifying content, not just integrity
+
+Beyond tamper-evidence, Perathos can run a **multi-verifier pipeline** over an
+output and fold the verdicts into the signed bundle:
+
+- **Cross-Examiner (122)** — self-consistency: compares the output against
+  re-samples; wide disagreement signals hallucination.
+- **Claim-Entailment (124)** — decomposes the output into atomic claims and
+  labels each supported / contradicted / unverifiable against evidence.
+
+```bash
+# Self-consistency from re-samples
+perathos prove "The sky is blue." --sample-text "The sky is blue." --sample-text "Sky appears blue."
+
+# Claim entailment against evidence, using the REAL NLI model
+pip install perathos[nli]
+perathos prove "The capital of France is Berlin." \
+  --evidence-text "The capital of France is Paris, its largest city." --nli
+# verdict        FAIL (1 verifier(s) failed)   <- the NLI model catches the contradiction
+```
+
+Notes:
+- The default entailment/similarity functions are **deterministic lexical
+  placeholders** (clearly labelled) so the pipeline runs with zero heavy deps.
+  Use `--nli` (or inject your own model) for real semantic entailment.
+- Each verdict records **SHA-256 digests of the exact evidence/samples** it
+  judged, so a consumer can re-check it. Any edit to a verdict breaks the
+  integrity hash → `ERR_INTEGRITY_HASH_MISMATCH`.
+- A verifier that errors or has no evidence returns `INCONCLUSIVE`, never PASS.
+- `confidence_bps` can be **calibrated** (`perathos.TemperatureCalibrator`,
+  `expected_calibration_error`) so it means what it says. See
+  [docs/research/TRAINING_DATA.md](docs/research/TRAINING_DATA.md) for datasets.
+
+```python
+from perathos import verify_output, VerificationContext
+from perathos.verifiers import CrossExaminer, ClaimEntailmentVerifier
+from perathos.verifiers_nli import nli_entailment_fn   # requires perathos[nli]
+
+verifiers = [CrossExaminer(), ClaimEntailmentVerifier(entailment_fn=nli_entailment_fn())]
+ctx = VerificationContext(samples=[...], evidence=[...])
+bundle = verify_output("the AI output", verifiers=verifiers, context=ctx)
+# bundle["verification"]["aggregate"]["verdict"] -> PASS / FAIL / WARN / INCONCLUSIVE
+```
+
 ## Install
 
 ```bash
@@ -65,7 +111,25 @@ perathos inspect <bundle_id>
 
 # List stored bundles
 perathos list
+
+# Run content verification and bind verdicts into the bundle
+perathos prove "<output>" --evidence-text "<evidence>" --nli
+perathos prove "<output>" --sample-text "<resample>" --sample-text "<resample>"
+
+# Pin the expected signer when verifying (recommended for provenance)
+perathos verify <bundle_id> --verify-key <64-hex-public-key>
+
+# Diagnose the local environment (versions, keys, NLI extra, store)
+perathos doctor
 ```
+
+## Enterprise & security
+
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — what is and isn't protected, and the deployment assumptions (notably: **pin the signer's public key out of band**).
+- [SECURITY.md](SECURITY.md) — security policy and reporting.
+- [docs/ENTERPRISE_FAQ.md](docs/ENTERPRISE_FAQ.md) — procurement-grade Q&A.
+- [docs/research/TRAINING_DATA.md](docs/research/TRAINING_DATA.md) — cited, license-verified datasets for the verifiers.
+- [CHANGELOG.md](CHANGELOG.md) — notable changes.
 
 ## CLI Design
 

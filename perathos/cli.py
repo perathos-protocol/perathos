@@ -6,7 +6,9 @@ import click
 
 from . import __version__, prove, sign, verify, inspect
 from .inspector import _unicode_ok
+from .pipeline import CONJUNCTION, QUORUM, verify_output
 from .signing import generate_keypair, verify_signature
+from .verifiers import ClaimEntailmentVerifier, CrossExaminer, VerificationContext
 from .storage import (
     list_bundles,
     load_bundle,
@@ -163,13 +165,27 @@ def keygen():
               help="Write bundle JSON to file instead of saving to ~/.perathos/bundles/. Example: --output-file bundle.json")
 @click.option("--sign", "sign_flag", is_flag=True,
               help="Sign integrity_hash with local Ed25519 key (requires: perathos keygen). Example: perathos prove 'output' --sign")
-@click.option("--json", "as_json", is_flag=True, 
+@click.option("--evidence", "evidence_files", multiple=True, type=click.Path(exists=True), metavar="PATH",
+              help="Evidence document file for claim-entailment verification (repeatable). Example: --evidence doc1.txt --evidence doc2.txt")
+@click.option("--evidence-text", "evidence_texts", multiple=True, metavar="TEXT",
+              help="Inline evidence document for claim-entailment verification (repeatable).")
+@click.option("--sample", "sample_files", multiple=True, type=click.Path(exists=True), metavar="PATH",
+              help="A re-sampled model output file for self-consistency verification (repeatable).")
+@click.option("--sample-text", "sample_texts", multiple=True, metavar="TEXT",
+              help="An inline re-sampled model output for self-consistency verification (repeatable).")
+@click.option("--nli", "use_nli", is_flag=True,
+              help="Use the real NLI model for claim entailment (requires: pip install perathos[nli]). Default is the lexical verifier.")
+@click.option("--mode", "agg_mode", type=click.Choice([CONJUNCTION, QUORUM]), default=CONJUNCTION,
+              help="Aggregation mode for the multi-verifier pipeline. Default: conjunction (any FAIL fails).")
+@click.option("--json", "as_json", is_flag=True,
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 @click.option("--verbose", is_flag=True,
               help="Display full 64-character hashes instead of truncated 8-character previews.")
 @click.option("--quiet", "-q", is_flag=True,
               help="Suppress bundle output; only print the saved file path. Useful for scripting. Ignored if --json is used.")
-def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool, as_json: bool, verbose: bool, quiet: bool):
+def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool,
+              evidence_files: tuple, evidence_texts: tuple, sample_files: tuple, sample_texts: tuple,
+              use_nli: bool, agg_mode: str, as_json: bool, verbose: bool, quiet: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
     Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
@@ -242,7 +258,45 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
             click.echo(f"Example: perathos prove 'output' --input-file {input_file}", err=True)
             sys.exit(1)
     
-    bundle = prove(output_text=text, input_text=input_text)
+    # Assemble verification evidence (files + inline) and run the pipeline if
+    # any was supplied. Otherwise, a plain proof bundle.
+    evidence = list(evidence_texts)
+    for p in evidence_files:
+        try:
+            evidence.append(Path(p).read_text(encoding="utf-8"))
+        except OSError as exc:
+            click.echo(f"[ERROR] Failed to read evidence file {p}: {exc}", err=True)
+            sys.exit(1)
+    samples = list(sample_texts)
+    for p in sample_files:
+        try:
+            samples.append(Path(p).read_text(encoding="utf-8"))
+        except OSError as exc:
+            click.echo(f"[ERROR] Failed to read sample file {p}: {exc}", err=True)
+            sys.exit(1)
+
+    if evidence or samples or use_nli:
+        entailment_fn = None
+        if use_nli:
+            try:
+                from .verifiers_nli import nli_entailment_fn
+                entailment_fn = nli_entailment_fn()
+            except ImportError:
+                click.echo("[ERROR] --nli requires the NLI extra. Install it with:", err=True)
+                click.echo("  pip install perathos[nli]", err=True)
+                sys.exit(1)
+        if evidence and not use_nli:
+            click.echo(
+                "[note] claim entailment is using the deterministic LEXICAL verifier, "
+                "which only measures word overlap and cannot tell, e.g., Paris from "
+                "Berlin. For a real NLI model use --nli (pip install perathos[nli]).",
+                err=True,
+            )
+        verifiers = [CrossExaminer(), ClaimEntailmentVerifier(entailment_fn=entailment_fn)]
+        ctx = VerificationContext(samples=samples, evidence=evidence)
+        bundle = verify_output(text, input_text, verifiers=verifiers, context=ctx, mode=agg_mode)
+    else:
+        bundle = prove(output_text=text, input_text=input_text)
 
     if sign_flag:
         try:
@@ -290,6 +344,9 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
         click.echo(f"signature      {sig_display}")
         vk_display = _format_hash(sig['verify_key'], verbose)
         click.echo(f"verify_key     {vk_display}")
+    if "verification" in bundle:
+        agg = bundle["verification"].get("aggregate", {})
+        click.echo(f"verdict        {agg.get('verdict', '?')} ({agg.get('rationale', '')})")
     click.echo(f"saved          {saved_path}")
 
 
@@ -444,6 +501,69 @@ def list_cmd():
         return
     for path in bundles:
         click.echo(path.stem)
+
+
+@cli.command()
+def doctor():
+    """Diagnose the local Perathos environment.
+
+    Reports Python/package versions, optional-extra availability (NLI),
+    key presence, and the bundle store — useful for support and CI smoke tests.
+    Exit code 0 if the core is healthy, 1 if a core dependency is missing.
+    """
+    import platform
+    import sys as _sys
+
+    ok = True
+
+    def line(label, value, good=True):
+        nonlocal ok
+        mark = ("✓" if _unicode_ok() else "[ok]") if good else ("✗" if _unicode_ok() else "[!!]")
+        if not good:
+            ok = False
+        click.echo(f"  {mark} {label:22} {value}")
+
+    click.echo("Perathos doctor")
+    line("perathos", __version__)
+    line("python", platform.python_version())
+
+    try:
+        import nacl
+        line("pynacl", getattr(nacl, "__version__", "installed"))
+    except ImportError:
+        line("pynacl", "MISSING — pip install pynacl", good=False)
+
+    try:
+        import click as _click
+        line("click", _click.__version__)
+    except Exception:  # pragma: no cover
+        line("click", "unknown")
+
+    # Optional NLI extra
+    try:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+        line("nli extra", "available")
+    except ImportError:
+        click.echo(f"  {'-' } nli extra              not installed (pip install perathos[nli]) — optional")
+
+    # Keys
+    sk = keys_dir() / "signing.key"
+    vk = keys_dir() / "verify.key"
+    if sk.exists() and vk.exists():
+        line("signing key", str(sk))
+    else:
+        click.echo(f"  {'-'} signing key            none (run: perathos keygen) — optional, only needed for --sign")
+
+    # Bundle store
+    try:
+        n = len(list_bundles())
+        line("bundle store", f"{n} bundle(s)")
+    except OSError as exc:  # pragma: no cover
+        line("bundle store", f"error: {exc}", good=False)
+
+    if not ok:
+        _sys.exit(1)
 
 
 def main():
