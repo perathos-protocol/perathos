@@ -62,7 +62,12 @@ def ai_id() -> str:
     return _sha256(_MODEL_DESCRIPTOR.encode("utf-8"))
 
 
-def create_bundle(output_text: str, input_text: str = "", verification: dict | None = None) -> dict:
+BUNDLE_VERSION = "2.0"
+
+
+def create_bundle(output_text: str, input_text: str = "", verification: dict | None = None,
+                  *, model: str = "unspecified", include_answer: bool = False,
+                  bundle_version: str = BUNDLE_VERSION) -> dict:
     """Build a VRL Proof Bundle for a given AI output.
 
     Constructs a tamper-evident bundle by hashing the input and output,
@@ -109,6 +114,7 @@ def create_bundle(output_text: str, input_text: str = "", verification: dict | N
         raise ValueError(
             f"verification must be a dict or None, got {type(verification).__name__}"
         )
+    is_v2 = bundle_version == BUNDLE_VERSION
 
     issued_at = datetime.now(timezone.utc).isoformat()
     proof_system = "sha256-deterministic"
@@ -139,6 +145,10 @@ def create_bundle(output_text: str, input_text: str = "", verification: dict | N
         "proof_system": proof_system,
         "trace_hash": trace_hash,
     }
+    # v2 binds the format version and the human-readable model id into the root.
+    if is_v2:
+        integrity_payload["bundle_version"] = bundle_version
+        integrity_payload["model"] = model
     # Bind the verification block (if any) into the integrity root. Including
     # verification_hash only when verification is present keeps bundles without
     # verification byte-for-byte backward compatible, and any later attempt to
@@ -162,6 +172,16 @@ def create_bundle(output_text: str, input_text: str = "", verification: dict | N
         # _trace stored verbatim so verifiers can recompute trace_hash offline.
         "_trace": trace,
     }
+    if is_v2:
+        # Top-level convenience fields. `model` and `bundle_version` are bound
+        # into integrity_hash; `verdict` is a copy of the aggregate (cross-checked
+        # on verify); `answer` is bound via output_hash (cross-checked on verify).
+        bundle["bundle_version"] = bundle_version
+        bundle["model"] = model
+        if verification is not None:
+            bundle["verdict"] = verification.get("aggregate", {}).get("verdict")
+        if include_answer:
+            bundle["answer"] = output_text
     if verification is not None:
         # Stored verbatim so a consumer can recompute verification_hash offline.
         bundle["verification"] = verification
@@ -253,6 +273,11 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
         if _sha256(canonical_bytes(trace)) != bundle["trace_hash"]:
             return False, "ERR_TRACE_HASH_MISMATCH"
 
+        # Dual-read: a bundle with no bundle_version is a v1 bundle and verifies
+        # exactly as before; "2.0" adds bound fields + cross-checks. Existing v1
+        # bundles keep verifying unchanged.
+        version = bundle.get("bundle_version", "1.0")
+
         # Step 2: integrity root
         integrity_payload = {
             "ai_id": bundle["ai_id"],
@@ -262,6 +287,9 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
             "proof_system": bundle["proof_system"],
             "trace_hash": bundle["trace_hash"],
         }
+        if version == BUNDLE_VERSION:
+            integrity_payload["bundle_version"] = bundle["bundle_version"]
+            integrity_payload["model"] = bundle["model"]
         # The verification block is bound into integrity_hash iff it is present
         # (see create_bundle). Recompute symmetrically so that adding, removing,
         # or editing the verdicts is detected as a hash mismatch.
@@ -275,6 +303,17 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
         expected_id = str(uuid.uuid5(PERATHOS_NAMESPACE, bundle["integrity_hash"]))
         if expected_id != bundle["bundle_id"]:
             return False, "ERR_BUNDLE_ID_MISMATCH"
+
+        # Step 3b (v2): cross-check the convenience copies. The top-level verdict
+        # must equal the bound aggregate verdict, and a stored answer must hash to
+        # output_hash — so neither can be tampered without detection.
+        if version == BUNDLE_VERSION:
+            if verification is not None:
+                if bundle.get("verdict") != verification.get("aggregate", {}).get("verdict"):
+                    return False, "ERR_VERDICT_MISMATCH"
+            if "answer" in bundle:
+                if _sha256(bundle["answer"].encode("utf-8")) != bundle["output_hash"]:
+                    return False, "ERR_ANSWER_MISMATCH"
 
         # Step 4: signature. A bundle that carries a provider_signature must NOT
         # pass verification if that signature does not validate — otherwise the

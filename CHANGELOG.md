@@ -6,6 +6,16 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Proof Bundle v2** (open-core consolidation, stage 3 — the unified format).
+  v2 keeps perathos's hash-chain integrity and adds: a `computed` flag on each
+  verdict (only engine-computed verdicts count as independently verified), a
+  top-level `verdict` + `model` (bound/cross-checked), and an optional
+  `answer` (hash-only by default; bound to output_hash). `create_bundle` emits
+  v2 by default; `verify_bundle` **dual-reads** by `bundle_version`, so every
+  existing v1 bundle still verifies. New checks: `ERR_VERDICT_MISMATCH`,
+  `ERR_ANSWER_MISMATCH`. `prove` gained `--model`, `--include-answer`,
+  `--schema`, and now runs the full engine suite (Symbolic/Hallucination/
+  Schema/Temporal + Cross-Examiner + Claim-Entailment) when verifying.
 - **Real verifier engines** (`perathos.engines`), the canonical core's
   deterministic, model-free engines (open-core consolidation, stage 2 — ported
   from the gateway): `SymbolicSolver` (123, recompute arithmetic),

@@ -115,6 +115,8 @@ def verify_output(
     verifiers: Optional[List[Verifier]] = None,
     context: Optional[VerificationContext] = None,
     mode: str = CONJUNCTION,
+    model: str = "unspecified",
+    include_answer: bool = False,
 ) -> dict:
     """Run the verifier pipeline over an output and return a proof bundle whose
     integrity hash binds the resulting verdicts.
@@ -126,4 +128,5 @@ def verify_output(
 
     ctx = context if context is not None else VerificationContext()
     result = MultiVerifierPipeline(verifiers, mode).run(output_text, ctx)
-    return create_bundle(output_text, input_text=input_text, verification=result.to_block())
+    return create_bundle(output_text, input_text=input_text, verification=result.to_block(),
+                         model=model, include_answer=include_answer)

@@ -163,7 +163,7 @@ def test_verdict_record_to_dict_keys():
     d = VerdictRecord(1, "n", "v", PASS).to_dict()
     assert set(d) == {
         "verifier_id", "verifier_name", "verifier_version", "verdict",
-        "confidence_bps", "method", "detail", "evidence_digests",
+        "confidence_bps", "method", "detail", "evidence_digests", "computed",
     }
 
 

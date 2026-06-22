@@ -1,7 +1,9 @@
-# Proof Bundle v2 — unification spec (DRAFT, for sign-off)
+# Proof Bundle v2 — unification spec
 
-**Status: PROPOSAL.** Nothing here is implemented yet. This is the Stage 3
-design to agree on before touching the proof format in either repo.
+**Status: IMPLEMENTED in perathos** (Stage 3). Decisions signed off: perathos
+owns v2; `answer` is hash-only by default; signature expiry deferred. v2 is the
+default `create_bundle` output and `verify_bundle` dual-reads v1. Stage 4 (the
+training-ops gateway importing perathos for v2) remains.
 
 ## Why
 

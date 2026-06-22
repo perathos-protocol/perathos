@@ -30,6 +30,8 @@ _ERROR_EXPLANATIONS = {
     "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
     "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
     "ERR_UNTRUSTED_SIGNER": "The bundle's signature is valid but the signing key is not in the trust set you provided (--trust-jwks). Next step: Obtain the issuer's published JWKS and confirm the key is one you trust.",
+    "ERR_VERDICT_MISMATCH": "The bundle's top-level verdict does not match its bound aggregate verdict — the convenience field was tampered with. Next step: Do not trust this bundle.",
+    "ERR_ANSWER_MISMATCH": "The bundle's stored answer text does not hash to its output_hash — the answer was altered after creation. Next step: Do not trust this bundle.",
     "ERR_MALFORMED_BUNDLE": "The bundle structure is malformed and could not be verified (e.g. a corrupted or hostile _trace). Next step: Obtain the original bundle from the provider; do not trust this one.",
     "ERR_UNSUPPORTED_ALGORITHM": "The bundle's signature declares an algorithm other than ed25519, which is the only supported scheme. Next step: Do not trust this bundle; its signature was not validated.",
     "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
@@ -176,8 +178,14 @@ def keygen():
               help="An inline re-sampled model output for self-consistency verification (repeatable).")
 @click.option("--nli", "use_nli", is_flag=True,
               help="Use the real NLI model for claim entailment (requires: pip install perathos[nli]). Default is the lexical verifier.")
+@click.option("--schema", "schema_file", type=click.Path(exists=True), default=None, metavar="PATH",
+              help="JSON Schema file the answer must conform to (runs the schema-validator engine).")
 @click.option("--mode", "agg_mode", type=click.Choice([CONJUNCTION, QUORUM]), default=CONJUNCTION,
               help="Aggregation mode for the multi-verifier pipeline. Default: conjunction (any FAIL fails).")
+@click.option("--model", "model_id", default="unspecified", metavar="ID",
+              help="Model id recorded in the bundle (v2 top-level field).")
+@click.option("--include-answer", is_flag=True,
+              help="Store the answer text verbatim in the bundle (default: hash only).")
 @click.option("--json", "as_json", is_flag=True,
               help="Print the full bundle as JSON. Example: perathos prove 'output' --json")
 @click.option("--verbose", is_flag=True,
@@ -186,7 +194,8 @@ def keygen():
               help="Suppress bundle output; only print the saved file path. Useful for scripting. Ignored if --json is used.")
 def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sign_flag: bool,
               evidence_files: tuple, evidence_texts: tuple, sample_files: tuple, sample_texts: tuple,
-              use_nli: bool, agg_mode: str, as_json: bool, verbose: bool, quiet: bool):
+              use_nli: bool, schema_file: str, agg_mode: str, model_id: str, include_answer: bool,
+              as_json: bool, verbose: bool, quiet: bool):
     """Generate a VRL Proof Bundle for TEXT (AI-generated output).
     
     Creates an unsigned proof bundle by default. Add --sign to attach an Ed25519
@@ -276,7 +285,15 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
             click.echo(f"[ERROR] Failed to read sample file {p}: {exc}", err=True)
             sys.exit(1)
 
-    if evidence or samples or use_nli:
+    schema_dict = None
+    if schema_file:
+        try:
+            schema_dict = json.loads(Path(schema_file).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            click.echo(f"[ERROR] Could not read --schema file {schema_file}: {exc}", err=True)
+            sys.exit(1)
+
+    if evidence or samples or use_nli or schema_dict is not None:
         entailment_fn = None
         if use_nli:
             try:
@@ -293,11 +310,19 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
                 "Berlin. For a real NLI model use --nli (pip install perathos[nli]).",
                 err=True,
             )
-        verifiers = [CrossExaminer(), ClaimEntailmentVerifier(entailment_fn=entailment_fn)]
-        ctx = VerificationContext(samples=samples, evidence=evidence)
-        bundle = verify_output(text, input_text, verifiers=verifiers, context=ctx, mode=agg_mode)
+        # Full verifier suite: the two pipeline verifiers + the real engines.
+        # Engines with nothing to check return NOT_APPLICABLE (excluded from the
+        # aggregate), so running them all is always safe.
+        from .engines import all_engines
+        verifiers = [CrossExaminer(), ClaimEntailmentVerifier(entailment_fn=entailment_fn)] + all_engines()
+        # --evidence feeds both claim-entailment (evidence) and the extractive
+        # grounding engine (sources).
+        ctx = VerificationContext(samples=samples, evidence=evidence, sources=evidence, schema=schema_dict)
+        bundle = verify_output(text, input_text, verifiers=verifiers, context=ctx, mode=agg_mode,
+                               model=model_id, include_answer=include_answer)
     else:
-        bundle = prove(output_text=text, input_text=input_text)
+        bundle = prove(output_text=text, input_text=input_text,
+                       model=model_id, include_answer=include_answer)
 
     if sign_flag:
         try:

@@ -43,6 +43,11 @@ class VerdictRecord:
     method: str = ""
     detail: str = ""
     evidence_digests: List[str] = field(default_factory=list)
+    # True when an engine independently computed this verdict (the honest case —
+    # perathos always runs the verifier). A future ingest path for a verdict the
+    # model merely *asserted* about itself would set this False; only computed
+    # verdicts count toward "independently verified".
+    computed: bool = True
 
     def __post_init__(self) -> None:
         if self.verdict not in VALID_VERDICTS:
@@ -61,4 +66,5 @@ class VerdictRecord:
             "method": self.method,
             "detail": self.detail,
             "evidence_digests": list(self.evidence_digests),
+            "computed": bool(self.computed),
         }
