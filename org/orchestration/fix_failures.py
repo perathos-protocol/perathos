@@ -27,19 +27,18 @@ import httpx
 ROOT = Path(__file__).parent.parent.parent
 AGENTS_DIR = ROOT / ".claude" / "agents"
 
-SOURCE_FILES = [
-    "perathos/__init__.py",
-    "perathos/bundle.py",
-    "perathos/canonical.py",
-    "perathos/cli.py",
-    "perathos/inspector.py",
-    "perathos/signing.py",
-    "perathos/storage.py",
-    "tests/test_bundle.py",
-    "tests/test_canonical.py",
-    "tests/test_signing.py",
-    "pyproject.toml",
-]
+# Globbed so new modules (e.g. verdict/verifiers/pipeline) are always included
+# in the context the fixer sees — a hard-coded list silently omitted them.
+def _discover_source_files() -> list[str]:
+    rels = []
+    for sub in ("perathos", "tests"):
+        for p in sorted((ROOT / sub).glob("*.py")):
+            rels.append(str(p.relative_to(ROOT)).replace("\\", "/"))
+    rels += ["README.md", "BACKLOG.md", "pyproject.toml"]
+    return rels
+
+
+SOURCE_FILES = _discover_source_files()
 
 OPENROUTER_MODELS = [
     "anthropic/claude-3.5-haiku",
@@ -189,13 +188,23 @@ def extract_json(text: str) -> dict:
 # ── Test runner ───────────────────────────────────────────────────────────────
 
 def run_tests() -> tuple[bool, str]:
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short", "-q"],
+    # Mirror CI exactly: ruff lint gate BEFORE pytest, so a lint-only violation
+    # is caught locally instead of merging and breaking main.
+    ruff = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "perathos/", "tests/"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return result.returncode == 0, result.stdout + result.stderr
+    if ruff.returncode != 0:
+        return False, "ruff check failed:\n" + ruff.stdout + ruff.stderr
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--tb=short", "-q"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0, ruff.stdout + result.stdout + result.stderr
 
 
 # ── PR opener ────────────────────────────────────────────────────────────────

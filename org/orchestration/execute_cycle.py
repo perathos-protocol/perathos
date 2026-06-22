@@ -29,21 +29,18 @@ ROOT = Path(__file__).parent.parent.parent
 AGENTS_DIR = ROOT / ".claude" / "agents"
 SPECIALISTS = ["product-engineer", "qa-tester", "ux-reviewer", "docs-writer"]
 
-SOURCE_FILES = [
-    "perathos/__init__.py",
-    "perathos/bundle.py",
-    "perathos/canonical.py",
-    "perathos/cli.py",
-    "perathos/inspector.py",
-    "perathos/signing.py",
-    "perathos/storage.py",
-    "tests/test_bundle.py",
-    "tests/test_canonical.py",
-    "tests/test_signing.py",
-    "README.md",
-    "BACKLOG.md",
-    "pyproject.toml",
-]
+# Globbed so new modules (e.g. verdict/verifiers/pipeline) are always included
+# in the context the agents see — a hard-coded list silently omitted them.
+def _discover_source_files() -> list[str]:
+    rels = []
+    for sub in ("perathos", "tests"):
+        for p in sorted((ROOT / sub).glob("*.py")):
+            rels.append(str(p.relative_to(ROOT)).replace("\\", "/"))
+    rels += ["README.md", "BACKLOG.md", "pyproject.toml"]
+    return rels
+
+
+SOURCE_FILES = _discover_source_files()
 
 OPENROUTER_MODELS = [
     "anthropic/claude-3.5-haiku",
@@ -213,13 +210,24 @@ def extract_json(text: str) -> dict:
 # ── test runner ───────────────────────────────────────────────────────────────
 
 def run_tests() -> tuple[bool, str]:
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short", "-q"],
+    # Mirror CI exactly: the ruff lint gate runs BEFORE pytest, so a lint-only
+    # violation is caught locally instead of passing the local gate, merging,
+    # and then turning main's CI red.
+    ruff = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "perathos/", "tests/"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return result.returncode == 0, result.stdout + result.stderr
+    if ruff.returncode != 0:
+        return False, "ruff check failed:\n" + ruff.stdout + ruff.stderr
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--tb=short", "-q"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0, ruff.stdout + result.stdout + result.stderr
 
 
 # ── PR opener ────────────────────────────────────────────────────────────────
@@ -644,16 +652,30 @@ def run_agent(name: str, context: str, assignment: str | None = None) -> tuple[b
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     branch = f"agent/{name}-{timestamp}"
 
-    subprocess.run(["git", "checkout", "-b", branch], cwd=ROOT, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=ROOT, check=True)
-    subprocess.run(["git", "commit", "-m", commit_msg], cwd=ROOT, check=True)
-    subprocess.run(
-        ["git", "push", "origin", branch],
-        cwd=ROOT,
-        env={**os.environ, "GH_TOKEN": GH_TOKEN},
-        check=True,
-    )
-    subprocess.run(["git", "checkout", "main"], cwd=ROOT, check=True)
+    try:
+        subprocess.run(["git", "checkout", "-b", branch], cwd=ROOT, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=ROOT, check=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=ROOT, check=True)
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=ROOT,
+            env={**os.environ, "GH_TOKEN": GH_TOKEN},
+            check=True,
+        )
+        subprocess.run(["git", "checkout", "main"], cwd=ROOT, check=True)
+    except subprocess.CalledProcessError as exc:
+        # A commit/push rejection (branch protection, non-fast-forward, auth,
+        # network) must not abort the whole cycle: restore main so the remaining
+        # specialists still run and the cycle brief still posts to the operator.
+        print(f"  [git-fail] {name}: {exc}")
+        subprocess.run(["git", "checkout", "main"], cwd=ROOT, check=False)
+        subprocess.run(["git", "checkout", "--", "."], cwd=ROOT, check=False)
+        subprocess.run(["git", "clean", "-fd"], cwd=ROOT, check=False)
+        _PR_ERRORS.append({
+            "agent": name, "branch": branch, "status": 0,
+            "body": f"git commit/push failed, changes reverted: {exc}",
+        })
+        return False, None
 
     pr_url = open_pr(
         branch=branch,

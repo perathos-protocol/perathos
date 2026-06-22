@@ -20,6 +20,12 @@ permissions:
   pull-requests: write
   issues: write
 
+# Serialize cycles so an overlapping scheduled + dispatched run can't duplicate
+# work or open conflicting PRs. Don't cancel an in-progress cycle mid-commit.
+concurrency:
+  group: autonomous-agents
+  cancel-in-progress: false
+
 jobs:
   run-agents:
     runs-on: ubuntu-latest
@@ -35,9 +41,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install perathos + runner deps
-        run: |
-          pip install -e ".[dev]"
-          pip install httpx anthropic
+        run: pip install -e ".[dev,agents]"
 
       - name: Configure git
         run: |

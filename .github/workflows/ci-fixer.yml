@@ -10,6 +10,12 @@ permissions:
   pull-requests: write
   actions: read
 
+# Serialize fixer runs so overlapping workflow_run triggers can't open
+# conflicting fix PRs for the same failure.
+concurrency:
+  group: ci-auto-fixer
+  cancel-in-progress: false
+
 jobs:
   fix-failures:
     # Only run when the triggering workflow actually failed
@@ -25,9 +31,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install perathos + runner deps
-        run: |
-          pip install -e ".[dev]"
-          pip install httpx
+        run: pip install -e ".[dev,agents]"
 
       - name: Configure git
         run: |
