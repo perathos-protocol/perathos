@@ -19,6 +19,25 @@ Why determinism matters:
 import json
 
 
+def _assert_canonicalizable(obj) -> None:
+    """Reject inputs that would break byte-for-byte cross-language determinism.
+
+    Non-string dict keys are rejected because json coerces them to strings
+    ({1: 'a'} and {'1': 'a'} would collide to identical bytes, defeating
+    injectivity). Non-finite floats are handled separately by allow_nan=False.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if not isinstance(k, str):
+                raise ValueError(
+                    f"canonical JSON requires string object keys, got {type(k).__name__}"
+                )
+            _assert_canonicalizable(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _assert_canonicalizable(v)
+
+
 def canonical_json(obj: dict) -> str:
     """Convert a dict to deterministic JSON string with sorted keys and no whitespace.
 
@@ -41,7 +60,12 @@ def canonical_json(obj: dict) -> str:
         Input:  {'name': '日本', 'count': 3}
         Output: '{"count":3,"name":"日本"}'
     """
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    _assert_canonicalizable(obj)
+    # allow_nan=False: NaN/Infinity are not valid JSON and are rejected by
+    # spec-compliant parsers (Go/JS), so they must never enter a proof bundle.
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
 
 
 def canonical_bytes(obj: dict) -> bytes:

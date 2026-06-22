@@ -100,6 +100,15 @@ def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[boo
             - valid is False and error_code is a string like "ERR_BAD_SIGNATURE"
               or "ERR_MISSING_SIG_FIELD" if verification fails.
     """
+    if not isinstance(provider_signature, dict):
+        return False, "ERR_MISSING_SIG_FIELD:provider_signature must be a dict"
+
+    # Bind verification to the declared algorithm: only Ed25519 is supported, and
+    # we refuse to display/accept a signature whose algorithm field claims
+    # anything else (prevents algorithm-confusion / spoofing of the field).
+    if provider_signature.get("algorithm") != "ed25519":
+        return False, "ERR_UNSUPPORTED_ALGORITHM"
+
     try:
         _validate_hex_hash(integrity_hash, "integrity_hash", 64)
     except ValueError as exc:
@@ -115,14 +124,12 @@ def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[boo
 
     try:
         signature_hex = provider_signature["signature"]
-        if not isinstance(signature_hex, str):
-            return False, "ERR_INVALID_SIGNATURE:signature must be a string"
-        if len(signature_hex) != 128:
-            return False, f"ERR_INVALID_SIGNATURE:signature must be 128 hex chars, got {len(signature_hex)}"
-        try:
-            int(signature_hex, 16)
-        except ValueError:
-            return False, "ERR_INVALID_SIGNATURE:signature must be valid hex"
+        # Strict, canonical hex (lowercase 0-9a-f, exactly 128 chars) — same
+        # policy as integrity_hash/verify_key. int(x, 16) would tolerate
+        # uppercase/0x, permitting multiple valid serializations of one signature.
+        _validate_hex_hash(signature_hex, "signature", 128)
+    except ValueError as exc:
+        return False, f"ERR_INVALID_SIGNATURE:{exc}"
     except KeyError as exc:
         return False, f"ERR_MISSING_SIG_FIELD:{exc}"
 

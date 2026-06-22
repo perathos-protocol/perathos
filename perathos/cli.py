@@ -28,6 +28,7 @@ _ERROR_EXPLANATIONS = {
     "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
     "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
     "ERR_MALFORMED_BUNDLE": "The bundle structure is malformed and could not be verified (e.g. a corrupted or hostile _trace). Next step: Obtain the original bundle from the provider; do not trust this one.",
+    "ERR_UNSUPPORTED_ALGORITHM": "The bundle's signature declares an algorithm other than ed25519, which is the only supported scheme. Next step: Do not trust this bundle; its signature was not validated.",
     "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
     "ERR_INPUT_FILE_READ": "Failed to read input file. Check that the file is readable and not corrupted. Example: perathos prove 'output' --input-file prompt.txt",
 }

@@ -1,5 +1,4 @@
 """Tests for CLI helper functions and command behavior."""
-import pytest
 from perathos.cli import _format_hash, _explain_error
 
 

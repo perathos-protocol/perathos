@@ -1,168 +1,84 @@
-"""Tests for the bundle inspector module.
+"""Tests for the bundle inspector.
 
-Covers inspect_bundle with various malformed bundles, missing fields,
-and edge cases in the rendering pipeline.
+inspect_bundle is a display tool that may be handed a hand-edited or foreign
+bundle, so its contract is: render best-effort and NEVER crash on a dict input.
+These tests assert that contract (no try/except-pass escape hatches).
 """
-import pytest
-
-from perathos.bundle import create_bundle
+from perathos.bundle import create_bundle, sign_bundle
 from perathos.inspector import inspect_bundle
+from perathos.signing import generate_keypair
+
+
+def _out(capsys) -> str:
+    c = capsys.readouterr()
+    return c.out + c.err
 
 
 def test_inspect_valid_bundle(capsys):
-    """Test that inspect_bundle renders a valid bundle without error."""
-    b = create_bundle("output text", input_text="input text")
-    inspect_bundle(b)
-    captured = capsys.readouterr()
-    assert "Bundle ID" in captured.out or "Bundle ID" in captured.err or len(captured.out) > 0
+    inspect_bundle(create_bundle("output text", input_text="input text"))
+    assert "Bundle ID" in _out(capsys)
 
 
-def test_inspect_bundle_missing_trace(capsys):
-    """Test that inspect_bundle handles missing _trace field gracefully."""
+def test_inspect_missing_trace(capsys):
     b = create_bundle("output")
     del b["_trace"]
-    # Should not raise exception
     inspect_bundle(b)
-    # At minimum, something should be printed
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert len(output) > 0
+    assert len(_out(capsys)) > 0
 
 
-def test_inspect_bundle_missing_issued_at(capsys):
-    """Test that inspect_bundle handles missing issued_at field gracefully."""
+def test_inspect_none_trace(capsys):
     b = create_bundle("output")
-    del b["issued_at"]
-    # Should not raise exception
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-        # If we get here without exception, that's good
-        output = captured.out + captured.err
-        # We may or may not get output depending on exception handling
-    except KeyError:
-        # This is acceptable — missing required field causes error
-        pass
+    b["_trace"] = None
+    inspect_bundle(b)
+    assert len(_out(capsys)) > 0
 
 
-def test_inspect_bundle_missing_bundle_id(capsys):
-    """Test that inspect_bundle handles missing bundle_id field gracefully."""
-    b = create_bundle("output")
-    del b["bundle_id"]
-    # Should not raise exception (or raises KeyError which is ok)
-    try:
-        inspect_bundle(b)
-    except KeyError:
-        pass
-
-
-def test_inspect_bundle_with_empty_trace(capsys):
-    """Test that inspect_bundle renders bundle with empty _trace dict."""
+def test_inspect_empty_trace(capsys):
     b = create_bundle("output")
     b["_trace"] = {}
     inspect_bundle(b)
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert len(output) > 0
+    assert len(_out(capsys)) > 0
 
 
-def test_inspect_bundle_with_none_trace(capsys):
-    """inspect_bundle must NOT crash when _trace is explicitly None."""
+def test_inspect_missing_issued_at(capsys):
     b = create_bundle("output")
-    b["_trace"] = None
-    # Previously raised AttributeError ('NoneType' has no attribute 'get');
-    # must now render gracefully and produce output.
+    del b["issued_at"]
     inspect_bundle(b)
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert len(output) > 0
+    assert len(_out(capsys)) > 0
 
 
-def test_inspect_bundle_with_numeric_hashes(capsys):
-    """Test that inspect_bundle handles non-string hash values gracefully."""
+def test_inspect_missing_bundle_id(capsys):
     b = create_bundle("output")
-    b["input_hash"] = 12345  # numeric instead of string
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-        output = captured.out + captured.err
-    except (TypeError, AttributeError):
-        # Acceptable if numeric hash causes error
-        pass
+    del b["bundle_id"]
+    inspect_bundle(b)
+    assert len(_out(capsys)) > 0
 
 
-def test_inspect_bundle_with_missing_input_hash(capsys):
-    """Test that inspect_bundle handles missing input_hash gracefully."""
+def test_inspect_numeric_hashes(capsys):
     b = create_bundle("output")
-    del b["input_hash"]
-    try:
+    b["input_hash"] = 12345
+    inspect_bundle(b)
+    assert len(_out(capsys)) > 0
+
+
+def test_inspect_missing_hash_fields(capsys):
+    for field in ("input_hash", "output_hash", "integrity_hash", "trace_hash"):
+        b = create_bundle("output")
+        del b[field]
         inspect_bundle(b)
-        captured = capsys.readouterr()
-    except KeyError:
-        # This is acceptable
-        pass
-
-
-def test_inspect_bundle_with_missing_output_hash(capsys):
-    """Test that inspect_bundle handles missing output_hash gracefully."""
-    b = create_bundle("output")
-    del b["output_hash"]
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-    except KeyError:
-        # This is acceptable
-        pass
-
-
-def test_inspect_bundle_with_missing_integrity_hash(capsys):
-    """Test that inspect_bundle handles missing integrity_hash gracefully."""
-    b = create_bundle("output")
-    del b["integrity_hash"]
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-    except KeyError:
-        # This is acceptable
-        pass
-
-
-def test_inspect_bundle_with_missing_trace_hash(capsys):
-    """Test that inspect_bundle handles missing trace_hash gracefully."""
-    b = create_bundle("output")
-    del b["trace_hash"]
-    try:
-        inspect_bundle(b)
-        captured = capsys.readouterr()
-    except KeyError:
-        # This is acceptable
-        pass
+        assert len(_out(capsys)) > 0
 
 
 def test_inspect_signed_bundle(capsys):
-    """Test that inspect_bundle renders a signed bundle correctly."""
-    from perathos.signing import generate_keypair
-    from perathos.bundle import sign_bundle
-    
     b = create_bundle("output")
-    sk, vk = generate_keypair()
-    signed = sign_bundle(b, sk)
-    
-    inspect_bundle(signed)
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    # Should mention signing
-    assert len(output) > 0
+    sk, _ = generate_keypair()
+    inspect_bundle(sign_bundle(b, sk))
+    assert "SIGNED" in _out(capsys)
 
 
-def test_inspect_bundle_with_extra_fields(capsys):
-    """Test that inspect_bundle handles bundles with extra unknown fields."""
+def test_inspect_extra_fields(capsys):
     b = create_bundle("output")
     b["custom_field"] = "custom value"
     b["another_field"] = 42
-    
-    # Should not raise
     inspect_bundle(b)
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert len(output) > 0
+    assert len(_out(capsys)) > 0

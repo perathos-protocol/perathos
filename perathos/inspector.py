@@ -45,6 +45,18 @@ def _unicode_ok() -> bool:
         return False
 
 
+def _safe_conf_pct(value) -> float:
+    """confidence_bps (0..1000) -> percent, tolerant of non-numeric junk."""
+    try:
+        return float(value) / 10.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_ev_count(value) -> int:
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
 def _short(h: str, n: int = 8) -> str:
     """Truncate a hash to n characters and add ellipsis.
 
@@ -59,7 +71,7 @@ def _short(h: str, n: int = 8) -> str:
     Returns:
         Truncated hash with "..." appended.
     """
-    return f"{h[:n]}..."
+    return f"{str(h)[:n]}..."
 
 
 def _fmt_ts(issued_at: str) -> str:
@@ -74,8 +86,11 @@ def _fmt_ts(issued_at: str) -> str:
     Returns:
         Formatted string like "2024-01-15 14:30:45 UTC".
     """
-    dt = datetime.fromisoformat(issued_at).astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    try:
+        dt = datetime.fromisoformat(str(issued_at)).astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return str(issued_at)
 
 
 def _fmt_model(bundle: dict) -> str:
@@ -91,9 +106,14 @@ def _fmt_model(bundle: dict) -> str:
     Returns:
         Human-readable model description (e.g., "sha256-deterministic v1 (perathos-demo-model)").
     """
-    # `or {}` guards _trace being present but None (a missing key would use the
-    # {} default, but an explicit None would not — and None has no .get()).
-    descriptor = (bundle.get("_trace") or {}).get("model_descriptor", bundle.get("proof_system", "unknown"))
+    # Robust against a _trace that is missing, None, or not even a dict, and a
+    # model_descriptor that is not a string — inspect must never crash on a
+    # hand-edited or foreign bundle.
+    trace = bundle.get("_trace")
+    descriptor = trace.get("model_descriptor") if isinstance(trace, dict) else None
+    if descriptor is None:
+        descriptor = bundle.get("proof_system", "unknown")
+    descriptor = str(descriptor)
     parts = descriptor.split(":")
     if len(parts) == 3:
         name, system, version = parts
@@ -131,11 +151,11 @@ def _steps(bundle: dict) -> list[tuple[int, str, str]]:
         List of (step_num, operation_label, short_result) tuples for rendering.
     """
     return [
-        (1, "hash_input   ", _short(bundle["input_hash"])),
-        (2, "hash_output  ", _short(bundle["output_hash"])),
-        (3, "hash_trace   ", _short(bundle["trace_hash"])),
-        (4, "integrity    ", _short(bundle["integrity_hash"])),
-        (5, "bundle_id    ", f"uuid5({_short(bundle['bundle_id'])})"),
+        (1, "hash_input   ", _short(bundle.get("input_hash", ""))),
+        (2, "hash_output  ", _short(bundle.get("output_hash", ""))),
+        (3, "hash_trace   ", _short(bundle.get("trace_hash", ""))),
+        (4, "integrity    ", _short(bundle.get("integrity_hash", ""))),
+        (5, "bundle_id    ", f"uuid5({_short(bundle.get('bundle_id', ''))})"),
     ]
 
 
@@ -159,8 +179,8 @@ def _plain(bundle: dict, *, uni: bool) -> None:
     sig = bundle.get("provider_signature")
     sig_line = f"SIGNED ({sig['algorithm']}) {check}" if sig else "UNSIGNED"
 
-    print(f"  Bundle ID : {bundle['bundle_id']}")
-    print(f"  Issued    : {_fmt_ts(bundle['issued_at'])}")
+    print(f"  Bundle ID : {bundle.get('bundle_id', '(missing)')}")
+    print(f"  Issued    : {_fmt_ts(bundle.get('issued_at', ''))}")
     print(f"  Model     : {_fmt_model(bundle)}")
     print(f"  Signature : {sig_line}")
 
@@ -168,7 +188,7 @@ def _plain(bundle: dict, *, uni: bool) -> None:
     print("  Hash Chain")
     for label, key in [("input    ", "input_hash"), ("output   ", "output_hash"),
                        ("trace    ", "trace_hash"), ("integrity", "integrity_hash")]:
-        h = bundle[key]
+        h = bundle.get(key, "")
         print(f"    {label} : {_short(h)}{_hash_annotation(h)}")
 
     print()
@@ -177,14 +197,19 @@ def _plain(bundle: dict, *, uni: bool) -> None:
         print(f"    step {num} {dot} {op} {arrow} {result}")
 
     verification = bundle.get("verification")
-    if verification:
-        agg = verification.get("aggregate", {})
+    if isinstance(verification, dict):
+        agg = verification.get("aggregate")
+        agg = agg if isinstance(agg, dict) else {}
+        records = verification.get("verdict_records")
+        records = records if isinstance(records, list) else []
         print()
         print("  Verification")
         print(f"    aggregate : {agg.get('verdict', '?')} ({agg.get('rationale', '')})")
-        for rec in verification.get("verdict_records", []):
-            conf = rec.get("confidence_bps", 0) / 10.0
-            ev = len(rec.get("evidence_digests", []))
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            conf = _safe_conf_pct(rec.get("confidence_bps"))
+            ev = _safe_ev_count(rec.get("evidence_digests"))
             print(f"    {dot} [{rec.get('verifier_id')}] {rec.get('verifier_name')}: "
                   f"{rec.get('verdict')} (conf {conf:.0f}%, {ev} evidence) {arrow} {rec.get('detail', '')}")
 
@@ -211,9 +236,9 @@ def _rich(bundle: dict) -> None:
     sig = bundle.get("provider_signature")
 
     console.print()
-    console.print(f"  [bold]Bundle ID[/bold] : {bundle['bundle_id']}")
-    console.print(f"  [bold]Issued[/bold]    : {_fmt_ts(bundle['issued_at'])}")
-    console.print(f"  [bold]Model[/bold]     : [cyan]{_fmt_model(bundle)}[/cyan]")
+    console.print(Text(f"  Bundle ID : {bundle.get('bundle_id', '(missing)')}"))
+    console.print(Text(f"  Issued    : {_fmt_ts(bundle.get('issued_at', ''))}"))
+    console.print(Text(f"  Model     : {_fmt_model(bundle)}", style="cyan"))
 
     if sig:
         t = Text("  Signature : ")
@@ -228,7 +253,7 @@ def _rich(bundle: dict) -> None:
     console.print("  [bold]Hash Chain[/bold]")
     for label, key in [("input    ", "input_hash"), ("output   ", "output_hash"),
                        ("trace    ", "trace_hash"), ("integrity", "integrity_hash")]:
-        h = bundle[key]
+        h = bundle.get(key, "")
         row = Text(f"    {label} : ")
         row.append(_short(h), style="dim cyan")
         ann = _hash_annotation(h)
@@ -247,9 +272,12 @@ def _rich(bundle: dict) -> None:
         console.print(row)
 
     verification = bundle.get("verification")
-    if verification:
-        agg = verification.get("aggregate", {})
-        verdict = agg.get("verdict", "?")
+    if isinstance(verification, dict):
+        agg = verification.get("aggregate")
+        agg = agg if isinstance(agg, dict) else {}
+        records = verification.get("verdict_records")
+        records = records if isinstance(records, list) else []
+        verdict = str(agg.get("verdict", "?"))
         color = {"PASS": "green", "FAIL": "red", "WARN": "yellow"}.get(verdict, "cyan")
         console.print()
         console.print("  [bold]Verification[/bold]")
@@ -257,14 +285,17 @@ def _rich(bundle: dict) -> None:
         agg_row.append(verdict, style=f"bold {color}")
         agg_row.append(f"  {agg.get('rationale', '')}", style="dim")
         console.print(agg_row)
-        for rec in verification.get("verdict_records", []):
-            conf = rec.get("confidence_bps", 0) / 10.0
-            ev = len(rec.get("evidence_digests", []))
-            console.print(
-                f"    · [{rec.get('verifier_id')}] {rec.get('verifier_name')}: "
-                f"[bold]{rec.get('verdict')}[/bold] [dim](conf {conf:.0f}%, {ev} evidence) → "
-                f"{rec.get('detail', '')}[/dim]"
-            )
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            conf = _safe_conf_pct(rec.get("confidence_bps"))
+            ev = _safe_ev_count(rec.get("evidence_digests"))
+            # Text.append() renders literally — verifier_name/detail can never be
+            # parsed as rich markup, so a crafted '[/bold]' cannot raise.
+            row = Text(f"    · [{rec.get('verifier_id')}] {rec.get('verifier_name')}: ")
+            row.append(str(rec.get("verdict")), style="bold")
+            row.append(f" (conf {conf:.0f}%, {ev} evidence) → {rec.get('detail', '')}", style="dim")
+            console.print(row)
 
     console.print()
 

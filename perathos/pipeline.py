@@ -46,7 +46,15 @@ class MultiVerifierPipeline:
     def __init__(self, verifiers: Optional[List[Verifier]] = None, mode: str = CONJUNCTION):
         if mode not in (CONJUNCTION, QUORUM, WEIGHTED):
             raise ValueError(f"unknown aggregation mode {mode!r}")
-        self.verifiers = verifiers if verifiers is not None else default_verifiers()
+        verifiers = verifiers if verifiers is not None else default_verifiers()
+        for v in verifiers:
+            if not callable(getattr(v, "run", None)):
+                raise TypeError(
+                    f"each item in `verifiers` must expose a callable .run(); got {type(v).__name__}. "
+                    "Did you pass input_text positionally? verify_output's signature is "
+                    "verify_output(output_text, input_text='', *, verifiers=..., context=...)."
+                )
+        self.verifiers = verifiers
         self.mode = mode
 
     def run(self, output: str, ctx: VerificationContext) -> VerificationResult:
@@ -94,15 +102,18 @@ class MultiVerifierPipeline:
             "fail_count": len(fails),
             "warn_count": len(warns),
             "inconclusive_count": len(inconclusive),
+            "not_applicable_count": sum(1 for r in records if r.verdict == NOT_APPLICABLE),
             "applicable_count": n,
+            "total_count": len(records),
         }
 
 
 def verify_output(
     output_text: str,
+    input_text: str = "",
+    *,
     verifiers: Optional[List[Verifier]] = None,
     context: Optional[VerificationContext] = None,
-    input_text: str = "",
     mode: str = CONJUNCTION,
 ) -> dict:
     """Run the verifier pipeline over an output and return a proof bundle whose

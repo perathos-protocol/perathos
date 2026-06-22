@@ -20,7 +20,63 @@ Directory structure:
 """
 import json
 import os
+import subprocess
+import tempfile
 from pathlib import Path
+
+
+# ── atomic write + key locking helpers ─────────────────────────────────────────
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text durably and atomically.
+
+    A plain write_text() truncates the destination first, so a crash, disk-full,
+    kill, or a concurrent same-content prove (bundle_id is a deterministic
+    uuid5 -> same filename) can leave a torn or empty file that load_bundle then
+    fails to parse. We write to a temp file in the same directory, fsync it, then
+    os.replace() — atomic on POSIX and Windows.
+    """
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(directory), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Best-effort: make a file readable/writable by its owner only.
+
+    POSIX: chmod 0o600. Windows: chmod is a no-op, so strip inheritance and
+    grant only the current user via icacls. Failures are surfaced as a warning,
+    never silently ignored (the file holds a cleartext private signing key).
+    """
+    try:
+        os.chmod(path, 0o600)
+    except (NotImplementedError, PermissionError, OSError):
+        pass
+    if os.name == "nt":
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        try:
+            res = subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
+                capture_output=True, text=True,
+            )
+            if res.returncode != 0:
+                import warnings
+                warnings.warn(f"could not lock down key file ACL: {res.stderr.strip()}", stacklevel=2)
+        except OSError as exc:
+            import warnings
+            warnings.warn(f"could not invoke icacls to lock down key file: {exc}", stacklevel=2)
 
 
 # ── bundle storage ────────────────────────────────────────────────────────────
@@ -103,7 +159,7 @@ def save_bundle(bundle: dict) -> Path:
         assert loaded == bundle
     """
     path = bundles_dir() / f"{bundle['bundle_id']}.json"
-    path.write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(bundle, indent=2, sort_keys=True))
     return path
 
 
@@ -199,7 +255,16 @@ def list_bundles() -> list[Path]:
             from perathos.storage import load_bundle
             bundle = load_bundle(bundle_id)
     """
-    return sorted(bundles_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Stat eagerly inside the loop so a file deleted concurrently (the shared
+    # ~/.perathos store) is skipped, not raised out of sort().
+    pairs = []
+    for p in bundles_dir().glob("*.json"):
+        try:
+            pairs.append((p, p.stat().st_mtime))
+        except (FileNotFoundError, OSError):
+            continue
+    pairs.sort(key=lambda t: t[1], reverse=True)
+    return [p for p, _ in pairs]
 
 
 # ── key storage ───────────────────────────────────────────────────────────
@@ -327,12 +392,10 @@ def save_keypair(signing_key_hex: str, verify_key_hex: str) -> tuple[Path, Path]
     d = keys_dir()
     sk_path = d / "signing.key"
     vk_path = d / "verify.key"
-    sk_path.write_text(signing_key_hex, encoding="utf-8")
-    vk_path.write_text(verify_key_hex, encoding="utf-8")
-    try:
-        os.chmod(sk_path, 0o600)  # owner read-only; best-effort on Windows
-    except NotImplementedError:
-        pass
+    _atomic_write_text(sk_path, signing_key_hex)
+    _atomic_write_text(vk_path, verify_key_hex)
+    # Lock the private key to the owner (POSIX 0o600 + Windows ACL).
+    _restrict_to_owner(sk_path)
     return sk_path, vk_path
 
 

@@ -1,11 +1,10 @@
 """Tests for the content verifiers and the multi-verifier pipeline."""
-from perathos.pipeline import CONJUNCTION, QUORUM, MultiVerifierPipeline
+from perathos.pipeline import CONJUNCTION, MultiVerifierPipeline
 from perathos.verdict import FAIL, INCONCLUSIVE, PASS, WARN
 from perathos.verifiers import (
     ClaimEntailmentVerifier,
     CrossExaminer,
     VerificationContext,
-    Verifier,
     evidence_digest,
 )
 
