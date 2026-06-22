@@ -1,5 +1,5 @@
 """Tests for the KMS-ready signer + TrustStore/JWKS trust anchoring."""
-import nacl.signing
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from perathos.bundle import create_bundle, sign_bundle, verify_bundle
 from perathos.keytrust import (
@@ -30,9 +30,9 @@ def test_hex_and_signer_paths_are_equivalent():
 
 def test_kms_signer_private_key_never_materialized():
     # Simulate a KMS: the private key lives only inside sign_fn's closure.
-    _sk = nacl.signing.SigningKey.generate()
-    pub = bytes(_sk.verify_key)
-    kms = KmsSigner(key_id=kid_for(pub), public_key=pub, sign_fn=lambda m: _sk.sign(m).signature)
+    _sk = Ed25519PrivateKey.generate()
+    pub = _sk.public_key().public_bytes_raw()
+    kms = KmsSigner(key_id=kid_for(pub), public_key=pub, sign_fn=lambda m: _sk.sign(m))
     signed = sign_bundle(create_bundle("kms output"), kms)
     # Identical shape to a local signature, and verifies the same way.
     assert set(signed["provider_signature"]) == {"algorithm", "verify_key", "signature"}
@@ -63,7 +63,7 @@ def test_trust_store_jwks_roundtrip():
 
 
 def test_trust_store_rejects_kid_collision():
-    ts = TrustStore().add_public_key(bytes(nacl.signing.SigningKey.generate().verify_key))
+    ts = TrustStore().add_public_key(Ed25519PrivateKey.generate().public_key().public_bytes_raw())
     kid = next(iter(ts.to_jwks()["keys"]))["kid"]
     try:
         ts.add(kid, b"\x00" * 32)  # same kid, different key
@@ -73,6 +73,6 @@ def test_trust_store_rejects_kid_collision():
 
 
 def test_kid_is_stable_and_derived():
-    pub = bytes(nacl.signing.SigningKey.generate().verify_key)
+    pub = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
     assert kid_for(pub) == kid_for(pub)
     assert kid_for(pub).startswith("ed25519-")

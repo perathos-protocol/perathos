@@ -580,10 +580,10 @@ def doctor():
     line("python", platform.python_version())
 
     try:
-        import nacl
-        line("pynacl", getattr(nacl, "__version__", "installed"))
+        import cryptography
+        line("cryptography", getattr(cryptography, "__version__", "installed"))
     except ImportError:
-        line("pynacl", "MISSING — pip install pynacl", good=False)
+        line("cryptography", "MISSING — pip install cryptography", good=False)
 
     try:
         import click as _click

@@ -1,12 +1,14 @@
 """Ed25519 cryptographic signing and verification.
 
 Provides keypair generation and Ed25519-based signing/verification of
-integrity hashes. Uses PyNaCl (libsodium) for constant-time operations
-and protection against common implementation pitfalls.
+integrity hashes. Uses the `cryptography` library (pyca) for constant-time
+Ed25519 — the canonical crypto backend across the VRL stack.
 """
-import nacl.encoding
-import nacl.exceptions
-import nacl.signing
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 
 def generate_keypair() -> tuple[str, str]:
@@ -17,9 +19,9 @@ def generate_keypair() -> tuple[str, str]:
         64-character lowercase hex-encoded string representing the
         32-byte raw key material.
     """
-    sk = nacl.signing.SigningKey.generate()
-    sk_hex = sk.encode(nacl.encoding.HexEncoder).decode()
-    vk_hex = sk.verify_key.encode(nacl.encoding.HexEncoder).decode()
+    sk = Ed25519PrivateKey.generate()
+    sk_hex = sk.private_bytes_raw().hex()
+    vk_hex = sk.public_key().public_bytes_raw().hex()
     return sk_hex, vk_hex
 
 
@@ -73,12 +75,12 @@ def sign_hash(integrity_hash: str, signing_key_hex: str) -> dict:
     _validate_hex_hash(integrity_hash, "integrity_hash", 64)
     _validate_hex_hash(signing_key_hex, "signing_key_hex", 64)
 
-    sk = nacl.signing.SigningKey(signing_key_hex, encoder=nacl.encoding.HexEncoder)
-    signed = sk.sign(bytes.fromhex(integrity_hash))
+    sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_key_hex))
+    signature = sk.sign(bytes.fromhex(integrity_hash))
     return {
         "algorithm": "ed25519",
-        "verify_key": sk.verify_key.encode(nacl.encoding.HexEncoder).decode(),
-        "signature": signed.signature.hex(),
+        "verify_key": sk.public_key().public_bytes_raw().hex(),
+        "signature": signature.hex(),
     }
 
 
@@ -150,12 +152,10 @@ def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[boo
         return False, f"ERR_MISSING_SIG_FIELD:{exc}"
 
     try:
-        vk = nacl.signing.VerifyKey(
-            verify_key, encoder=nacl.encoding.HexEncoder
-        )
-        vk.verify(bytes.fromhex(integrity_hash), bytes.fromhex(signature_hex))
+        vk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(verify_key))
+        vk.verify(bytes.fromhex(signature_hex), bytes.fromhex(integrity_hash))
         return True, ""
-    except nacl.exceptions.BadSignatureError:
+    except InvalidSignature:
         return False, "ERR_BAD_SIGNATURE"
     except Exception as exc:
         return False, f"ERR_SIGNATURE_INVALID:{exc}"

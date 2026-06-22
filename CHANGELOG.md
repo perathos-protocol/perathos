@@ -5,6 +5,15 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Crypto backend unified on `cryptography` (pyca)** instead of PyNaCl
+  (open-core consolidation, decision #1). Ed25519 signing/verification in
+  `signing.py` and `keytrust.py` now use the industry-standard `cryptography`
+  library — the same backend as the gateway — so signers are shareable across
+  the VRL stack. Signature format and behavior are unchanged (Ed25519 is
+  interoperable); existing signed bundles still verify. Core deps: `click` +
+  `cryptography` (was `pynacl`); `doctor` now reports `cryptography`.
+
 ### Added
 - **Proof Bundle v2** (open-core consolidation, stage 3 — the unified format).
   v2 keeps perathos's hash-chain integrity and adds: a `computed` flag on each

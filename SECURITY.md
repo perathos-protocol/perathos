@@ -29,7 +29,7 @@ key out of band** — a bare signature does not establish identity).
 ## Cryptography
 
 - Hashing: SHA-256.
-- Signatures: Ed25519 (PyNaCl / libsodium, constant-time).
+- Signatures: Ed25519 (the `cryptography` library / pyca, constant-time).
 - Serialization: deterministic canonical JSON (sorted string keys, compact,
   UTF-8, no NaN/Infinity) for reproducible, cross-language verification.
 

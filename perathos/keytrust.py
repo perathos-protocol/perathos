@@ -19,7 +19,8 @@ Signing still covers exactly `bytes.fromhex(integrity_hash)` and emits the same
 byte-identical in shape to a locally-signed one and verifies the same way. The
 kid is *derived* from the embedded verify_key, never trusted from the bundle.
 
-Uses PyNaCl (libsodium) — the same Ed25519 backend as perathos.signing.
+Uses the `cryptography` library (pyca) — the same Ed25519 backend as
+perathos.signing and the gateway, so signers are shareable across the stack.
 """
 from __future__ import annotations
 
@@ -28,8 +29,11 @@ import hashlib
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-import nacl.exceptions
-import nacl.signing
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 ALG = "ed25519"
 
@@ -59,23 +63,23 @@ class LocalSigner(Signer):
     """Signs with an in-process Ed25519 key. The default; for production use
     KmsSigner so the private key never leaves a KMS/HSM."""
 
-    def __init__(self, signing_key: nacl.signing.SigningKey, *, key_id: str | None = None) -> None:
+    def __init__(self, signing_key: Ed25519PrivateKey, *, key_id: str | None = None) -> None:
         self._sk = signing_key
-        self.public_key = bytes(signing_key.verify_key)
+        self.public_key = signing_key.public_key().public_bytes_raw()
         self.key_id = key_id or kid_for(self.public_key)
 
     def sign(self, payload: bytes) -> bytes:
-        return self._sk.sign(payload).signature
+        return self._sk.sign(payload)
 
     @classmethod
     def generate(cls, *, key_id: str | None = None) -> "LocalSigner":
-        return cls(nacl.signing.SigningKey.generate(), key_id=key_id)
+        return cls(Ed25519PrivateKey.generate(), key_id=key_id)
 
     @classmethod
     def from_hex(cls, signing_key_hex: str, *, key_id: str | None = None) -> "LocalSigner":
         if len(signing_key_hex) != 64 or any(c not in "0123456789abcdef" for c in signing_key_hex):
             raise ValueError("signing_key_hex must be 64 lowercase hex characters")
-        return cls(nacl.signing.SigningKey(bytes.fromhex(signing_key_hex)), key_id=key_id)
+        return cls(Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_key_hex)), key_id=key_id)
 
 
 class KmsSigner(Signer):
@@ -155,7 +159,7 @@ class TrustStore:
 def verify_raw_signature(public_raw: bytes, message: bytes, signature: bytes) -> bool:
     """Low-level Ed25519 verify against a raw public key."""
     try:
-        nacl.signing.VerifyKey(public_raw).verify(message, signature)
+        Ed25519PublicKey.from_public_bytes(public_raw).verify(signature, message)
         return True
-    except (nacl.exceptions.BadSignatureError, ValueError):
+    except (InvalidSignature, ValueError):
         return False

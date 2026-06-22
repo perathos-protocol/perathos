@@ -690,7 +690,7 @@ inspect(bundle)
 
 Generate a fresh Ed25519 keypair.
 
-Uses PyNaCl (libsodium) to generate cryptographically secure signing and
+Uses the `cryptography` library (pyca) to generate cryptographically secure signing and
 verification keys. Keys are returned as hex-encoded strings suitable for
 storing in files or passing to signing functions.
 

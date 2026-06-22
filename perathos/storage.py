@@ -561,9 +561,10 @@ def load_verify_key() -> str:
     Recovery from corrupted keys:
         - If the verify key file is corrupted or missing, you can regenerate it
           by deriving it from the signing key (if the signing key is intact):
-          `from perathos.signing import generate_keypair; from perathos.storage import load_signing_key, save_keypair`
-          `sk = load_signing_key(); from nacl.signing import SigningKey; from nacl import encoding`
-          `sk_obj = SigningKey(sk, encoder=encoding.HexEncoder); vk = sk_obj.verify_key.encode(encoding.HexEncoder).decode()`
+          `from perathos.storage import load_signing_key`
+          `from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey`
+          `sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(load_signing_key()))`
+          `vk = sk.public_key().public_bytes_raw().hex()`
         - Or simply regenerate both keys: `perathos keygen`
 
     Returns:

@@ -111,7 +111,7 @@ rights)**. Treat the FEVER family / VitaminC / SelfCheckGPT as CC BY-SA
 ## Deployment & operations
 
 **Q: What are the runtime dependencies?**
-Core: `click`, `pynacl` only — small and pure. The NLI model (`transformers`,
+Core: `click`, `cryptography` only — small and standard. The NLI model (`transformers`,
 `torch`) and the agent harness (`httpx`, `anthropic`) are **optional extras**;
 `pip install perathos` pulls neither.
 

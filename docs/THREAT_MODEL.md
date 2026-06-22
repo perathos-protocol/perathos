@@ -88,7 +88,7 @@ or swap a signature, impersonate a signer, or crash a verifier (DoS).
 ## 6. Cryptographic choices
 
 - **Hash:** SHA-256 (collision-resistant; the binding primitive).
-- **Signature:** Ed25519 (PyNaCl/libsodium; constant-time).
+- **Signature:** Ed25519 (the `cryptography` library / pyca; constant-time).
 - **Serialization:** deterministic canonical JSON (sorted keys, compact
   separators, UTF-8, `allow_nan=False`, string keys only) so identical logical
   data produces identical bytes across languages/platforms — the basis for
