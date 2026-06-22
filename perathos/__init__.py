@@ -12,6 +12,11 @@ Example:
     >>> print(valid)  # True
 """
 from .bundle import create_bundle, sign_bundle, verify_bundle
+from .calibration import (
+    BinningCalibrator,
+    TemperatureCalibrator,
+    expected_calibration_error,
+)
 from .inspector import inspect_bundle
 from .pipeline import (
     MultiVerifierPipeline,
@@ -60,4 +65,8 @@ __all__ = [
     "CrossExaminer",
     "ClaimEntailmentVerifier",
     "default_verifiers",
+    # calibration (real-confidence honesty)
+    "TemperatureCalibrator",
+    "BinningCalibrator",
+    "expected_calibration_error",
 ]

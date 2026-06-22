@@ -21,6 +21,11 @@ nli = ["transformers>=4.40", "torch>=2.0"]
 [project.scripts]
 perathos = "perathos.cli:main"
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that load heavy optional deps (e.g. the NLI model); skipped when unavailable",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["perathos*"]
