@@ -5,6 +5,17 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Key management & trust anchoring** (`perathos.keytrust`), the canonical VRL
+  key layer (open-core consolidation, stage 1): a pluggable `Signer` —
+  `LocalSigner` and `KmsSigner` (private key never leaves a KMS/HSM via an
+  injected sign function) — plus a `TrustStore` of trusted keys by derived `kid`,
+  exportable/importable as JWKS. `sign_bundle()` now accepts a `Signer`;
+  `verify_bundle(..., trust_store=...)` and `verify --trust-jwks <file>` reject
+  any signer not in the trusted set (`ERR_UNTRUSTED_SIGNER`). Signature format is
+  unchanged, so existing bundles still verify; KMS-signed bundles are
+  shape-identical to locally-signed ones.
+
 ## [0.2.0] - 2026-06-16
 
 ### Added

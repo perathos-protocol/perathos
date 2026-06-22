@@ -18,6 +18,13 @@ from .calibration import (
     expected_calibration_error,
 )
 from .inspector import inspect_bundle
+from .keytrust import (
+    KmsSigner,
+    LocalSigner,
+    Signer,
+    TrustStore,
+    kid_for,
+)
 from .pipeline import (
     MultiVerifierPipeline,
     VerificationResult,
@@ -55,6 +62,12 @@ __all__ = [
     "inspect_bundle",
     "generate_keypair",
     "verify_signature",
+    # key management & trust anchoring
+    "LocalSigner",
+    "KmsSigner",
+    "Signer",
+    "TrustStore",
+    "kid_for",
     # multi-verifier pipeline
     "verify_output",
     "MultiVerifierPipeline",

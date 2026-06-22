@@ -205,3 +205,23 @@ def test_require_pass_policy(home):
 def test_version_is_0_2_0():
     r = CliRunner().invoke(cli, ["--version"])
     assert "0.2.0" in r.output
+
+
+def test_verify_trust_jwks(home):
+    from perathos.keytrust import LocalSigner, TrustStore
+    runner = CliRunner()
+    assert runner.invoke(cli, ["keygen"]).exit_code == 0
+    out_file = str(home / "s.json")
+    assert runner.invoke(cli, ["prove", "x", "--sign", "--output-file", out_file, "--quiet"]).exit_code == 0
+
+    vk_hex = (home / ".perathos" / "keys" / "verify.key").read_text(encoding="utf-8").strip()
+    trusted = str(home / "jwks.json")
+    Path(trusted).write_text(json.dumps(TrustStore().add_public_key(bytes.fromhex(vk_hex)).to_jwks()), encoding="utf-8")
+    ok = runner.invoke(cli, ["verify", "--file", out_file, "--trust-jwks", trusted])
+    assert ok.exit_code == 0, ok.output
+
+    untrusted = str(home / "other.json")
+    Path(untrusted).write_text(json.dumps(TrustStore().add_signer(LocalSigner.generate()).to_jwks()), encoding="utf-8")
+    bad = runner.invoke(cli, ["verify", "--file", out_file, "--trust-jwks", untrusted])
+    assert bad.exit_code == 1
+    assert "INVALID" in bad.output

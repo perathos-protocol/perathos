@@ -194,28 +194,34 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
     """
     if not isinstance(bundle, dict):
         raise TypeError(f"bundle must be a dict, got {type(bundle).__name__}")
-    if not isinstance(signing_key_hex, str):
+    from .keytrust import LocalSigner, Signer  # local import to avoid cycles
+    is_signer = isinstance(signing_key_hex, Signer)
+    if not is_signer and not isinstance(signing_key_hex, str):
         raise TypeError(
-            f"signing_key_hex must be a string, got {type(signing_key_hex).__name__}"
+            f"signing_key_hex must be a string or a Signer, got {type(signing_key_hex).__name__}"
         )
     if "integrity_hash" not in bundle:
         raise KeyError("bundle must contain 'integrity_hash' field")
 
-    if len(signing_key_hex) != 64:
-        raise ValueError(
-            f"signing_key_hex must be exactly 64 hex characters, got {len(signing_key_hex)}"
-        )
-    if any(c not in "0123456789abcdef" for c in signing_key_hex):
-        raise ValueError(
-            f"signing_key_hex must contain only lowercase hex characters (0-9, a-f), got: {signing_key_hex}"
-        )
+    if is_signer:
+        signer = signing_key_hex
+    else:
+        if len(signing_key_hex) != 64:
+            raise ValueError(
+                f"signing_key_hex must be exactly 64 hex characters, got {len(signing_key_hex)}"
+            )
+        if any(c not in "0123456789abcdef" for c in signing_key_hex):
+            raise ValueError(
+                f"signing_key_hex must contain only lowercase hex characters (0-9, a-f), got: {signing_key_hex}"
+            )
+        signer = LocalSigner.from_hex(signing_key_hex)
 
-    from .signing import sign_hash  # local import to avoid circular deps
-    sig = sign_hash(bundle["integrity_hash"], signing_key_hex)
+    from .signing import sign_hash_with_signer
+    sig = sign_hash_with_signer(bundle["integrity_hash"], signer)
     return {**bundle, "provider_signature": sig}
 
 
-def verify_bundle(bundle: dict, expected_verify_key: str | None = None) -> tuple[bool, str]:
+def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_store=None) -> tuple[bool, str]:
     """Recompute all hashes from stored data and check they match.
 
     Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id,
@@ -282,6 +288,14 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None) -> tuple
             # Step 5: optional signer pinning (provenance).
             if expected_verify_key is not None and sig.get("verify_key") != expected_verify_key:
                 return False, "ERR_UNEXPECTED_SIGNER"
+            # Step 6: optional trust-anchor check — the signer's key must be one
+            # the consumer has explicitly trusted (by derived kid), not just any
+            # key the bundle embeds. Scales signer pinning to many keys via JWKS.
+            if trust_store is not None:
+                from .keytrust import kid_for
+                vk_bytes = bytes.fromhex(sig["verify_key"])
+                if trust_store.get(kid_for(vk_bytes)) != vk_bytes:
+                    return False, "ERR_UNTRUSTED_SIGNER"
 
         return True, ""
 

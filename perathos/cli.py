@@ -29,6 +29,7 @@ _ERROR_EXPLANATIONS = {
     "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
     "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
     "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
+    "ERR_UNTRUSTED_SIGNER": "The bundle's signature is valid but the signing key is not in the trust set you provided (--trust-jwks). Next step: Obtain the issuer's published JWKS and confirm the key is one you trust.",
     "ERR_MALFORMED_BUNDLE": "The bundle structure is malformed and could not be verified (e.g. a corrupted or hostile _trace). Next step: Obtain the original bundle from the provider; do not trust this one.",
     "ERR_UNSUPPORTED_ALGORITHM": "The bundle's signature declares an algorithm other than ed25519, which is the only supported scheme. Next step: Do not trust this bundle; its signature was not validated.",
     "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
@@ -364,8 +365,10 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
               help="Policy gate: exit non-zero unless the bundle carries a valid signature.")
 @click.option("--require-pass", is_flag=True,
               help="Policy gate: exit non-zero unless the bound verification aggregate verdict is PASS.")
+@click.option("--trust-jwks", "trust_jwks", type=click.Path(exists=True), default=None, metavar="PATH",
+              help="Verify the signer against a trusted key set (JWKS file). Rejects any signer whose key is not in the set.")
 def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, expected_verify_key: str,
-               require_signed: bool, require_pass: bool):
+               require_signed: bool, require_pass: bool, trust_jwks: str):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
     Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
@@ -438,9 +441,20 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, exp
         click.echo("Fix any syntax errors and try again.", err=True)
         sys.exit(1)
 
+    # Optional trust anchor: verify the signer's key is in a trusted JWKS set.
+    trust_store = None
+    if trust_jwks:
+        from .keytrust import TrustStore
+        try:
+            trust_store = TrustStore.from_jwks(json.loads(Path(trust_jwks).read_text(encoding="utf-8")))
+        except (ValueError, KeyError) as exc:
+            click.echo(f"[ERROR] Invalid JWKS file {trust_jwks}: {exc}", err=True)
+            sys.exit(2)
+
     # Step 1: hash-chain + signature verification (verify() also validates the
-    # provider_signature when present, and pins the signer if --verify-key given)
-    valid, err = verify(bundle, expected_verify_key=expected_verify_key)
+    # provider_signature when present, pins the signer if --verify-key given,
+    # and checks the trust store if --trust-jwks given)
+    valid, err = verify(bundle, expected_verify_key=expected_verify_key, trust_store=trust_store)
     if not valid:
         explanation = _explain_error(err)
         click.echo(f"[ERROR] INVALID  {err}", err=True)

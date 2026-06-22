@@ -82,6 +82,22 @@ def sign_hash(integrity_hash: str, signing_key_hex: str) -> dict:
     }
 
 
+def sign_hash_with_signer(integrity_hash: str, signer) -> dict:
+    """Sign integrity_hash with a keytrust.Signer (Local or KMS-backed).
+
+    Produces the SAME provider_signature shape as sign_hash() — a KMS-signed
+    bundle is indistinguishable in format from a locally-signed one and verifies
+    via verify_signature() unchanged. The signer's private key may live in a KMS.
+    """
+    _validate_hex_hash(integrity_hash, "integrity_hash", 64)
+    signature = signer.sign(bytes.fromhex(integrity_hash))
+    return {
+        "algorithm": signer.alg,
+        "verify_key": signer.public_key.hex(),
+        "signature": signature.hex(),
+    }
+
+
 def verify_signature(integrity_hash: str, provider_signature: dict) -> tuple[bool, str]:
     """Verify an Ed25519 signature over an integrity_hash.
 

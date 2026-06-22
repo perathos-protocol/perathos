@@ -54,16 +54,20 @@ or swap a signature, impersonate a signer, or crash a verifier (DoS).
 
 ## 5. What is NOT protected — explicit assumptions
 
-1. **Signer identity must be pinned out of band.** A bare signature only proves
-   *some* key signed the hash. An attacker can strip a signature and re-sign the
-   same hash with **their own** key; `verify()` will report it valid **under the
-   attacker's key**. The consumer MUST pin the expected public key
-   (`verify_bundle(..., expected_verify_key=...)` / `verify --verify-key`).
-   Without pinning, provenance is not established.
-2. **Private key custody is the deployer's responsibility.** Perathos stores
-   `signing.key` with owner-only permissions (POSIX `0o600`; Windows ACL via
-   icacls, best-effort with a warning on failure) but does not provide an HSM/KMS.
-   For production, hold the key in a KMS/HSM and inject signing.
+1. **Signer identity must be pinned/anchored out of band.** A bare signature
+   only proves *some* key signed the hash. An attacker can strip a signature and
+   re-sign the same hash with **their own** key; `verify()` will report it valid
+   **under the attacker's key** unless the consumer establishes trust. Two
+   supported ways: pin a single key (`verify_bundle(..., expected_verify_key=...)`
+   / `verify --verify-key`), or anchor against a trusted key set
+   (`verify_bundle(..., trust_store=...)` / `verify --trust-jwks`, with the
+   issuer publishing its keys as JWKS). Without one of these, provenance is not
+   established.
+2. **Private key custody is the deployer's responsibility.** Perathos stores a
+   local `signing.key` with owner-only permissions (POSIX `0o600`; Windows ACL
+   via icacls, best-effort with a warning on failure). For production, use
+   `KmsSigner` so the private key never leaves a KMS/HSM (the cloud signing call
+   is injected), and distribute trust via JWKS.
 3. **Verifier verdicts are evidence, not truth.** A `PASS` means the configured
    verifiers did not find a problem with the available evidence — not that the
    output is correct. Detection has false negatives; confidence is calibrated,
@@ -92,8 +96,9 @@ or swap a signature, impersonate a signer, or crash a verifier (DoS).
 
 ## 7. Residual risks / roadmap
 
-- Signer pinning is opt-in; a future bundle version may bind `verify_key` into
-  the signed payload to make substitution detectable without out-of-band pinning.
+- Trust anchoring (key pinning or a JWKS TrustStore) is opt-in by the consumer;
+  a future bundle version may also bind `kid`/expiry into the signed payload for
+  rotation semantics carried inside the proof itself.
 - No TEE/remote-attestation binding of the execution environment yet.
 - No transparency log (e.g. Merkle inclusion proofs) for issued bundles yet.
 
