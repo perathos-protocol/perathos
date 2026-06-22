@@ -10,7 +10,10 @@ requires-python = ">=3.11"
 dependencies = ["click>=8.0", "pynacl>=1.5"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+# jsonschema is in dev so CI exercises the SchemaValidator engine.
+dev = ["pytest>=8.0", "ruff>=0.4", "jsonschema>=4.21"]
+# SchemaValidator engine (real JSON Schema validation; SSRF-safe).
+schema = ["jsonschema>=4.21"]
 # Autonomous-agent harness deps — version-bounded (away from yanked/compromised
 # arbitrary versions) and centralized here instead of an unpinned inline
 # `pip install httpx anthropic` in credential-bearing CI jobs.

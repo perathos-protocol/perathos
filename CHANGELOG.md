@@ -6,6 +6,16 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Real verifier engines** (`perathos.engines`), the canonical core's
+  deterministic, model-free engines (open-core consolidation, stage 2 — ported
+  from the gateway): `SymbolicSolver` (123, recompute arithmetic),
+  `HallucinationDetector` (125, extractive grounding vs sources + optional
+  entailment hook), `SchemaValidator` (126, jsonschema with remote-$ref refused),
+  `TemporalConsistency` (127, anachronism detection). With CrossExaminer (122)
+  and ClaimEntailment (124) that is 6 of the 7 named verifiers. Each runs behind
+  the INCONCLUSIVE-safe wrapper and binds a reproducible evidence digest.
+  `VerificationContext` gained `sources`, `schema`, `timeline`. SchemaValidator
+  needs the `schema` extra.
 - **Key management & trust anchoring** (`perathos.keytrust`), the canonical VRL
   key layer (open-core consolidation, stage 1): a pluggable `Signer` —
   `LocalSigner` and `KmsSigner` (private key never leaves a KMS/HSM via an

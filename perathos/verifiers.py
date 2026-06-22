@@ -49,6 +49,12 @@ class VerificationContext:
     samples: List[str] = field(default_factory=list)
     # Trusted evidence documents (for retrieval-entailment claim checking).
     evidence: List[str] = field(default_factory=list)
+    # Grounding sources for the extractive HallucinationDetector engine.
+    sources: List[str] = field(default_factory=list)
+    # Declared JSON Schema for the SchemaValidator engine.
+    schema: Optional[dict] = None
+    # Optional term -> earliest-year overrides for the TemporalConsistency engine.
+    timeline: Optional[dict] = None
 
 
 # ── similarity / entailment plug points (deterministic lexical defaults) ───────

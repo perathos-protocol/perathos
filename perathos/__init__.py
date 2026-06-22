@@ -17,6 +17,13 @@ from .calibration import (
     TemperatureCalibrator,
     expected_calibration_error,
 )
+from .engines import (
+    HallucinationDetector,
+    SchemaValidator,
+    SymbolicSolver,
+    TemporalConsistency,
+    all_engines,
+)
 from .inspector import inspect_bundle
 from .keytrust import (
     KmsSigner,
@@ -78,6 +85,12 @@ __all__ = [
     "CrossExaminer",
     "ClaimEntailmentVerifier",
     "default_verifiers",
+    # real verifier engines
+    "SymbolicSolver",
+    "HallucinationDetector",
+    "SchemaValidator",
+    "TemporalConsistency",
+    "all_engines",
     # calibration (real-confidence honesty)
     "TemperatureCalibrator",
     "BinningCalibrator",
