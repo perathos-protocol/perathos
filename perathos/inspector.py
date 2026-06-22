@@ -176,6 +176,18 @@ def _plain(bundle: dict, *, uni: bool) -> None:
     for num, op, result in _steps(bundle):
         print(f"    step {num} {dot} {op} {arrow} {result}")
 
+    verification = bundle.get("verification")
+    if verification:
+        agg = verification.get("aggregate", {})
+        print()
+        print("  Verification")
+        print(f"    aggregate : {agg.get('verdict', '?')} ({agg.get('rationale', '')})")
+        for rec in verification.get("verdict_records", []):
+            conf = rec.get("confidence_bps", 0) / 10.0
+            ev = len(rec.get("evidence_digests", []))
+            print(f"    {dot} [{rec.get('verifier_id')}] {rec.get('verifier_name')}: "
+                  f"{rec.get('verdict')} (conf {conf:.0f}%, {ev} evidence) {arrow} {rec.get('detail', '')}")
+
 
 # ── rich renderer ─────────────────────────────────────────────────────────────────
 
@@ -233,6 +245,26 @@ def _rich(bundle: dict) -> None:
         row.append("→", style="dim")
         row.append(f" {result}", style="dim cyan")
         console.print(row)
+
+    verification = bundle.get("verification")
+    if verification:
+        agg = verification.get("aggregate", {})
+        verdict = agg.get("verdict", "?")
+        color = {"PASS": "green", "FAIL": "red", "WARN": "yellow"}.get(verdict, "cyan")
+        console.print()
+        console.print("  [bold]Verification[/bold]")
+        agg_row = Text("    aggregate : ")
+        agg_row.append(verdict, style=f"bold {color}")
+        agg_row.append(f"  {agg.get('rationale', '')}", style="dim")
+        console.print(agg_row)
+        for rec in verification.get("verdict_records", []):
+            conf = rec.get("confidence_bps", 0) / 10.0
+            ev = len(rec.get("evidence_digests", []))
+            console.print(
+                f"    · [{rec.get('verifier_id')}] {rec.get('verifier_name')}: "
+                f"[bold]{rec.get('verdict')}[/bold] [dim](conf {conf:.0f}%, {ev} evidence) → "
+                f"{rec.get('detail', '')}[/dim]"
+            )
 
     console.print()
 

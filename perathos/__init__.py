@@ -13,7 +13,20 @@ Example:
 """
 from .bundle import create_bundle, sign_bundle, verify_bundle
 from .inspector import inspect_bundle
+from .pipeline import (
+    MultiVerifierPipeline,
+    VerificationResult,
+    verify_output,
+)
 from .signing import generate_keypair, verify_signature
+from .verdict import VerdictRecord
+from .verifiers import (
+    ClaimEntailmentVerifier,
+    CrossExaminer,
+    VerificationContext,
+    Verifier,
+    default_verifiers,
+)
 
 __version__ = "0.1.0"
 
@@ -37,4 +50,14 @@ __all__ = [
     "inspect_bundle",
     "generate_keypair",
     "verify_signature",
+    # multi-verifier pipeline
+    "verify_output",
+    "MultiVerifierPipeline",
+    "VerificationResult",
+    "VerificationContext",
+    "VerdictRecord",
+    "Verifier",
+    "CrossExaminer",
+    "ClaimEntailmentVerifier",
+    "default_verifiers",
 ]

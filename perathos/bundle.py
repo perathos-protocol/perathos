@@ -62,7 +62,7 @@ def ai_id() -> str:
     return _sha256(_MODEL_DESCRIPTOR.encode("utf-8"))
 
 
-def create_bundle(output_text: str, input_text: str = "") -> dict:
+def create_bundle(output_text: str, input_text: str = "", verification: dict | None = None) -> dict:
     """Build a VRL Proof Bundle for a given AI output.
 
     Constructs a tamper-evident bundle by hashing the input and output,
@@ -76,6 +76,10 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
         input_text: Original prompt or request that produced output_text.
             Defaults to empty string for prove-from-output-only use cases.
             Must be a string.
+        verification: Optional verification block (verdict records + aggregate
+            verdict) produced by the multi-verifier pipeline. When present, its
+            digest is folded into integrity_hash so the verdicts are signed and
+            tamper-evident; stripping or altering them breaks verification.
 
     Returns:
         A dictionary containing:
@@ -100,6 +104,10 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
     if not isinstance(input_text, str):
         raise ValueError(
             f"input_text must be a string, got {type(input_text).__name__}"
+        )
+    if verification is not None and not isinstance(verification, dict):
+        raise ValueError(
+            f"verification must be a dict or None, got {type(verification).__name__}"
         )
 
     issued_at = datetime.now(timezone.utc).isoformat()
@@ -131,12 +139,18 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
         "proof_system": proof_system,
         "trace_hash": trace_hash,
     }
+    # Bind the verification block (if any) into the integrity root. Including
+    # verification_hash only when verification is present keeps bundles without
+    # verification byte-for-byte backward compatible, and any later attempt to
+    # add, remove, or edit the block flips this recomputation -> tamper detected.
+    if verification is not None:
+        integrity_payload["verification_hash"] = _sha256(canonical_bytes(verification))
     integrity_hash = _sha256(canonical_bytes(integrity_payload))
 
     # UUIDv5: deterministic, reconstructable from integrity_hash alone.
     bundle_id = str(uuid.uuid5(PERATHOS_NAMESPACE, integrity_hash))
 
-    return {
+    bundle = {
         "bundle_id": bundle_id,
         "proof_system": proof_system,
         "issued_at": issued_at,
@@ -148,6 +162,10 @@ def create_bundle(output_text: str, input_text: str = "") -> dict:
         # _trace stored verbatim so verifiers can recompute trace_hash offline.
         "_trace": trace,
     }
+    if verification is not None:
+        # Stored verbatim so a consumer can recompute verification_hash offline.
+        bundle["verification"] = verification
+    return bundle
 
 
 def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
@@ -238,6 +256,12 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None) -> tuple
             "proof_system": bundle["proof_system"],
             "trace_hash": bundle["trace_hash"],
         }
+        # The verification block is bound into integrity_hash iff it is present
+        # (see create_bundle). Recompute symmetrically so that adding, removing,
+        # or editing the verdicts is detected as a hash mismatch.
+        verification = bundle.get("verification")
+        if verification is not None:
+            integrity_payload["verification_hash"] = _sha256(canonical_bytes(verification))
         if _sha256(canonical_bytes(integrity_payload)) != bundle["integrity_hash"]:
             return False, "ERR_INTEGRITY_HASH_MISMATCH"
 
