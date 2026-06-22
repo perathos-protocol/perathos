@@ -167,3 +167,41 @@ def test_doctor_runs(home):
     assert r.exit_code == 0, r.output
     assert "perathos" in r.output
     assert "python" in r.output
+
+
+def test_require_signed_policy(home):
+    runner = CliRunner()
+    out_file = str(home / "u.json")
+    runner.invoke(cli, ["prove", "x", "--output-file", out_file, "--quiet"])
+    # unsigned bundle is valid but fails the signed policy gate
+    ok = runner.invoke(cli, ["verify", "--file", out_file])
+    assert ok.exit_code == 0
+    policy = runner.invoke(cli, ["verify", "--file", out_file, "--require-signed"])
+    assert policy.exit_code == 1
+    assert "POLICY" in policy.output
+
+
+def test_require_pass_policy(home):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["keygen"]).exit_code == 0
+    # A bundle whose bound verdict is not PASS must fail --require-pass.
+    out_file = str(home / "berlin.json")
+    runner.invoke(cli, [
+        "prove", "The capital of France is Paris.",  # lexical: supported -> PASS path
+        "--sample-text", "totally unrelated nonsense alpha",
+        "--sample-text", "more unrelated nonsense beta",
+        "--output-file", out_file, "--quiet",
+    ])
+    bundle = json.loads(Path(out_file).read_text(encoding="utf-8"))
+    verdict = bundle["verification"]["aggregate"]["verdict"]
+    r = runner.invoke(cli, ["verify", "--file", out_file, "--require-pass"])
+    if verdict == "PASS":
+        assert r.exit_code == 0
+    else:
+        assert r.exit_code == 1
+        assert "POLICY" in r.output
+
+
+def test_version_is_0_2_0():
+    r = CliRunner().invoke(cli, ["--version"])
+    assert "0.2.0" in r.output

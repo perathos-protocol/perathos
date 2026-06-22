@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-16
+
 ### Added
 - **Multi-verifier pipeline** bound into the signed proof bundle: verdict
   records + aggregate verdict are folded into `integrity_hash` (tamper-evident).
@@ -24,6 +26,14 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 - Enterprise docs: `docs/THREAT_MODEL.md`, `SECURITY.md`,
   `docs/ENTERPRISE_FAQ.md`, and a cited training-data dossier
   (`docs/research/TRAINING_DATA.md`).
+- CLI verification: `prove --evidence/--evidence-text/--sample/--sample-text/--nli/--mode`
+  runs the pipeline and binds verdicts; `perathos doctor` diagnostic.
+- `verify` policy gates: `--require-signed` and `--require-pass` enforce a
+  deployment policy (signed + pinned + PASS) in one call.
+- Runnable harness in `scripts/`: `calibrate.py` (fit + ECE) and
+  `train_entailment.py` (fine-tune the NLI model); `train` extra.
+- Secure release workflow (`.github/workflows/release.yml`) with a clean-install
+  smoke gate and PyPI trusted publishing (OIDC, no API token).
 
 ### Fixed (security / correctness)
 - `verify()` now validates the Ed25519 signature when present — a forged

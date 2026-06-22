@@ -1,0 +1,65 @@
+name: Release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) — no API token in secrets.
+# One-time setup on PyPI: project "perathos" -> Settings -> Publishing ->
+# add a GitHub trusted publisher (owner: perathos-protocol, repo: perathos,
+# workflow: release.yml, environment: pypi).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build sdist + wheel
+        run: |
+          pip install build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the built wheel in a clean venv and smoke test
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/perathos --version
+          /tmp/venv/bin/perathos doctor
+
+  publish:
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

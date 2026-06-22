@@ -7,7 +7,7 @@ import click
 from . import __version__, prove, sign, verify, inspect
 from .inspector import _unicode_ok
 from .pipeline import CONJUNCTION, QUORUM, verify_output
-from .signing import generate_keypair, verify_signature
+from .signing import generate_keypair
 from .verifiers import ClaimEntailmentVerifier, CrossExaminer, VerificationContext
 from .storage import (
     list_bundles,
@@ -360,7 +360,12 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
               help="Display full 64-character hashes instead of truncated 8-character previews.")
 @click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
               help="Pin the expected signer: accept a signed bundle only if its public key matches this 64-char hex key. Prevents silent signer substitution.")
-def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, expected_verify_key: str):
+@click.option("--require-signed", is_flag=True,
+              help="Policy gate: exit non-zero unless the bundle carries a valid signature.")
+@click.option("--require-pass", is_flag=True,
+              help="Policy gate: exit non-zero unless the bound verification aggregate verdict is PASS.")
+def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, expected_verify_key: str,
+               require_signed: bool, require_pass: bool):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
     Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
@@ -442,14 +447,22 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, exp
         click.echo(f"Reason: {explanation}", err=True)
         sys.exit(1)
 
-    # Step 2: signature verification (only if present)
-    if "provider_signature" in bundle:
-        sig_valid, sig_err = verify_signature(bundle["integrity_hash"], bundle["provider_signature"])
-        if not sig_valid:
-            explanation = _explain_error(sig_err)
-            click.echo(f"[ERROR] INVALID  {sig_err}", err=True)
-            click.echo(f"Reason: {explanation}", err=True)
+    # Step 2: policy gates (a deployment may require signed + PASS in one call).
+    # The bundle is already cryptographically valid at this point, so any present
+    # signature has validated and any bound verdict is tamper-evident.
+    if require_signed and "provider_signature" not in bundle:
+        click.echo("[ERROR] POLICY  bundle is unsigned but --require-signed was set", err=True)
+        sys.exit(1)
+    if require_pass:
+        verification = bundle.get("verification")
+        agg = verification.get("aggregate", {}) if isinstance(verification, dict) else {}
+        verdict = agg.get("verdict")
+        if verdict != "PASS":
+            click.echo(f"[ERROR] POLICY  verification verdict is {verdict!r}, but --require-pass requires PASS", err=True)
             sys.exit(1)
+
+    # Step 3: report
+    if "provider_signature" in bundle:
         click.echo(f"VALID_SIGNED  {display_id}")
         vk_display = _format_hash(bundle['provider_signature']['verify_key'], verbose)
         click.echo(f"              verify_key {vk_display}")
