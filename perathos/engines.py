@@ -54,6 +54,9 @@ class _Engine(Verifier):
             method=self.method,
             detail=detail,
             evidence_digests=digests,
+            # Carry the raw structured evidence too (bound by the digest above);
+            # an auditor/consumer can replay it. Redact at the caller if needed.
+            evidence=evidence,
         )
 
 

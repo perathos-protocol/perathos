@@ -22,7 +22,7 @@ promoted to PASS.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -43,6 +43,12 @@ class VerdictRecord:
     method: str = ""
     detail: str = ""
     evidence_digests: List[str] = field(default_factory=list)
+    # Optional RAW structured evidence (e.g. the recomputed equations, the
+    # ungrounded specifics). evidence_digests always binds it; carrying the raw
+    # form too enables audit/replay at the cost of size/privacy, so it is opt-in
+    # (None by default) and can be redacted. Engines populate it; the lighter
+    # verifiers leave it None (digest-only).
+    evidence: Optional[dict] = None
     # True when an engine independently computed this verdict (the honest case —
     # perathos always runs the verifier). A future ingest path for a verdict the
     # model merely *asserted* about itself would set this False; only computed
@@ -67,4 +73,5 @@ class VerdictRecord:
             "detail": self.detail,
             "evidence_digests": list(self.evidence_digests),
             "computed": bool(self.computed),
+            **({"evidence": self.evidence} if self.evidence is not None else {}),
         }
