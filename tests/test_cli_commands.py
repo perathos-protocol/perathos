@@ -202,9 +202,11 @@ def test_require_pass_policy(home):
         assert "POLICY" in r.output
 
 
-def test_version_is_0_2_0():
+def test_version_is_current():
+    from perathos import __version__
     r = CliRunner().invoke(cli, ["--version"])
-    assert "0.2.0" in r.output
+    assert __version__ in r.output
+    assert r.output.strip().endswith("0.2.1")
 
 
 def test_verify_trust_jwks(home):

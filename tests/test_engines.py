@@ -36,6 +36,14 @@ def test_symbolic_hex_before_x_multiply():
     assert _v(SymbolicSolver(), "0x10 = 16").verdict == PASS
 
 
+def test_symbolic_modulo():
+    # Modulo is now parseable (regex includes %, evaluator supports ast.Mod).
+    assert _v(SymbolicSolver(), "Remainder: 17 % 5 = 2.").verdict == PASS
+    assert _v(SymbolicSolver(), "Remainder: 17 % 5 = 3.").verdict == FAIL
+    # A bare percentage can't form a binary expr -> skipped, never false-flagged.
+    assert _v(SymbolicSolver(), "Growth was 3.2% this year.").verdict == NOT_APPLICABLE
+
+
 # ── HallucinationDetector (125) ───────────────────────────────────────────────
 
 def test_grounding_pass():

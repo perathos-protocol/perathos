@@ -63,8 +63,11 @@ class _Engine(Verifier):
 # ── 123 Symbolic Solver ────────────────────────────────────────────────────────
 
 _ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+# Note: `%` is in the char class so modulo expressions ("17 % 5 = 2") parse; the
+# evaluator already supports ast.Mod. A bare percentage like "3.2%" can't form a
+# valid binary expression, so it fails to parse and is skipped (never flagged).
 _EQ_RE = re.compile(
-    r"([0-9(][0-9\s\.\,\+\-\*/×x()]*?)\s*(?:==|=|equals|is equal to|is)\s*(-?[0-9][0-9\,\.]*)",
+    r"([0-9(][0-9\s\.\,\+\-\*/×x()%]*?)\s*(?:==|=|equals|is equal to|is)\s*(-?[0-9][0-9\,\.]*)",
     re.IGNORECASE,
 )
 _HEX_RE = re.compile(r"\b0[xX][0-9a-fA-F]+\b")

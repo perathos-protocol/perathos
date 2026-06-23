@@ -5,6 +5,15 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-23
+
+### Fixed
+- **SymbolicSolver now handles modulo (`%`)** — the equation regex omitted `%`,
+  so `"17 % 5 = 2"` misparsed as `"5 = 2"` and false-positived a correct answer.
+  Added `%` to the char class (the evaluator already supported `ast.Mod`); a bare
+  percentage like `"3.2%"` can't form a binary expression, so it is skipped, not
+  flagged. Closes engine gap #1 from training-ops `docs/ENGINE_GAPS.md`.
+
 ### Changed
 - **Crypto backend unified on `cryptography` (pyca)** instead of PyNaCl
   (open-core consolidation, decision #1). Ed25519 signing/verification in
