@@ -5,6 +5,33 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-23
+
+### Fixed (adversarial hardening — format / encoding / evasion / injection)
+An adversarial probe pass against the engines surfaced 9 real weaknesses; all are
+fixed here, with the cardinal rule upheld: an engine must **fail closed** to
+NOT_APPLICABLE/INCONCLUSIVE on ambiguity, never false-FAIL a correct answer.
+- **SymbolicSolver no longer false-flags ambiguous numerals.** Scientific
+  notation (`2e3 = 2000`), caret powers (`10^3 = 1000`), and decimal commas
+  (`3,5 * 2 = 7`) were being parsed as fragments (`"3 = 2000"`) and reported as
+  wrong. The engine now skips a match glued to a letter/`.`/`^` or carrying an
+  ambiguous comma (not a clean thousands group) instead of misreading it.
+  Legitimate thousands separators and `x`-multiplication still verify.
+- **HallucinationDetector checks non-`$` currencies** (`€`, `£`, `¥`) — a
+  fabricated `€900` is now caught instead of being silently uncheckable.
+- **SchemaValidator rejects non-finite numbers** — the json stdlib's `NaN` /
+  `Infinity` / `-Infinity` extension is refused (it is not valid JSON and must
+  not satisfy a `{"type": "number"}` schema).
+- **TemporalConsistency is morphology-tolerant** — plurals (`smartwatches`,
+  `cars`) and hyphen variants (`smart-watch`) no longer evade the anachronism
+  check, while staying word-safe (`cares`/`cards` still don't match `car`).
+
+### Documented (scope limit, by design)
+- Extractive grounding checks a specific's PRESENCE, not its polarity, so a
+  negated claim whose value still appears in the source (`"NOT within 30 days"`)
+  is not caught extractively. This is the entailment layer's job — pass an
+  `entailment_fn` (or use the ClaimEntailment verifier) to catch contradictions.
+
 ## [0.2.3] - 2026-06-23
 
 ### Changed

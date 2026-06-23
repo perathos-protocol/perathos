@@ -28,7 +28,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import re
+from functools import lru_cache
 from typing import Any, Callable, List, Optional
 
 from .canonical import canonical_bytes
@@ -74,6 +76,15 @@ _EQ_RE = re.compile(
     re.IGNORECASE,
 )
 _HEX_RE = re.compile(r"\b0[xX][0-9a-fA-F]+\b")
+# A comma that is NOT a clean thousands separator (not followed by exactly 3
+# digits then a non-digit/end). Its presence means the number is ambiguous
+# (decimal comma vs grouping) — we fail closed and skip rather than guess.
+_AMBIG_COMMA = re.compile(r",(?!\d{3}(?:\D|$))")
+# Characters that, adjacent to a captured number, mean we grabbed a FRAGMENT of a
+# larger token (scientific notation "2e3", a caret power "10^3", a decimal, or an
+# identifier). Matching a fragment and recomputing it would false-flag a correct
+# answer, so such matches are skipped.
+_FRAGMENT_ADJ = set(".^")
 _MAX_EXPR_LEN = 100
 
 
@@ -136,7 +147,17 @@ class SymbolicSolver(_Engine):
         for match in _EQ_RE.finditer(text):
             if len(equations) >= 100:
                 break
+            # Fail closed on fragments: if either captured number is glued to a
+            # letter/digit/`.`/`^` (i.e. part of "2e3", "10^3", "x12", a decimal),
+            # we grabbed a fragment — skip rather than recompute a misread.
+            lo, hi = match.start(1), match.end(2)
+            if lo > 0 and (text[lo - 1].isalnum() or text[lo - 1] in _FRAGMENT_ADJ):
+                continue
+            if hi < len(text) and (text[hi].isalnum() or text[hi] in _FRAGMENT_ADJ):
+                continue
             expr = match.group(1).strip()
+            if _AMBIG_COMMA.search(expr) or _AMBIG_COMMA.search(match.group(2)):
+                continue  # ambiguous comma — fail closed, don't guess decimal vs thousands
             computed = _safe_eval(expr)
             try:
                 claimed = float(match.group(2).replace(",", ""))
@@ -165,7 +186,9 @@ class SymbolicSolver(_Engine):
 
 # ── 125 Hallucination Detector (extractive grounding) ──────────────────────────
 
-_MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
+# Common currency symbols, not just `$` — a fabricated "€900" must be checkable.
+_MONEY_RE = re.compile(r"[$€£¥]\s?\d[\d,]*(?:\.\d+)?")
+_CURRENCY_CHARS = "$€£¥"
 _PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s?%")
 _HD_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 # Capture the number AND the unit, and tolerate a hyphen ("90-day") or an
@@ -189,8 +212,10 @@ def _norm(text: str) -> str:
 
 
 def _parse_money(tok: str) -> Optional[float]:
+    for ch in _CURRENCY_CHARS:
+        tok = tok.replace(ch, "")
     try:
-        return float(tok.replace("$", "").replace(",", "").replace(" ", ""))
+        return float(tok.replace(",", "").replace(" ", ""))
     except ValueError:
         return None
 
@@ -307,11 +332,31 @@ class HallucinationDetector(_Engine):
 
 # ── 126 Schema Validator (jsonschema, SSRF-safe) ───────────────────────────────
 
+def _reject_nonfinite(_constant: str) -> Any:  # NaN/Infinity/-Infinity aren't valid JSON
+    raise ValueError(f"non-finite JSON literal {_constant!r} is not allowed")
+
+
+def _strict_loads(text: str) -> Any:
+    # Reject the json stdlib's NaN/Infinity extension — it is not valid JSON and
+    # a non-finite number must not silently satisfy a {"type": "number"} schema.
+    return json.loads(text, parse_constant=_reject_nonfinite)
+
+
+def _has_nonfinite(obj: Any) -> bool:
+    if isinstance(obj, float):
+        return not math.isfinite(obj)
+    if isinstance(obj, dict):
+        return any(_has_nonfinite(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_nonfinite(v) for v in obj)
+    return False
+
+
 def _extract_json(text: str) -> Any:
     text = text.strip()
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
+        return _strict_loads(text)
+    except (json.JSONDecodeError, ValueError):
         pass
     starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
     ends = [i for i in (text.rfind("}"), text.rfind("]")) if i != -1]
@@ -319,8 +364,8 @@ def _extract_json(text: str) -> Any:
         start, end = min(starts), max(ends)
         if end > start:
             try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
+                return _strict_loads(text[start:end + 1])
+            except (json.JSONDecodeError, ValueError):
                 return None
     return None
 
@@ -345,6 +390,9 @@ class SchemaValidator(_Engine):
         obj = output if isinstance(output, (dict, list)) else _extract_json(str(output))
         if obj is None:
             return self._engine_result("fail", "answer contains no parseable JSON value to validate",
+                                       confidence_bps=1000)
+        if _has_nonfinite(obj):
+            return self._engine_result("fail", "answer contains a non-finite number (NaN/Infinity)",
                                        confidence_bps=1000)
 
         def _refuse_remote(uri: str):  # remote $ref => SSRF/DoS; refuse all
@@ -408,6 +456,25 @@ _TC_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
+@lru_cache(maxsize=512)
+def _term_pattern(term: str) -> "re.Pattern[str]":
+    """A plural- and hyphen-tolerant, word-bounded matcher for a timeline term.
+
+    Plurals: always allow a trailing "s"; allow "es" only when the singular ends
+    in s/x/z/ch/sh/o — so "car" matches "cars" but NOT "cares", while "smartwatch"
+    matches "smartwatches". A space in the term matches any run of whitespace.
+    The trailing \\b after the suffix keeps "cards"/"scared" from matching "car".
+    """
+    body = re.escape(term).replace(r"\ ", r"\s+")
+    suffix = r"(?:e?s)?" if re.search(r"(?:s|x|z|ch|sh|o)$", term) else r"s?"
+    return re.compile(r"\b" + body + suffix + r"\b")
+
+
+def _term_in(term: str, variants: tuple) -> bool:
+    pat = _term_pattern(term)
+    return any(pat.search(v) for v in variants)
+
+
 class TemporalConsistency(_Engine):
     verifier_id = 127
     verifier_name = "Temporal Consistency Checker"
@@ -426,8 +493,12 @@ class TemporalConsistency(_Engine):
             years = [int(y) for y in _TC_YEAR_RE.findall(sentence)]
             if not years:
                 continue
+            # Match against the raw text plus hyphen-normalized variants so
+            # "smart-watch" (-> "smartwatch") and "qr-code" (-> "qr code") are
+            # caught without a homograph false-firing.
+            variants = (low, low.replace("-", " "), re.sub(r"(?<=\w)-(?=\w)", "", low))
             for term, earliest in timeline.items():
-                if re.search(r"\b" + re.escape(term) + r"\b", low):  # word-boundary
+                if _term_in(term, variants):
                     n_checked += 1
                     bad = [y for y in years if y < earliest]
                     if bad:

@@ -141,3 +141,67 @@ def test_temporal_expanded_terms_catch_anachronism():
 def test_temporal_expanded_terms_pass_when_consistent():
     # And a consistent modern pairing still passes (conservative dates).
     assert _v(TemporalConsistency(), "She checked her smartwatch in 2020.").verdict == PASS
+
+
+# ── Adversarial hardening (0.2.4): format / encoding / evasion / injection ─────
+
+def test_symbolic_ambiguous_fails_closed_never_false_flags():
+    # Scientific notation, caret powers, and decimal commas are AMBIGUOUS — the
+    # engine must SKIP (NOT_APPLICABLE), never recompute a fragment and FAIL a
+    # correct answer. (Probe found these as false positives.)
+    assert _v(SymbolicSolver(), "The total is 2e3 = 2000.").verdict == NOT_APPLICABLE
+    assert _v(SymbolicSolver(), "Compounded, 10^3 = 1000.").verdict == NOT_APPLICABLE
+    assert _v(SymbolicSolver(), "The rate is 3,5 * 2 = 7.").verdict == NOT_APPLICABLE
+
+
+def test_symbolic_thousands_and_multiply_still_verified():
+    # The fail-closed guards must not over-skip legitimate arithmetic.
+    assert _v(SymbolicSolver(), "Sum: 1,000 + 2,000 = 3,000.").verdict == PASS
+    assert _v(SymbolicSolver(), "Area is 2 x 3 = 6.").verdict == PASS
+    assert _v(SymbolicSolver(), "Sum is 12 + 12 = 25.").verdict == FAIL
+
+
+def test_hallucination_non_dollar_currency_is_checked():
+    # A fabricated euro/pound amount must be caught, not silently uncheckable.
+    assert _v(HallucinationDetector(), "The fee is €900.",
+              sources=["The fee is €50 per item."]).verdict == FAIL
+    assert _v(HallucinationDetector(), "It costs £500.",
+              sources=["It costs £30."]).verdict == FAIL
+    # ...and a grounded non-$ amount still passes.
+    assert _v(HallucinationDetector(), "The fee is €50.",
+              sources=["The fee is €50 per item."]).verdict == PASS
+
+
+def test_hallucination_contradiction_is_a_documented_scope_limit():
+    # Extractive grounding checks PRESENCE, not polarity: a negated specific whose
+    # value still appears in the source is NOT caught extractively (by design).
+    extractive = _v(HallucinationDetector(), "Refunds are NOT available within 30 days.",
+                    sources=["Refunds are available within 30 days of purchase."])
+    assert extractive.verdict == PASS  # the documented limit
+    # The optional entailment hook is the layer that catches contradictions.
+    caught = HallucinationDetector(entailment_fn=lambda ans, src: False).run(
+        "Refunds are NOT available within 30 days.",
+        VerificationContext(sources=["Refunds are available within 30 days of purchase."]))
+    assert caught.verdict == FAIL
+
+
+def test_schema_rejects_non_finite_numbers():
+    # NaN / Infinity are the json stdlib's extension, not valid JSON, and must not
+    # satisfy a {"type": "number"} schema (probe found them passing).
+    schema = {"type": "object", "required": ["amount"], "properties": {"amount": {"type": "number"}}}
+    assert _v(SchemaValidator(), '{"amount": NaN}', schema=schema).verdict == FAIL
+    assert _v(SchemaValidator(), '{"amount": Infinity}', schema=schema).verdict == FAIL
+    assert _v(SchemaValidator(), '{"amount": -Infinity}', schema=schema).verdict == FAIL
+    assert _v(SchemaValidator(), '{"amount": 42}', schema=schema).verdict == PASS
+
+
+def test_temporal_morphology_evasion_is_caught():
+    # Plurals and hyphen variants must not evade the anachronism check.
+    assert _v(TemporalConsistency(), "They wore smartwatches in 1850.").verdict == FAIL
+    assert _v(TemporalConsistency(), "They drove cars in 1700.").verdict == FAIL
+    assert _v(TemporalConsistency(), "She used a smart-watch in 1850.").verdict == FAIL
+
+
+def test_temporal_plural_does_not_overfire():
+    # The plural tolerance must stay word-safe: "cares"/"cards" are not "car".
+    assert _v(TemporalConsistency(), "In 1850 she cares about the cards.").verdict == NOT_APPLICABLE
