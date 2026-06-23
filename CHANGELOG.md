@@ -5,6 +5,23 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-23
+
+### Fixed (crypto-core hardening — verify_bundle must never raise)
+An adversarial probe pass against the verification path found 5 hostile bundles
+that made `verify_bundle()` **raise** instead of returning its documented
+`(valid, error_code)` — a contract break and, for a verification gateway taking
+attacker-controlled bundles, a denial-of-service.
+- **Non-string `answer`** (`{"answer": 1234}`) crashed the `.encode()` cross-check
+  (AttributeError) — now type-checked → `ERR_MALFORMED_BUNDLE`.
+- **Non-dict `verification`** (a forged, self-consistent bundle with
+  `verification: "…"`) crashed the `.get()` verdict cross-check (AttributeError)
+  — now rejected early → `ERR_MALFORMED_BUNDLE`.
+- **Deeply-nested `_trace` / `verification`** crafted to exhaust the stack during
+  canonicalization raised RecursionError (a DoS) — now caught → `ERR_MALFORMED_BUNDLE`.
+The signature path (`verify_signature`) was probed too and already handled
+non-dict signatures, bad hex, algorithm-confusion, and missing fields cleanly.
+
 ## [0.2.5] - 2026-06-23
 
 ### Fixed

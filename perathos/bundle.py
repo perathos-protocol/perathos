@@ -294,6 +294,11 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
         # (see create_bundle). Recompute symmetrically so that adding, removing,
         # or editing the verdicts is detected as a hash mismatch.
         verification = bundle.get("verification")
+        # A real verification block is always a JSON object. Reject a hostile
+        # non-dict here so the later .get() cross-check can't be crashed by an
+        # attacker-supplied string/number that was forged to be self-consistent.
+        if verification is not None and not isinstance(verification, dict):
+            return False, "ERR_MALFORMED_BUNDLE:verification must be an object"
         if verification is not None:
             integrity_payload["verification_hash"] = _sha256(canonical_bytes(verification))
         if _sha256(canonical_bytes(integrity_payload)) != bundle["integrity_hash"]:
@@ -312,7 +317,10 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
                 if bundle.get("verdict") != verification.get("aggregate", {}).get("verdict"):
                     return False, "ERR_VERDICT_MISMATCH"
             if "answer" in bundle:
-                if _sha256(bundle["answer"].encode("utf-8")) != bundle["output_hash"]:
+                answer = bundle["answer"]
+                if not isinstance(answer, str):
+                    return False, "ERR_MALFORMED_BUNDLE:answer must be a string"
+                if _sha256(answer.encode("utf-8")) != bundle["output_hash"]:
                     return False, "ERR_ANSWER_MISMATCH"
 
         # Step 4: signature. A bundle that carries a provider_signature must NOT
@@ -340,8 +348,10 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
 
     except KeyError as exc:
         return False, f"ERR_MISSING_FIELD:{exc}"
-    except (TypeError, ValueError) as exc:
-        # A hostile/malformed bundle (e.g. _trace with mixed-type keys that
-        # json.dumps(sort_keys=True) cannot order) must return an error, not
-        # crash a verifier that is documented to return (False, error_code).
-        return False, f"ERR_MALFORMED_BUNDLE:{exc}"
+    except (TypeError, ValueError, AttributeError, RecursionError) as exc:
+        # A hostile/malformed bundle must return an error, not crash a verifier
+        # documented to return (False, error_code). Covers: mixed-type keys that
+        # json.dumps(sort_keys=True) can't order (TypeError), wrong-typed fields
+        # (AttributeError), and a deeply-nested _trace/verification crafted to
+        # exhaust the stack during canonicalization (RecursionError → DoS).
+        return False, f"ERR_MALFORMED_BUNDLE:{type(exc).__name__}"

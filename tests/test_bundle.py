@@ -381,3 +381,64 @@ def test_sign_bundle_rejects_uppercase_hex_key():
         assert False, "Expected ValueError"
     except ValueError as exc:
         assert "hex" in str(exc)
+
+
+# ── Adversarial crypto-core probes (0.2.6): verify_bundle must NEVER raise ─────
+
+def _reseal(b: dict) -> dict:
+    """Recompute trace/integrity/id from current fields — what a forger does to
+    make a tampered bundle internally self-consistent (all hashing is public)."""
+    from perathos.bundle import _sha256
+    from perathos.canonical import canonical_bytes
+    b = dict(b)
+    b["trace_hash"] = _sha256(canonical_bytes(b["_trace"]))
+    ip = {"ai_id": b["ai_id"], "input_hash": b["input_hash"], "issued_at": b["issued_at"],
+          "output_hash": b["output_hash"], "proof_system": b["proof_system"],
+          "trace_hash": b["trace_hash"]}
+    if b.get("bundle_version") == "2.0":
+        ip["bundle_version"] = b["bundle_version"]
+        ip["model"] = b["model"]
+    if b.get("verification") is not None:
+        ip["verification_hash"] = _sha256(canonical_bytes(b["verification"]))
+    b["integrity_hash"] = _sha256(canonical_bytes(ip))
+    b["bundle_id"] = str(uuid.uuid5(PERATHOS_NAMESPACE, b["integrity_hash"]))
+    return b
+
+
+def test_verify_rejects_non_string_answer_without_crashing():
+    # A v2 bundle whose `answer` is not a string must not crash the .encode() path.
+    b = create_bundle("the answer", model="m", include_answer=True)
+    b["answer"] = 1234
+    valid, err = verify_bundle(b)
+    assert valid is False and "ERR_MALFORMED_BUNDLE" in err
+
+
+def test_verify_rejects_non_dict_verification_without_crashing():
+    # A forged, self-consistent bundle whose `verification` is a string must not
+    # crash the later .get() cross-check.
+    b = create_bundle("out", model="m", verification={"aggregate": {"verdict": "PASS"}})
+    b["verification"] = "not-a-dict"
+    valid, err = verify_bundle(_reseal(b))
+    assert valid is False and "ERR_MALFORMED_BUNDLE" in err
+
+
+def test_verify_survives_deeply_nested_trace_dos():
+    # A deeply-nested _trace crafted to exhaust the stack during canonicalization
+    # must return an error, not raise RecursionError (a DoS on the gateway).
+    deep = {"x": 0}
+    for _ in range(2000):
+        deep = {"x": deep}
+    b = create_bundle("out")
+    b["_trace"] = deep
+    valid, err = verify_bundle(b)
+    assert valid is False and "ERR" in err
+
+
+def test_verify_survives_deeply_nested_verification_dos():
+    deep = {"x": 0}
+    for _ in range(2000):
+        deep = {"x": deep}
+    b = create_bundle("out", model="m", verification={"aggregate": {"verdict": "PASS"}})
+    b["verification"] = deep
+    valid, err = verify_bundle(b)
+    assert valid is False and "ERR" in err
