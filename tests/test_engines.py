@@ -129,3 +129,15 @@ def test_temporal_skipped():
 def test_temporal_word_boundary_no_false_fire():
     # "scared" must not trigger the "car" (1886) term. (Audit regression.)
     assert _v(TemporalConsistency(), "In 1850 she was scared of the dark.").verdict == NOT_APPLICABLE
+
+
+def test_temporal_expanded_terms_catch_anachronism():
+    # gap #3: terms added to the curated timeline are now checkable, so
+    # off-timeline anachronisms that were silently skipped are caught.
+    assert _v(TemporalConsistency(), "She checked her smartwatch in 1850.").verdict == FAIL
+    assert _v(TemporalConsistency(), "He scanned the QR code in 1900.").verdict == FAIL
+
+
+def test_temporal_expanded_terms_pass_when_consistent():
+    # And a consistent modern pairing still passes (conservative dates).
+    assert _v(TemporalConsistency(), "She checked her smartwatch in 2020.").verdict == PASS

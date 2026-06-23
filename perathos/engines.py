@@ -370,16 +370,39 @@ class SchemaValidator(_Engine):
 
 # ── 127 Temporal Consistency ───────────────────────────────────────────────────
 
+# Curated earliest-existence dates. Conservative (early) on purpose so a clean
+# mention is never wrongly flagged; the check only fires when a term predates its
+# earliest plausible existence. Terms are unambiguous neologisms or multi-word
+# phrases — homographs ("tablet"/"drone"/"stream") are deliberately omitted so a
+# word-boundary match can't false-fire on an everyday word. ctx.timeline extends
+# or overrides this per call for domain-specific terms, so coverage isn't fixed.
 _TIMELINE: dict = {
     "printing press": 1440, "telescope": 1608, "steam engine": 1712,
     "photograph": 1826, "telegraph": 1837, "telephone": 1876,
     "automobile": 1886, "car": 1886, "radio": 1895, "airplane": 1903,
     "television": 1927, "jet engine": 1939, "nuclear weapon": 1945,
     "atomic bomb": 1945, "computer": 1945, "transistor": 1947,
-    "satellite": 1957, "laser": 1960, "email": 1971, "personal computer": 1975,
-    "gps": 1978, "internet": 1983, "world wide web": 1989, "dna test": 1984,
-    "web browser": 1990, "text message": 1992, "social media": 1997,
-    "smartphone": 2007, "cryptocurrency": 2009, "bitcoin": 2009,
+    "solar panel": 1954, "hard drive": 1956, "satellite": 1957,
+    "video game": 1958, "laser": 1960, "communications satellite": 1962,
+    "email": 1971, "microprocessor": 1971, "space station": 1971,
+    "mobile phone": 1973, "cell phone": 1973, "barcode": 1974,
+    "digital camera": 1975, "personal computer": 1975, "gps": 1978,
+    "spreadsheet": 1979, "space shuttle": 1981, "touchscreen": 1982,
+    "compact disc": 1982, "internet": 1983, "dna test": 1984,
+    "camcorder": 1983, "3d printer": 1986, "3d printing": 1986,
+    "virtual reality": 1987, "world wide web": 1989, "gps navigation": 1989,
+    "web browser": 1990, "hubble telescope": 1990, "augmented reality": 1990,
+    "search engine": 1990, "webcam": 1991, "text message": 1992,
+    "mp3": 1993, "qr code": 1994, "dvd": 1995, "wiki": 1995, "usb": 1996,
+    "social media": 1997, "wi-fi": 1997, "wifi": 1997, "hybrid car": 1997,
+    "mars rover": 1997, "weblog": 1997, "blog": 1997, "mp3 player": 1998,
+    "bluetooth": 1999, "emoji": 1999, "smartwatch": 2000, "video call": 2003,
+    "podcast": 2004, "smartphone": 2007, "e-reader": 2007, "hashtag": 2007,
+    "cryptocurrency": 2009, "bitcoin": 2009, "blockchain": 2009,
+    "fitness tracker": 2009, "self-driving car": 2009, "tablet computer": 2010,
+    "quadcopter": 2010, "voice assistant": 2011, "crispr": 2012, "nft": 2014,
+    "smart speaker": 2014, "reusable rocket": 2015, "vr headset": 2016,
+    "large language model": 2018, "mrna vaccine": 2020, "chatgpt": 2022,
 }
 _TC_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")

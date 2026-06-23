@@ -5,6 +5,19 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-23
+
+### Changed
+- **TemporalConsistency timeline expanded (~50 modern terms)** — the checker
+  could only flag anachronisms for terms in its curated dict, so an off-timeline
+  term like `"smartwatch in 1850"` was silently skipped (counted as a miss).
+  Added unambiguous, conservatively-dated 20th/21st-century terms (smartwatch,
+  bluetooth, wi-fi, usb, qr code, blog, podcast, crispr, blockchain, chatgpt, …);
+  homographs (tablet/drone/stream) are deliberately omitted so word-boundary
+  matching can't false-fire on everyday words. Per-call `ctx.timeline` still
+  extends/overrides for domain terms, so coverage isn't a fixed dict. Closes
+  engine gap #3 from training-ops `docs/ENGINE_GAPS.md` — the last documented gap.
+
 ## [0.2.2] - 2026-06-23
 
 ### Fixed
