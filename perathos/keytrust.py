@@ -25,6 +25,7 @@ perathos.signing and the gateway, so signers are shareable across the stack.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -149,10 +150,40 @@ class TrustStore:
 
     @classmethod
     def from_jwks(cls, jwks: dict[str, Any]) -> "TrustStore":
+        """Build a trust store from a JWKS, validating every entry.
+
+        A JWKS may come from a partner/endpoint, so malformed input must fail
+        with a clear error — never crash, never silently trust junk. Each key
+        must be an OKP/Ed25519 entry whose `x` is strict base64url decoding to
+        exactly 32 bytes, and whose `kid` matches the perathos-derived kid
+        (`kid_for(x)`). A mismatched kid is rejected here rather than becoming an
+        inert entry: it signals a tampered or incompatible JWKS.
+        """
+        if not isinstance(jwks, dict):
+            raise ValueError("JWKS must be a JSON object")
+        keys = jwks.get("keys", [])
+        if not isinstance(keys, list):
+            raise ValueError("JWKS 'keys' must be a list")
         store = cls()
-        for k in jwks.get("keys", []):
-            pad = "=" * (-len(k["x"]) % 4)
-            store.add(k["kid"], base64.urlsafe_b64decode(k["x"] + pad))
+        for i, k in enumerate(keys):
+            if not isinstance(k, dict):
+                raise ValueError(f"JWKS key #{i} must be an object")
+            kid, x = k.get("kid"), k.get("x")
+            if not isinstance(kid, str) or not isinstance(x, str):
+                raise ValueError(f"JWKS key #{i} must have string 'kid' and 'x'")
+            pad = "=" * (-len(x) % 4)
+            try:
+                raw = base64.b64decode(x + pad, altchars="-_", validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"JWKS key #{i} has invalid base64url 'x': {exc}") from exc
+            if len(raw) != 32:
+                raise ValueError(f"JWKS key #{i} 'x' is not a 32-byte Ed25519 key")
+            derived = kid_for(raw)
+            if kid != derived:
+                raise ValueError(
+                    f"JWKS key #{i} kid {kid!r} does not match its key (derived {derived!r})"
+                )
+            store.add(derived, raw)
         return store
 
 

@@ -5,6 +5,22 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-23
+
+### Security / hardened (trust anchor — TrustStore.from_jwks)
+A probe of the trust layer confirmed the verify-time gate is **sound** — an
+untrusted signer and a JWKS kid-spoof (claiming a trusted kid while embedding an
+attacker key) are both rejected, because verification re-derives the kid from the
+actual key bytes and byte-compares. `from_jwks` is now hardened to match:
+- **Validates every JWKS entry** instead of crashing on malformed input — a
+  non-object JWKS, non-list `keys`, non-object entries, missing/non-string
+  `kid`/`x`, invalid base64url, or a non-32-byte key now raise a clear
+  `ValueError` (previously `KeyError`/`TypeError`/`binascii.Error`).
+- **Strict base64url** (`validate=True`) — a garbage `x` like `"@@@@"` is rejected
+  instead of silently decoding to an empty key.
+- **kid must match `kid_for(x)`** — a tampered/kid-spoofed entry is rejected at
+  load time rather than stored as an inert entry, surfacing a bad JWKS early.
+
 ## [0.2.6] - 2026-06-23
 
 ### Fixed (crypto-core hardening — verify_bundle must never raise)

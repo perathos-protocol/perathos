@@ -1,4 +1,7 @@
 """Tests for the KMS-ready signer + TrustStore/JWKS trust anchoring."""
+import base64
+
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from perathos.bundle import create_bundle, sign_bundle, verify_bundle
@@ -76,3 +79,45 @@ def test_kid_is_stable_and_derived():
     pub = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
     assert kid_for(pub) == kid_for(pub)
     assert kid_for(pub).startswith("ed25519-")
+
+
+# ── Adversarial trust-anchor probes (0.2.7) ───────────────────────────────────
+
+def _b64u(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def test_from_jwks_rejects_kid_not_matching_key():
+    # Defense in depth: a JWKS entry whose kid does not match its key (a tampered
+    # or kid-spoofed entry) is rejected at LOAD time, not stored as an inert entry.
+    attacker = LocalSigner.generate()
+    spoof = {"keys": [{"kty": "OKP", "crv": "Ed25519",
+                       "kid": "ed25519-deadbeefdeadbeef", "x": _b64u(attacker.public_key)}]}
+    with pytest.raises(ValueError, match="does not match"):
+        TrustStore.from_jwks(spoof)
+
+
+def test_from_jwks_untrusted_key_is_never_accepted():
+    # The core invariant: a key the consumer did not trust can't verify, even if
+    # the attacker controls the bundle's embedded verify_key.
+    legit, attacker = LocalSigner.generate(), LocalSigner.generate()
+    trust = TrustStore().add_signer(legit)
+    forged = sign_bundle(create_bundle("x", model="m"), attacker)
+    assert verify_bundle(forged, trust_store=trust) == (False, "ERR_UNTRUSTED_SIGNER")
+
+
+@pytest.mark.parametrize("jwks", [
+    {"keys": [{"kid": "k1"}]},                       # missing x
+    {"keys": [{"x": "AAAA"}]},                        # missing kid
+    {"keys": [{"kid": "k1", "x": "@@@@"}]},           # invalid base64url
+    {"keys": [{"kid": "k1", "x": 123}]},              # x not a string
+    {"keys": "nope"},                                  # keys not a list
+    {"keys": [42]},                                    # entry not an object
+    "not-an-object",                                   # jwks not an object
+    {"keys": [{"kid": "k1", "x": _b64u(b"\x00" * 8)}]},  # wrong key length
+])
+def test_from_jwks_fails_cleanly_on_malformed_input(jwks):
+    # A malformed/hostile JWKS must raise a clear ValueError, never crash with a
+    # raw KeyError / TypeError / binascii.Error.
+    with pytest.raises(ValueError):
+        TrustStore.from_jwks(jwks)

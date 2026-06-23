@@ -47,7 +47,7 @@ from .verifiers import (
     default_verifiers,
 )
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 # Public API aliases for library users. These are the SAME function objects as
 # create_bundle/sign_bundle/verify_bundle/inspect_bundle — deliberately not
