@@ -5,6 +5,16 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-23
+
+### Fixed
+- **SymbolicSolver no longer over-skips a result followed by a sentence comma.**
+  The 0.2.4 ambiguous-comma guard was too eager: a trailing punctuation comma
+  (`"17 * 23 = 391, confirmed"`) was treated as a decimal/grouping comma and the
+  correct claim was skipped. The guard now only fires on a comma *between digits*
+  (`\d,(?=\d)`), so trailing punctuation is ignored while `3,5` is still skipped.
+  (Caught by the training-ops cross-repo engine tests against 0.2.4.)
+
 ## [0.2.4] - 2026-06-23
 
 ### Fixed (adversarial hardening — format / encoding / evasion / injection)

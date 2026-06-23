@@ -76,10 +76,12 @@ _EQ_RE = re.compile(
     re.IGNORECASE,
 )
 _HEX_RE = re.compile(r"\b0[xX][0-9a-fA-F]+\b")
-# A comma that is NOT a clean thousands separator (not followed by exactly 3
-# digits then a non-digit/end). Its presence means the number is ambiguous
-# (decimal comma vs grouping) — we fail closed and skip rather than guess.
-_AMBIG_COMMA = re.compile(r",(?!\d{3}(?:\D|$))")
+# A comma BETWEEN digits that is NOT a clean thousands separator (i.e. not
+# followed by exactly 3 digits then a non-digit/end). Its presence means the
+# number is ambiguous (decimal comma vs grouping) — we fail closed and skip
+# rather than guess. The `\d,(?=\d)` anchor ignores a trailing sentence comma
+# ("= 391, confirmed"), which is punctuation, not part of the number.
+_AMBIG_COMMA = re.compile(r"\d,(?=\d)(?!\d{3}(?:\D|$))")
 # Characters that, adjacent to a captured number, mean we grabbed a FRAGMENT of a
 # larger token (scientific notation "2e3", a caret power "10^3", a decimal, or an
 # identifier). Matching a fragment and recomputing it would false-flag a correct

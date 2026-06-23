@@ -161,6 +161,12 @@ def test_symbolic_thousands_and_multiply_still_verified():
     assert _v(SymbolicSolver(), "Sum is 12 + 12 = 25.").verdict == FAIL
 
 
+def test_symbolic_trailing_comma_is_not_ambiguous():
+    # A sentence comma after the result ("= 391, confirmed") is punctuation, NOT
+    # a decimal/grouping comma — it must not trip the ambiguous-comma guard.
+    assert _v(SymbolicSolver(), "The product is 17 * 23 = 391, confirmed.").verdict == PASS
+
+
 def test_hallucination_non_dollar_currency_is_checked():
     # A fabricated euro/pound amount must be caught, not silently uncheckable.
     assert _v(HallucinationDetector(), "The fee is €900.",
