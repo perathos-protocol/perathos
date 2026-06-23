@@ -62,6 +62,23 @@ def test_grounding_skipped_no_sources():
     assert _v(HallucinationDetector(), "The refund is $50.").verdict == NOT_APPLICABLE
 
 
+def test_grounding_substring_collision_is_caught():
+    # gap #2: "90 days" must NOT be grounded by an unrelated "$90" in the source.
+    # A duration is checked only against source durations (like-with-like).
+    r = _v(HallucinationDetector(), "You may return it within 90 days.",
+           sources=["Returns within 30 days. A late fee of $90 applies after that."])
+    assert r.verdict == FAIL
+
+
+def test_grounding_kind_aware_does_not_overflag():
+    # Like-with-like must still PASS legitimately grounded specifics, including
+    # normalized amounts ($1000 vs $1,000.00) and durations with an inner word.
+    assert _v(HallucinationDetector(), "Your balance is $1000.",
+              sources=["Records show a balance of $1,000.00 on file."]).verdict == PASS
+    assert _v(HallucinationDetector(), "Shipping takes 5 business days.",
+              sources=["Standard shipping takes 5 business days."]).verdict == PASS
+
+
 def test_grounding_entailment_fail_closed_on_error():
     def boom(answer, sources):
         raise RuntimeError("model down")

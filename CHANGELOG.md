@@ -5,6 +5,18 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-23
+
+### Fixed
+- **HallucinationDetector now matches specifics like-with-like** — it previously
+  flattened all sources into one digit-soup and checked bare digits, so a
+  fabricated duration `"90 days"` was wrongly grounded by an unrelated `"$90"`
+  elsewhere in the source (a substring collision). Each specific (money, %, year,
+  duration) is now extracted per kind from the sources and a claim is grounded
+  only by a token of its OWN kind, with numeric values compared (so `$1000` still
+  matches `$1,000.00`) and durations matched on (number, unit-family). Closes
+  engine gap #2 from training-ops `docs/ENGINE_GAPS.md`.
+
 ## [0.2.1] - 2026-06-23
 
 ### Fixed

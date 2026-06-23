@@ -6,9 +6,12 @@ self-report. They complete perathos's verifier set alongside CrossExaminer (122)
 and ClaimEntailmentVerifier (124):
 
   SymbolicSolver        (123) — recompute arithmetic claims, flag wrong ones.
-  HallucinationDetector (125) — extractive grounding: the answer's specifics
-                                (money, %, years, durations, quotes) must appear
-                                in the provided sources; optional entailment hook.
+  HallucinationDetector (125) — extractive grounding: each of the answer's
+                                specifics (money, %, years, durations, quotes)
+                                must appear in the sources AS THE SAME KIND of
+                                token (a duration is grounded only by a source
+                                duration, not by a like-digited dollar amount);
+                                optional entailment hook.
   SchemaValidator       (126) — validate JSON output against a declared schema
                                 (jsonschema; remote $ref refused — SSRF-safe).
   TemporalConsistency   (127) — flag anachronisms against a reference timeline.
@@ -165,19 +168,57 @@ class SymbolicSolver(_Engine):
 _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
 _PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s?%")
 _HD_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+# Capture the number AND the unit, and tolerate a hyphen ("90-day") or an
+# intervening word ("5 business days"), so durations match like-with-like.
 _DURATION_RE = re.compile(
-    r"\b(\d[\d,]*)\s?(?:\w+\s+)?(?:day|days|week|weeks|month|months|year|years|hour|hours|minute|minutes)\b",
+    r"\b(\d[\d,]*)\s*-?\s*(?:[A-Za-z]+\s+)?"
+    r"(day|days|week|weeks|month|months|year|years|hour|hours|minute|minutes)\b",
     re.IGNORECASE,
 )
 _QUOTE_RE = re.compile(r"\"([^\"]{4,}?)\"")
 
-
-def _digits(text: str) -> str:
-    return re.sub(r"[\s,$%]", "", text.lower())
+_DUR_FAMILY = {
+    "day": "day", "days": "day", "week": "week", "weeks": "week",
+    "month": "month", "months": "month", "year": "year", "years": "year",
+    "hour": "hour", "hours": "hour", "minute": "minute", "minutes": "minute",
+}
 
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _parse_money(tok: str) -> Optional[float]:
+    try:
+        return float(tok.replace("$", "").replace(",", "").replace(" ", ""))
+    except ValueError:
+        return None
+
+
+def _parse_percent(tok: str) -> Optional[float]:
+    try:
+        return float(tok.replace("%", "").replace(" ", ""))
+    except ValueError:
+        return None
+
+
+def _parse_duration(m: "re.Match[str]") -> Optional[tuple]:
+    try:
+        num = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    family = _DUR_FAMILY.get(m.group(2).lower())
+    return (num, family) if family else None
+
+
+def _num_grounded(value: float, source_values: set) -> bool:
+    return any(abs(value - s) <= 1e-9 * max(1.0, abs(value)) for s in source_values)
+
+
+def _dur_grounded(pair: tuple, source_pairs: set) -> bool:
+    num, family = pair
+    return any(fam == family and abs(num - n) <= 1e-9 * max(1.0, abs(num))
+              for n, fam in source_pairs)
 
 
 class HallucinationDetector(_Engine):
@@ -199,28 +240,40 @@ class HallucinationDetector(_Engine):
             return self._engine_result("skipped", "no grounding sources provided")
         text = output if isinstance(output, str) else str(output)
         joined = " ".join(str(s) for s in sources)
-        src_digits, src_lower = _digits(joined), _norm(joined)
+        # Extract the source's specifics PER KIND so a claim is only ever grounded
+        # by a token of its own kind. (The old digit-soup let a fabricated duration
+        # "90 days" be grounded by an unrelated "$90" — a substring collision.)
+        src_money = {v for m in _MONEY_RE.finditer(joined)
+                     if (v := _parse_money(m.group(0))) is not None}
+        src_percent = {v for m in _PERCENT_RE.finditer(joined)
+                       if (v := _parse_percent(m.group(0))) is not None}
+        src_years = {int(y) for y in _HD_YEAR_RE.findall(joined)}
+        src_durations = {p for m in _DURATION_RE.finditer(joined)
+                         if (p := _parse_duration(m)) is not None}
+        src_lower = _norm(joined)
         checked: List[dict] = []
         unsupported: List[dict] = []
 
-        def consider(kind: str, raw: str, needle: str, *, numeric: bool) -> None:
-            haystack = src_digits if numeric else src_lower
-            supported = needle in haystack if needle else True
+        def record(kind: str, raw: str, supported: bool) -> None:
             entry = {"kind": kind, "claim": raw, "supported": supported}
             checked.append(entry)
             if not supported:
                 unsupported.append(entry)
 
         for m in _MONEY_RE.finditer(text):
-            consider("money", m.group(0), _digits(m.group(0)), numeric=True)
+            v = _parse_money(m.group(0))
+            record("money", m.group(0), v is not None and _num_grounded(v, src_money))
         for m in _PERCENT_RE.finditer(text):
-            consider("percent", m.group(0), _digits(m.group(0)), numeric=True)
+            v = _parse_percent(m.group(0))
+            record("percent", m.group(0), v is not None and _num_grounded(v, src_percent))
         for m in _HD_YEAR_RE.finditer(text):
-            consider("year", m.group(0), m.group(0), numeric=True)
+            record("year", m.group(0), int(m.group(0)) in src_years)
         for m in _DURATION_RE.finditer(text):
-            consider("duration", m.group(0), _digits(m.group(1)), numeric=True)
+            p = _parse_duration(m)
+            record("duration", m.group(0), p is not None and _dur_grounded(p, src_durations))
         for m in _QUOTE_RE.finditer(text):
-            consider("quote", m.group(1), _norm(m.group(1)), numeric=False)
+            q = _norm(m.group(1))
+            record("quote", m.group(1), (q in src_lower) if q else True)
 
         if unsupported:
             u = unsupported[0]
