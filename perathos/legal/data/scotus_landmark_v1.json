@@ -1,0 +1,43 @@
+{
+  "version": "us-scotus-landmark-2026.06",
+  "description": "Curated landmark U.S. Supreme Court decisions (public domain). M0 demo snapshot for the perathos Legal Citation Verifier (engine 128). NOT exhaustive: a citation that resolves here is grounded; one outside it is reported INCONCLUSIVE (out of coverage), never falsely flagged as fabricated.",
+  "reporters": {
+    "U.S.": {
+      "name": "United States Reports",
+      "indexed": true,
+      "max_volume": 700,
+      "note": "Current published volume is ~602 (2024). max_volume is set conservatively HIGH so a real recent/near-future cite is never false-flagged; a volume above it is, as of this snapshot, not a real U.S. Reports volume."
+    }
+  },
+  "cases": [
+    {"name": "Marbury v. Madison", "reporter": "U.S.", "volume": 5, "page": 137, "year": 1803,
+     "quotes": ["It is emphatically the province and duty of the judicial department to say what the law is."]},
+    {"name": "McCulloch v. Maryland", "reporter": "U.S.", "volume": 17, "page": 316, "year": 1819},
+    {"name": "Gibbons v. Ogden", "reporter": "U.S.", "volume": 22, "page": 1, "year": 1824},
+    {"name": "Dred Scott v. Sandford", "reporter": "U.S.", "volume": 60, "page": 393, "year": 1857},
+    {"name": "Plessy v. Ferguson", "reporter": "U.S.", "volume": 163, "page": 537, "year": 1896},
+    {"name": "Lochner v. New York", "reporter": "U.S.", "volume": 198, "page": 45, "year": 1905},
+    {"name": "Schenck v. United States", "reporter": "U.S.", "volume": 249, "page": 47, "year": 1919},
+    {"name": "Brown v. Board of Education", "reporter": "U.S.", "volume": 347, "page": 483, "year": 1954,
+     "quotes": ["Separate educational facilities are inherently unequal."]},
+    {"name": "Mapp v. Ohio", "reporter": "U.S.", "volume": 367, "page": 643, "year": 1961},
+    {"name": "Gideon v. Wainwright", "reporter": "U.S.", "volume": 372, "page": 335, "year": 1963},
+    {"name": "New York Times Co. v. Sullivan", "reporter": "U.S.", "volume": 376, "page": 254, "year": 1964},
+    {"name": "Miranda v. Arizona", "reporter": "U.S.", "volume": 384, "page": 436, "year": 1966},
+    {"name": "Loving v. Virginia", "reporter": "U.S.", "volume": 388, "page": 1, "year": 1967},
+    {"name": "Terry v. Ohio", "reporter": "U.S.", "volume": 392, "page": 1, "year": 1968},
+    {"name": "Brandenburg v. Ohio", "reporter": "U.S.", "volume": 395, "page": 444, "year": 1969},
+    {"name": "Roe v. Wade", "reporter": "U.S.", "volume": 410, "page": 113, "year": 1973},
+    {"name": "United States v. Nixon", "reporter": "U.S.", "volume": 418, "page": 683, "year": 1974},
+    {"name": "Regents of the University of California v. Bakke", "reporter": "U.S.", "volume": 438, "page": 265, "year": 1978},
+    {"name": "Chevron U.S.A., Inc. v. Natural Resources Defense Council", "reporter": "U.S.", "volume": 467, "page": 837, "year": 1984},
+    {"name": "Texas v. Johnson", "reporter": "U.S.", "volume": 491, "page": 397, "year": 1989},
+    {"name": "Planned Parenthood v. Casey", "reporter": "U.S.", "volume": 505, "page": 833, "year": 1992},
+    {"name": "United States v. Lopez", "reporter": "U.S.", "volume": 514, "page": 549, "year": 1995},
+    {"name": "Bush v. Gore", "reporter": "U.S.", "volume": 531, "page": 98, "year": 2000},
+    {"name": "Lawrence v. Texas", "reporter": "U.S.", "volume": 539, "page": 558, "year": 2003},
+    {"name": "District of Columbia v. Heller", "reporter": "U.S.", "volume": 554, "page": 570, "year": 2008},
+    {"name": "Citizens United v. Federal Election Commission", "reporter": "U.S.", "volume": 558, "page": 310, "year": 2010},
+    {"name": "Obergefell v. Hodges", "reporter": "U.S.", "volume": 576, "page": 644, "year": 2015}
+  ]
+}

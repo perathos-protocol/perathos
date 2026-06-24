@@ -5,6 +5,26 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-23
+
+### Added — Legal Citation Verifier (engine 128), M0
+The first **domain** verifier and the chosen wedge into the regulated-AI buyer:
+deterministically check that the U.S. legal citations in an AI output exist and
+are attributed to the right case. Real, named pain (lawyers sanctioned for
+AI-fabricated citations).
+- New `perathos.legal` subpackage: a regex citation parser, a pinned
+  **content-addressed** public case-law snapshot (`CitationCorpus`, M0 = curated
+  landmark SCOTUS), and `CitationVerifier` (engine 128).
+- **No network at verify time** — resolution is a pure function of (output,
+  snapshot); the `corpus_hash` + `engine_rules_version` are bound into the
+  VerdictRecord evidence, so a verdict is reproducible offline by a counterparty.
+- **Honesty-first verdicts:** impossible-volume and name↔cite misattribution →
+  FAIL; a cite outside the snapshot → INCONCLUSIVE (never a false fabrication
+  flag); no cites → NOT_APPLICABLE. Cardinal rule upheld: zero false positives on
+  real, in-coverage citations (enforced by a red-team test).
+- New CLI: `perathos cite-check brief.txt` (exits non-zero on a fabrication).
+- `perathos[legal]` extra (pure stdlib today). See docs/specs/CITATION_VERIFIER.md.
+
 ## [0.2.7] - 2026-06-23
 
 ### Security / hardened (trust anchor — TrustStore.from_jwks)

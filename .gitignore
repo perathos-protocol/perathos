@@ -14,6 +14,10 @@ htmlcov/
 
 # Verifier training artifacts (datasets, checkpoints, calibrators) — never commit
 data/
+# ...but the legal corpus snapshot IS source: a pinned, content-addressed data
+# file shipped as package-data. Keep it tracked despite the broad data/ rule.
+!perathos/legal/data/
+!perathos/legal/data/*.json
 *-ckpt/
 entailment-ckpt/
 calib*.json

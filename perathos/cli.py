@@ -618,5 +618,49 @@ def doctor():
         _sys.exit(1)
 
 
+@cli.command(name="cite-check")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False), required=False)
+@click.option("--text", "text", default=None, help="Check this inline text instead of a file.")
+def cite_check(path, text):
+    """Check the U.S. legal citations in a brief/output for fabrication.
+
+    Deterministically verifies that cited authorities exist and are attributed to
+    the right case, against a pinned, content-addressed public case-law snapshot
+    (no network). FAILs on fabrication evidence; reports INCONCLUSIVE — never a
+    false flag — for citations outside the snapshot's coverage.
+
+    Examples:
+        perathos cite-check brief.txt
+        perathos cite-check --text "Per Henderson v. Calloway, 410 U.S. 113, ..."
+    """
+    from .legal import CitationVerifier
+
+    if text is None:
+        if path is None:
+            click.echo("[ERROR] provide a PATH or --text", err=True)
+            sys.exit(2)
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+
+    verifier = CitationVerifier()
+    record = verifier.run(text, VerificationContext())
+    ev = record.evidence or {}
+
+    click.echo(f"verdict:     {record.verdict}")
+    click.echo(f"detail:      {record.detail}")
+    if ev:
+        click.echo(f"corpus:      {ev.get('corpus_version')}")
+        click.echo(f"corpus_hash: {ev.get('corpus_hash')}")
+        click.echo(f"rules:       {ev.get('engine_rules_version')}")
+        click.echo("citations:")
+        for c in ev.get("citations", []):
+            mark = {"fabricated": "FAIL", "misattributed": "FAIL",
+                    "grounded": "ok", "out_of_coverage": "?"}.get(c["status"], "?")
+            reason = c.get("reason") or c.get("resolved_name") or ""
+            click.echo(f"  [{mark:>4}] {c['raw']}  ({c['status']}) {reason}")
+    # Exit non-zero on a fabrication so the command is usable as a gate.
+    if record.verdict == "FAIL":
+        sys.exit(1)
+
+
 def main():
     cli()

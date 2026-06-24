@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "perathos"
-version = "0.2.7"
+version = "0.3.0"
 description = "Cryptographic proof layer for AI outputs — VRL Proof Bundles"
 requires-python = ">=3.11"
 dependencies = ["click>=8.0", "cryptography>=42.0"]
@@ -18,6 +18,9 @@ schema = ["jsonschema>=4.21"]
 # arbitrary versions) and centralized here instead of an unpinned inline
 # `pip install httpx anthropic` in credential-bearing CI jobs.
 agents = ["httpx>=0.27,<0.29", "anthropic>=0.39,<1.0"]
+# Legal Citation Verifier (engine 128). Pure stdlib today — the extra exists as a
+# stable install target for when the corpus tooling grows heavier deps.
+legal = []
 # Optional real NLI entailment verifier (heavy; not pulled by `pip install perathos`).
 nli = ["transformers>=4.40", "torch>=2.0"]
 # Fine-tuning the entailment model (scripts/train_entailment.py) — adds the
@@ -35,3 +38,6 @@ markers = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["perathos*"]
+
+[tool.setuptools.package-data]
+"perathos.legal" = ["data/*.json"]
