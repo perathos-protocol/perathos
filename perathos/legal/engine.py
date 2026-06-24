@@ -72,8 +72,15 @@ class CitationVerifier(Verifier):
             else:
                 rec = corpus.resolve(c)
                 if rec is None:
-                    entry["status"] = _OUT_OF_COVERAGE
-                    entry["reason"] = "not in snapshot; existence cannot be confirmed or denied"
+                    if corpus.is_completely_covered(c):
+                        # We hold this volume completely, so a cite that doesn't
+                        # resolve is a fabrication, not merely out of coverage.
+                        entry["status"] = _FABRICATED
+                        entry["reason"] = (f"no case at {c.reporter} {c.volume}:{c.page}, "
+                                           f"though that volume is fully indexed in {corpus.version}")
+                    else:
+                        entry["status"] = _OUT_OF_COVERAGE
+                        entry["reason"] = "not in snapshot; existence cannot be confirmed or denied"
                 else:
                     entry["resolved_name"] = rec.name
                     written = name_tokens(c.name)

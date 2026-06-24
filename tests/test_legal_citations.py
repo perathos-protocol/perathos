@@ -128,3 +128,81 @@ def test_corpus_hash_is_stable_and_reproducible():
     b = load_default_corpus()
     assert a.content_hash == b.content_hash  # deterministic, pinned
     assert a.content_hash.startswith("sha-256:")
+
+
+# ── M1: multi-reporter coverage ─────────────────────────────────────────────────
+
+def test_parser_recognizes_federal_reporters():
+    cites = parse_citations("see 925 F.3d 1339 and 5 F. Supp. 2d 100 and 384 S. Ct. 12")
+    reps = sorted(c.reporter for c in cites)
+    assert reps == ["F. Supp. 2d", "F.3d", "S. Ct."]
+    assert {(c.volume, c.page) for c in cites} == {(925, 1339), (5, 100), (384, 12)}
+
+
+def test_federal_reporter_year_parenthetical_with_court():
+    cites = parse_citations("Varghese v. China Southern Airlines, 925 F.3d 1339 (11th Cir. 2019)")
+    assert len(cites) == 1 and cites[0].year == 2019 and cites[0].reporter == "F.3d"
+
+
+def test_out_of_range_federal_volume_is_fabricated():
+    # F.3d ended at volume 999; vol 1500 cannot exist -> FAIL even though we index
+    # no individual F.3d cases.
+    r = _v("As held in Doe v. Roe, 1500 F.3d 1 (9th Cir. 2030).")
+    assert r.verdict == FAIL
+    assert "1500" in r.detail
+
+
+def test_in_range_federal_cite_is_inconclusive_not_fail():
+    # The classic Mata v. Avianca fake: a plausible in-range F.3d cite we don't
+    # index. We must NOT claim it is fabricated (that needs complete coverage).
+    r = _v("Varghese v. China Southern Airlines, 925 F.3d 1339 (11th Cir. 2019).")
+    assert r.verdict == INCONCLUSIVE
+
+
+# ── M1: the complete-coverage existence mechanism (the moat path) ───────────────
+
+def _fixture_corpus(complete):
+    from perathos.legal import CitationCorpus
+    return CitationCorpus.from_manifest({
+        "version": "test-fixture",
+        "reporters": {"U.S.": {"name": "US", "indexed": True, "max_volume": 700,
+                               "complete_volumes": complete}},
+        "cases": [{"name": "Roe v. Wade", "reporter": "U.S.", "volume": 410,
+                   "page": 113, "year": 1973}],
+    })
+
+
+def test_complete_coverage_turns_absence_into_fabrication():
+    # When a snapshot CLAIMS complete coverage of volume 410, a cite to a page
+    # with no case there is a fabrication (if it were real we'd hold it).
+    v = CitationVerifier(corpus=_fixture_corpus([[410, 410]]))
+    assert v.run("see 410 U.S. 113", VerificationContext()).verdict == PASS   # Roe, present
+    assert v.run("see 410 U.S. 999", VerificationContext()).verdict == FAIL   # absent in complete vol
+    # A volume OUTSIDE the complete range stays INCONCLUSIVE (honest).
+    assert v.run("see 411 U.S. 5", VerificationContext()).verdict == INCONCLUSIVE
+
+
+def test_without_complete_coverage_absence_is_inconclusive():
+    v = CitationVerifier(corpus=_fixture_corpus([]))  # curated, no completeness claim
+    assert v.run("see 410 U.S. 999", VerificationContext()).verdict == INCONCLUSIVE
+
+
+# ── M1: end-to-end signed-bundle binding (reproducible cross-party record) ──────
+
+def test_citation_verdict_binds_into_a_proof_bundle():
+    from perathos.pipeline import verify_output
+    from perathos.bundle import verify_bundle
+    import json
+
+    text = "Per Henderson v. Calloway, 410 U.S. 113, the rule applies."
+    bundle = verify_output(text, verifiers=[CitationVerifier()], model="perathos-cite-check")
+    valid, err = verify_bundle(bundle)
+    assert valid, err
+    # the citation FAIL and the corpus_hash are bound into the signed record
+    assert bundle["verdict"] == FAIL
+    assert "corpus_hash" in json.dumps(bundle["verification"])
+    # tampering with the bound verdict breaks the integrity chain
+    tampered = json.loads(json.dumps(bundle))
+    tampered["verification"]["verdict_records"][0]["verdict"] = PASS
+    bad, code = verify_bundle(tampered)
+    assert not bad and "ERR" in code

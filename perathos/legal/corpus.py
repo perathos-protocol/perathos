@@ -38,6 +38,7 @@ class ReporterInfo:
     name: str
     indexed: bool
     max_volume: int
+    complete_volumes: Tuple[Tuple[int, int], ...] = ()
 
 
 class CitationCorpus:
@@ -61,10 +62,12 @@ class CitationCorpus:
 
         self._reporters: Dict[str, ReporterInfo] = {}
         for rep, info in (manifest.get("reporters") or {}).items():
+            ranges = tuple((int(lo), int(hi)) for lo, hi in info.get("complete_volumes", []))
             self._reporters[rep] = ReporterInfo(
                 name=str(info.get("name", rep)),
                 indexed=bool(info.get("indexed", False)),
                 max_volume=int(info.get("max_volume", 0)),
+                complete_volumes=ranges,
             )
 
         self._index: Dict[Tuple[str, int, int], CaseRecord] = {}
@@ -92,15 +95,26 @@ class CitationCorpus:
 
     def structurally_impossible(self, cite: Citation) -> bool:
         """True if the cite cannot be real for a KNOWN reporter as of this
-        snapshot (volume above the reporter's published range, or non-positive
-        volume/page). Only fires for indexed reporters with a declared range, so
-        it never false-flags an out-of-coverage reporter."""
+        snapshot (non-positive volume/page, or volume above the reporter's
+        published range). Fires for any KNOWN reporter with a declared range
+        (indexed or not), so a fabricated out-of-range federal cite is caught;
+        never fires for an unknown reporter, so it can't false-flag one."""
         info = self._reporters.get(cite.reporter)
-        if info is None or not info.indexed:
+        if info is None:
             return False
         if cite.volume < 1 or cite.page < 1:
             return True
         return info.max_volume > 0 and cite.volume > info.max_volume
+
+    def is_completely_covered(self, cite: Citation) -> bool:
+        """True if this snapshot claims COMPLETE coverage of the cite's volume —
+        i.e. if the case were real we would hold it. A non-resolving cite in a
+        complete range is therefore a fabrication, not merely out of coverage.
+        Empty by default (a curated snapshot makes no completeness claim)."""
+        info = self._reporters.get(cite.reporter)
+        if info is None:
+            return False
+        return any(lo <= cite.volume <= hi for lo, hi in info.complete_volumes)
 
     def quotes_for(self, rec: CaseRecord) -> List[str]:
         return list(rec.quotes)

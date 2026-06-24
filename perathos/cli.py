@@ -621,7 +621,11 @@ def doctor():
 @cli.command(name="cite-check")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False), required=False)
 @click.option("--text", "text", default=None, help="Check this inline text instead of a file.")
-def cite_check(path, text):
+@click.option("--prove", "prove_flag", is_flag=True,
+              help="Emit a Proof Bundle binding the citation verdict + corpus_hash (re-verifiable offline).")
+@click.option("--sign", "sign_flag", is_flag=True, help="Sign the proof bundle (implies --prove; requires: perathos keygen).")
+@click.option("--out", "out_path", type=click.Path(dir_okay=False), default=None, help="Write the proof bundle JSON here.")
+def cite_check(path, text, prove_flag, sign_flag, out_path):
     """Check the U.S. legal citations in a brief/output for fabrication.
 
     Deterministically verifies that cited authorities exist and are attributed to
@@ -629,9 +633,12 @@ def cite_check(path, text):
     (no network). FAILs on fabrication evidence; reports INCONCLUSIVE — never a
     false flag — for citations outside the snapshot's coverage.
 
+    With --prove it emits a signed, tamper-evident Proof Bundle that binds the
+    verdict and the corpus_hash, so a counterparty can re-verify it offline.
+
     Examples:
         perathos cite-check brief.txt
-        perathos cite-check --text "Per Henderson v. Calloway, 410 U.S. 113, ..."
+        perathos cite-check brief.txt --sign --out brief.bundle.json
     """
     from .legal import CitationVerifier
 
@@ -657,6 +664,25 @@ def cite_check(path, text):
                     "grounded": "ok", "out_of_coverage": "?"}.get(c["status"], "?")
             reason = c.get("reason") or c.get("resolved_name") or ""
             click.echo(f"  [{mark:>4}] {c['raw']}  ({c['status']}) {reason}")
+
+    if prove_flag or sign_flag or out_path:
+        # Bind the citation verdict (and the corpus_hash inside it) into a Proof
+        # Bundle's integrity_hash via the standard verification block.
+        bundle = verify_output(text, verifiers=[CitationVerifier()], model="perathos-cite-check")
+        if sign_flag:
+            sk_hex = load_signing_key()
+            if not sk_hex:
+                click.echo("[ERROR] No signing key. Run: perathos keygen", err=True)
+                sys.exit(2)
+            from .bundle import sign_bundle
+            bundle = sign_bundle(bundle, sk_hex)
+        click.echo("")
+        click.echo(f"bundle_id:   {bundle['bundle_id']}")
+        click.echo(f"signed:      {'yes' if 'provider_signature' in bundle else 'no'}")
+        if out_path:
+            Path(out_path).write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+            click.echo(f"written:     {out_path}  (verify offline: perathos verify --file {out_path})")
+
     # Exit non-zero on a fabrication so the command is usable as a gate.
     if record.verdict == "FAIL":
         sys.exit(1)

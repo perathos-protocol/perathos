@@ -1,13 +1,17 @@
 {
-  "version": "us-scotus-landmark-2026.06",
-  "description": "Curated landmark U.S. Supreme Court decisions (public domain). M0 demo snapshot for the perathos Legal Citation Verifier (engine 128). NOT exhaustive: a citation that resolves here is grounded; one outside it is reported INCONCLUSIVE (out of coverage), never falsely flagged as fabricated.",
+  "version": "us-caselaw-v1.1-2026.06",
+  "description": "perathos Legal Citation Verifier (engine 128) snapshot. INDEXED: curated landmark U.S. Supreme Court decisions (public domain) — these resolve to a case name. STRUCTURAL: major federal/SCOTUS reporters with their real published volume ranges, so an out-of-range volume is flagged as fabricated even where individual cases are not indexed. complete_volumes is empty here (this is a curated, not exhaustive, snapshot): a plausible in-range cite we do not hold is reported INCONCLUSIVE, never falsely flagged. Closed series use their exact final volume; open series use a conservative bound so a real recent cite is never false-flagged.",
   "reporters": {
-    "U.S.": {
-      "name": "United States Reports",
-      "indexed": true,
-      "max_volume": 700,
-      "note": "Current published volume is ~602 (2024). max_volume is set conservatively HIGH so a real recent/near-future cite is never false-flagged; a volume above it is, as of this snapshot, not a real U.S. Reports volume."
-    }
+    "U.S.":        {"name": "United States Reports",            "indexed": true,  "max_volume": 700, "complete_volumes": []},
+    "S. Ct.":      {"name": "Supreme Court Reporter",           "indexed": false, "max_volume": 250, "complete_volumes": []},
+    "L. Ed.":      {"name": "Lawyers' Edition",                 "indexed": false, "max_volume": 100, "complete_volumes": []},
+    "L. Ed. 2d":   {"name": "Lawyers' Edition, Second Series",  "indexed": false, "max_volume": 300, "complete_volumes": []},
+    "F.2d":        {"name": "Federal Reporter, Second Series",  "indexed": false, "max_volume": 999, "complete_volumes": []},
+    "F.3d":        {"name": "Federal Reporter, Third Series",   "indexed": false, "max_volume": 999, "complete_volumes": []},
+    "F.4th":       {"name": "Federal Reporter, Fourth Series",  "indexed": false, "max_volume": 200, "complete_volumes": []},
+    "F. Supp.":    {"name": "Federal Supplement",               "indexed": false, "max_volume": 999, "complete_volumes": []},
+    "F. Supp. 2d": {"name": "Federal Supplement, Second Series","indexed": false, "max_volume": 999, "complete_volumes": []},
+    "F. Supp. 3d": {"name": "Federal Supplement, Third Series", "indexed": false, "max_volume": 900, "complete_volumes": []}
   },
   "cases": [
     {"name": "Marbury v. Madison", "reporter": "U.S.", "volume": 5, "page": 137, "year": 1803,

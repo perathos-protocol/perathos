@@ -5,6 +5,32 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-23
+
+### Added — Legal Citation Verifier M1 (coverage + reproducibility protocol)
+- **Multi-reporter coverage.** The parser now recognizes the major federal /
+  SCOTUS reporters (`F.2d`, `F.3d`, `F.4th`, `F. Supp.`, `F. Supp. 2d`,
+  `F. Supp. 3d`, `S. Ct.`, `L. Ed.`, `L. Ed. 2d`) with their real published
+  volume ranges. An out-of-range volume (e.g. `1500 F.3d`, past the series' final
+  volume 999) is now caught as a fabrication even where individual cases are not
+  indexed. A plausible in-range cite we do not hold stays INCONCLUSIVE — so the
+  Mata v. Avianca-class fake (`925 F.3d 1339`) is honestly reported as
+  unverifiable, not falsely flagged. Year parentheticals with a court
+  (`(11th Cir. 2019)`) parse correctly.
+- **Complete-coverage existence mechanism.** A snapshot may declare
+  `complete_volumes` per reporter; within a complete range a non-resolving cite
+  becomes a fabrication (if it were real we would hold it). Shipped empty (this is
+  a curated, not exhaustive, snapshot) — the mechanism is the on-ramp for the
+  data investment that turns INCONCLUSIVE into FAIL for nonexistent-but-plausible
+  cites.
+- **End-to-end signed bundle binding.** `perathos cite-check --sign --out
+  brief.bundle.json` emits a Proof Bundle whose `integrity_hash` binds the
+  citation verdict AND the `corpus_hash`, re-verifiable offline
+  (`perathos verify --file ...`) by a counterparty; tampering with a bound verdict
+  breaks verification. This makes the cross-party, tamper-evident citation record
+  concrete.
+- Snapshot updated to `us-caselaw-v1.1-2026.06`; `RULES_VERSION` -> 1.1.0.
+
 ## [0.3.0] - 2026-06-23
 
 ### Added — Legal Citation Verifier (engine 128), M0

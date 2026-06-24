@@ -16,7 +16,35 @@ from typing import List, Optional
 
 # Bump when the grammar / normalization rules change; bound into the verdict so a
 # verdict is reproducible only against the same rules + the same corpus snapshot.
-RULES_VERSION = "citation-rules-1.0.0"
+RULES_VERSION = "citation-rules-1.1.0"
+
+# Recognized reporters: (canonical form, regex variant). Ordered LONGEST-FIRST so
+# the alternation prefers "F. Supp. 2d" over "F. Supp." etc. Bare "F." (Federal
+# Reporter 1st series, ended 1924) is intentionally omitted — it is rare and
+# would false-match prose like "1200 F. 3" (e.g. a temperature). Each form is
+# multi-character and distinctive, which keeps parsing precise.
+_REPORTERS = [
+    ("U.S.",        r"U\.?\s?S\.?"),
+    ("S. Ct.",      r"S\.\s?Ct\."),
+    ("L. Ed. 2d",   r"L\.\s?Ed\.\s?2d"),
+    ("L. Ed.",      r"L\.\s?Ed\."),
+    ("F. Supp. 3d", r"F\.\s?Supp\.\s?3d"),
+    ("F. Supp. 2d", r"F\.\s?Supp\.\s?2d"),
+    ("F. Supp.",    r"F\.\s?Supp\."),
+    ("F.4th",       r"F\.\s?4th"),
+    ("F.3d",        r"F\.\s?3d"),
+    ("F.2d",        r"F\.\s?2d"),
+]
+_REP_ALT = "|".join(v for _, v in _REPORTERS)
+# Despaced+uppercased variant -> canonical, for normalization after a match.
+_REP_NORM = {
+    "U.S.": "U.S.", "US": "U.S.", "U.S": "U.S.",
+    "S.CT.": "S. Ct.",
+    "L.ED.2D": "L. Ed. 2d", "L.ED.": "L. Ed.", "L.ED": "L. Ed.",
+    "F.SUPP.3D": "F. Supp. 3d", "F.SUPP.2D": "F. Supp. 2d",
+    "F.SUPP.": "F. Supp.", "F.SUPP": "F. Supp.",
+    "F.4TH": "F.4th", "F.3D": "F.3d", "F.2D": "F.2d",
+}
 
 # Stopwords dropped when comparing case names, so a short form ("Brown v. Board")
 # still overlaps the full name ("Brown v. Board of Education"). Party-name overlap
@@ -38,9 +66,9 @@ _PARTY = (r"[A-Z][A-Za-z.'’&-]*"
           r"(?:\s+(?:" + _CONN + r"\s+)*[A-Z][A-Za-z.'’&-]*){0,6}")
 _CITE_RE = re.compile(
     r"(?:(?P<name>" + _PARTY + r"\s+v\.?\s+" + _PARTY + r")\s*,\s*)?"
-    r"(?P<volume>\d{1,4})\s+(?P<reporter>U\.?\s?S\.?)\s+(?P<page>\d{1,4})"
+    r"(?P<volume>\d{1,4})\s+(?P<reporter>" + _REP_ALT + r")\s+(?P<page>\d{1,4})"
     r"(?:\s*,\s*(?P<pin>\d{1,4}))?"
-    r"(?:\s*\(\s*(?P<year>\d{4})\s*\))?",
+    r"(?:\s*\(\s*[^)]*?(?P<year>\d{4})\s*\))?",
 )
 
 
@@ -71,11 +99,9 @@ class Citation:
 
 
 def normalize_reporter(raw: str) -> str:
-    """Canonicalize a reporter token: 'U. S.', 'US', 'U.S.' -> 'U.S.'."""
+    """Canonicalize a reporter token: 'U. S.'->'U.S.', 'F. 3d'->'F.3d', etc."""
     collapsed = re.sub(r"\s+", "", raw).upper()
-    if collapsed in ("U.S.", "US", "U.S"):
-        return "U.S."
-    return raw.strip()
+    return _REP_NORM.get(collapsed, raw.strip())
 
 
 def name_tokens(name: Optional[str]) -> set:
