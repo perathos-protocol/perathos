@@ -141,6 +141,144 @@ def test_load_bundle_with_json_string(tmp_path, monkeypatch):
     assert result == "just a string"
 
 
+def test_load_bundle_with_json_number(tmp_path, monkeypatch):
+    """Test that load_bundle handles JSON number (not dict) gracefully."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file containing a number instead of object
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('42')
+    
+    # load_bundle should return the number
+    result = load_bundle(bundle_id)
+    assert result == 42
+
+
+def test_load_bundle_with_json_boolean(tmp_path, monkeypatch):
+    """Test that load_bundle handles JSON boolean (not dict) gracefully."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file containing a boolean instead of object
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('true')
+    
+    # load_bundle should return the boolean
+    result = load_bundle(bundle_id)
+    assert result is True
+
+
+def test_load_bundle_missing_bundle_id_field(tmp_path, monkeypatch):
+    """Test that load_bundle returns a dict even when bundle_id field is missing."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file with a dict but missing bundle_id
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('{"integrity_hash": "abc123", "output_hash": "def456"}')
+    
+    result = load_bundle(bundle_id)
+    assert isinstance(result, dict)
+    assert "bundle_id" not in result
+    assert result["integrity_hash"] == "abc123"
+
+
+def test_load_bundle_missing_integrity_hash_field(tmp_path, monkeypatch):
+    """Test that load_bundle returns a dict even when integrity_hash field is missing."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file with a dict but missing integrity_hash
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('{"bundle_id": "550e8400-e29b-41d4-a716-446655440000", "output_hash": "def456"}')
+    
+    result = load_bundle(bundle_id)
+    assert isinstance(result, dict)
+    assert "integrity_hash" not in result
+    assert result["bundle_id"] == "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_load_bundle_missing_trace_field(tmp_path, monkeypatch):
+    """Test that load_bundle returns a dict even when _trace field is missing."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file with a dict but missing _trace
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('{"bundle_id": "550e8400-e29b-41d4-a716-446655440000", "integrity_hash": "abc123"}')
+    
+    result = load_bundle(bundle_id)
+    assert isinstance(result, dict)
+    assert "_trace" not in result
+
+
+def test_load_bundle_missing_multiple_critical_fields(tmp_path, monkeypatch):
+    """Test load_bundle with a dict missing multiple critical fields."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file with a dict missing bundle_id, integrity_hash, and _trace
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('{"output_hash": "xyz789", "issued_at": "2024-01-01T00:00:00Z"}')
+    
+    result = load_bundle(bundle_id)
+    assert isinstance(result, dict)
+    assert "bundle_id" not in result
+    assert "integrity_hash" not in result
+    assert "_trace" not in result
+    assert result["output_hash"] == "xyz789"
+
+
+def test_load_bundle_with_empty_dict(tmp_path, monkeypatch):
+    """Test that load_bundle handles an empty dict gracefully."""
+    bundles_dir = tmp_path / ".perathos" / "bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    
+    from perathos import storage
+    monkeypatch.setattr(storage, "bundles_dir", lambda: bundles_dir)
+    
+    # Create a JSON file with an empty dict
+    bundle_id = "550e8400-e29b-41d4-a716-446655440000"
+    path = bundles_dir / f"{bundle_id}.json"
+    path.write_text('{}')
+    
+    result = load_bundle(bundle_id)
+    assert isinstance(result, dict)
+    assert result == {}
+
+
 def test_save_bundle_stores_all_fields(tmp_path, monkeypatch):
     """Test that save_bundle preserves all bundle fields."""
     bundles_dir = tmp_path / ".perathos" / "bundles"
