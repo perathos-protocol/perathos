@@ -1057,7 +1057,7 @@ ERROR: Bundle verification failed: ERR_MISSING_FIELD:output_hash
 - File truncation due to process interruption.
 - Filesystem corruption (rare, but possible on unreliable storage).
 
-**Solution:** Manually inspect and recover from corrupted files.
+**Detection:** Check file integrity before attempting recovery.
 
 #### Inspect a potentially corrupted bundle
 
@@ -1074,18 +1074,26 @@ python -m json.tool ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.jso
 jq . ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
 ```
 
-If the file is valid JSON but is missing required fields (like `integrity_hash`, `_trace`, `bundle_id`), the bundle is corrupted and **cannot be recovered**. The original AI output is lost.
+**Valid JSON, missing critical fields:** If the file parses as valid JSON but is missing required fields (like `integrity_hash`, `_trace`, `bundle_id`), the bundle is corrupted and **cannot be recovered**. The original AI output is lost.
 
-#### Recover by re-creating the bundle
-
-If the bundle is corrupted and you have the original input and output text:
+Recover by re-creating the bundle (if you have the original output):
 
 ```bash
 # Recreate the bundle:
 perathos prove "<original output text>" --input "<original input text>" --sign
 
-# The bundle will have a new bundle_id but the same integrity_hash
+# The new bundle will have a new bundle_id but the same integrity_hash
 # (since it's derived from the same input/output).
+```
+
+**Invalid JSON (malformed):** If the file does not parse as JSON (syntax error), it is corrupted and cannot be recovered. Delete it and re-create the bundle.
+
+```bash
+# Delete the corrupted file:
+rm ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
+
+# Re-create the bundle if you have the original output:
+perathos prove "<original output>" --sign
 ```
 
 #### Inspect a potentially corrupted key file
@@ -1099,18 +1107,39 @@ cat ~/.perathos/keys/signing.key
 # Check it's 64 hex characters:
 wc -c ~/.perathos/keys/signing.key  # Should be 65 (64 chars + newline)
 hex_string=$(cat ~/.perathos/keys/signing.key)
-echo "${#hex_string}")  # Should be 64
+echo "${#hex_string}"  # Should be 64
 echo "$hex_string" | grep -E '^[0-9a-f]{64}$'  # Should match
 ```
 
-If the key file is truncated (fewer than 64 characters) or contains non-hex characters, it's corrupted:
+**Truncated or non-hex key:** If the key file is truncated (fewer than 64 characters) or contains non-hex characters, it is corrupted:
 
 ```bash
 # Regenerate the keypair (this will lose the old key):
 rm ~/.perathos/keys/signing.key ~/.perathos/keys/verify.key
 perathos keygen
 
-# Warning: Any bundles signed with the old key cannot be verified with the new key.
+# WARNING: Any bundles signed with the old key cannot be verified with the new key.
+# Keep backups of old keys if you need to verify old bundles.
+```
+
+**In Python:**
+```python
+from perathos.storage import keys_dir
+from pathlib import Path
+
+sk_path = keys_dir() / "signing.key"
+if sk_path.exists():
+    key_value = sk_path.read_text(encoding="utf-8").strip()
+    if len(key_value) != 64:
+        print(f"ERROR: Signing key is truncated ({len(key_value)} chars, expected 64).")
+        print("To recover, delete and regenerate: perathos keygen")
+    elif not all(c in "0123456789abcdef" for c in key_value):
+        print(f"ERROR: Signing key contains non-hex characters.")
+        print("To recover, delete and regenerate: perathos keygen")
+    else:
+        print("✓ Signing key is valid.")
+else:
+    print("Signing key not found. Run: perathos keygen")
 ```
 
 #### Prevention
@@ -1122,7 +1151,7 @@ To prevent corruption:
    ```bash
    cp -r ~/.perathos/keys ~/perathos-keys-backup
    ```
-3. **Do not edit bundle files manually.** Only Perathos should modify bundles.
+3. **Do not edit bundle files manually.** Only Perathos should modify bundles. Bundles are read-only after creation.
 4. **Check disk health.** If corruption happens repeatedly, run filesystem checks:
    ```bash
    sudo fsck /  # On Linux (unmounted)
@@ -1132,12 +1161,31 @@ To prevent corruption:
    ```bash
    df -h ~
    ```
-6. **Use checksums.** For critical bundles, store a separate SHA-256 checksum:
+6. **Use checksums for critical bundles.** Store a separate SHA-256 checksum:
    ```bash
    sha256sum ~/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json > bundle.sha256
    # Later, verify:
    sha256sum -c bundle.sha256
    ```
+
+**Real-world checklist:**
+
+```bash
+# Verify all bundles are valid JSON:
+for file in ~/.perathos/bundles/*.json; do
+  python -m json.tool "$file" > /dev/null && echo "✓ $file" || echo "✗ $file CORRUPTED"
+done
+
+# Verify all keys are 64 hex chars:
+for file in ~/.perathos/keys/*.key; do
+  value=$(cat "$file")
+  [[ ${#value} -eq 64 && "$value" =~ ^[0-9a-f]+$ ]] && echo "✓ $file" || echo "✗ $file CORRUPTED"
+done
+
+# Backup keys:
+cp -r ~/.perathos/keys ~/perathos-keys-backup-$(date +%Y%m%d)
+echo "✓ Keys backed up"
+```
 
 ### Bundle verification fails with "ERR_TRACE_HASH_MISMATCH"
 
