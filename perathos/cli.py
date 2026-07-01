@@ -300,8 +300,11 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
                 from .verifiers_nli import nli_entailment_fn
                 entailment_fn = nli_entailment_fn()
             except ImportError:
-                click.echo("[ERROR] --nli requires the NLI extra. Install it with:", err=True)
+                click.echo("[ERROR] NLI requires the NLI extra. Install it with:", err=True)
                 click.echo("  pip install perathos[nli]", err=True)
+                click.echo("", err=True)
+                click.echo("Then try again:", err=True)
+                click.echo("  perathos prove 'your output' --nli", err=True)
                 sys.exit(1)
         if evidence and not use_nli:
             click.echo(
@@ -472,8 +475,17 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, exp
         from .keytrust import TrustStore
         try:
             trust_store = TrustStore.from_jwks(json.loads(Path(trust_jwks).read_text(encoding="utf-8")))
-        except (ValueError, KeyError) as exc:
+        except json.JSONDecodeError as exc:
+            click.echo(f"[ERROR] Invalid JSON in JWKS file {trust_jwks}: {exc}", err=True)
+            click.echo("", err=True)
+            click.echo("JWKS must be valid JSON with a 'keys' array. Example:", err=True)
+            click.echo(json.dumps({"keys": [{"kty": "OKP", "crv": "Ed25519", "kid": "ed25519-...", "x": "..."}]}, indent=2), err=True)
+            sys.exit(2)
+        except ValueError as exc:
             click.echo(f"[ERROR] Invalid JWKS file {trust_jwks}: {exc}", err=True)
+            click.echo("", err=True)
+            click.echo("Check that the file is valid JSON with a 'keys' array of OKP/Ed25519 entries:", err=True)
+            click.echo(json.dumps({"keys": [{"kty": "OKP", "crv": "Ed25519", "kid": "ed25519-xxx", "x": "base64url-encoded-public-key"}]}, indent=2), err=True)
             sys.exit(2)
 
     # Step 1: hash-chain + signature verification (verify() also validates the
