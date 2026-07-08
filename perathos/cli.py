@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 
 from . import __version__, prove, sign, verify, inspect
+from .errors import explain_error as _explain_error
 from .inspector import _unicode_ok
 from .pipeline import CONJUNCTION, QUORUM, verify_output
 from .signing import generate_keypair
@@ -17,61 +18,6 @@ from .storage import (
     save_keypair,
     keys_dir,
 )
-
-
-# Error code explanations
-_ERROR_EXPLANATIONS = {
-    "ERR_MISSING_TRACE": "Bundle is missing execution metadata (_trace field). The bundle file may be corrupted or truncated. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to validate JSON syntax.",
-    "ERR_TRACE_HASH_MISMATCH": "Execution metadata was tampered with. The hash chain is broken — the _trace field doesn't match trace_hash. Next step: Do not trust this bundle. Verify the source and obtain the original bundle from the provider.",
-    "ERR_INTEGRITY_HASH_MISMATCH": "Bundle fields (ai_id, input_hash, output_hash, issued_at, or trace_hash) were tampered with. The bundle has been modified since creation. Next step: Do not trust this bundle. This is a critical tamper detection.",
-    "ERR_BUNDLE_ID_MISMATCH": "Bundle ID was manually changed or corrupted. The bundle_id field doesn't match the integrity_hash. Next step: Do not trust this bundle. Verify the source and obtain the original bundle from the provider.",
-    "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect. Next step: Verify the provider's public key and ask them to confirm the bundle hasn't been modified.",
-    "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
-    "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
-    "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
-    "ERR_UNTRUSTED_SIGNER": "The bundle's signature is valid but the signing key is not in the trust set you provided (--trust-jwks). Next step: Obtain the issuer's published JWKS and confirm the key is one you trust.",
-    "ERR_VERDICT_MISMATCH": "The bundle's top-level verdict does not match its bound aggregate verdict — the convenience field was tampered with. Next step: Do not trust this bundle.",
-    "ERR_ANSWER_MISMATCH": "The bundle's stored answer text does not hash to its output_hash — the answer was altered after creation. Next step: Do not trust this bundle.",
-    "ERR_MALFORMED_BUNDLE": "The bundle structure is malformed and could not be verified (e.g. a corrupted or hostile _trace). Next step: Obtain the original bundle from the provider; do not trust this one.",
-    "ERR_UNSUPPORTED_ALGORITHM": "The bundle's signature declares an algorithm other than ed25519, which is the only supported scheme. Next step: Do not trust this bundle; its signature was not validated.",
-    "ERR_INPUT_FILE_NOT_FOUND": "Input file not found. Check that the file exists and the path is correct. Example: perathos prove 'output' --input-file prompt.txt",
-    "ERR_INPUT_FILE_READ": "Failed to read input file. Check that the file is readable and not corrupted. Example: perathos prove 'output' --input-file prompt.txt",
-}
-
-
-def _explain_error(error_code: str) -> str:
-    """Return human-readable explanation for an error code.
-    
-    Maps error codes (e.g., "ERR_TRACE_HASH_MISMATCH") to user-friendly explanations
-    with actionable next steps. Handles error codes with suffixes (e.g., 
-    "ERR_MISSING_FIELD:output_hash") by extracting the base code and adding field-specific
-    context. Returns the original error code if no explanation exists.
-    
-    Args:
-        error_code: Error code string (e.g., "ERR_TRACE_HASH_MISMATCH" or "ERR_MISSING_FIELD:output_hash").
-    
-    Returns:
-        Human-readable explanation string with next steps, or the original error code if unmapped.
-    
-    Examples:
-        _explain_error("ERR_TRACE_HASH_MISMATCH")
-        → "Execution metadata was tampered with. The hash chain is broken — ..."
-        
-        _explain_error("ERR_MISSING_FIELD:output_hash")
-        → "Bundle is missing a required field: output_hash. The bundle structure is invalid..."
-    """
-    # Handle error codes with suffixes (e.g., "ERR_MISSING_FIELD:output_hash")
-    base_code = error_code.split(":")[0]
-    
-    if base_code in _ERROR_EXPLANATIONS:
-        explanation = _ERROR_EXPLANATIONS[base_code]
-        # For ERR_MISSING_FIELD, add field name to the explanation
-        if base_code == "ERR_MISSING_FIELD" and ":" in error_code:
-            field_name = error_code.split(":", 1)[1]
-            explanation = f"Bundle is missing required field: {field_name}. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present."
-        return explanation
-    
-    return error_code
 
 
 def _format_hash(h: str, verbose: bool) -> str:
@@ -686,6 +632,140 @@ def cite_check(path, text, prove_flag, sign_flag, out_path):
     # Exit non-zero on a fabrication so the command is usable as a gate.
     if record.verdict == "FAIL":
         sys.exit(1)
+
+
+@cli.group()
+def hooks():
+    """Manage the Claude Code Stop-hook integration."""
+
+
+def _is_perathos_stop_hook(entry) -> bool:
+    return isinstance(entry, dict) and str(entry.get("command", "")).startswith("perathos hooks stop-check")
+
+
+@hooks.command(name="install")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="project",
+              help="Install into .claude/settings.json (project, default) or ~/.claude/settings.json (user).")
+@click.option("--force", is_flag=True, help="Replace an already-installed perathos Stop hook entry.")
+def hooks_install(scope: str, force: bool):
+    """Install the perathos Stop hook into Claude Code settings.
+
+    Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
+    It grounds the agent's final summary against this session's own tool
+    outputs (extractive hallucination_detector) and recomputes any arithmetic
+    (symbolic_solver) -- both local and deterministic, no LLM call, no
+    network -- then writes a signed Proof Bundle receipt to
+    .perathos/receipts/ in the session's working directory.
+
+    It never blocks the agent. A finding is surfaced to Claude as context on
+    the next turn, not as a failure. See 'perathos hooks stop-check --help'
+    for exactly what it does and does not catch.
+    """
+    settings_path = (Path(".claude") / "settings.json") if scope == "project" else (Path.home() / ".claude" / "settings.json")
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    settings: dict = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            click.echo(f"[ERROR] {settings_path} is not valid JSON: {exc}", err=True)
+            click.echo("Fix or remove it, then re-run this command.", err=True)
+            sys.exit(1)
+        if not isinstance(settings, dict):
+            click.echo(f"[ERROR] {settings_path} does not contain a JSON object.", err=True)
+            sys.exit(1)
+
+    hooks_block = settings.setdefault("hooks", {})
+    stop_hooks = hooks_block.setdefault("Stop", [])
+    existing = [h for h in stop_hooks if _is_perathos_stop_hook(h)]
+    if existing and not force:
+        click.echo(f"[ERROR] A perathos Stop hook is already installed in {settings_path}.", err=True)
+        click.echo("Use --force to reinstall.", err=True)
+        sys.exit(1)
+    if existing:
+        hooks_block["Stop"] = [h for h in stop_hooks if not _is_perathos_stop_hook(h)]
+        stop_hooks = hooks_block["Stop"]
+
+    stop_hooks.append({"type": "command", "command": "perathos hooks stop-check", "timeout": 30})
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+    click.echo(f"Installed into {settings_path}.")
+    click.echo("Every turn's summary will now be grounded against this session's tool")
+    click.echo("outputs, and a signed Proof Bundle receipt written to .perathos/receipts/.")
+    click.echo("")
+    click.echo("This grounds claims against what tools actually returned. It does not")
+    click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
+
+
+@hooks.command(name="stop-check")
+def hooks_stop_check():
+    """Run as a Claude Code Stop hook (reads the hook's JSON payload from stdin).
+
+    Grounds the turn's final assistant message against this session's own
+    tool outputs (extractive hallucination_detector: flags a claimed amount,
+    date, or quoted span with no support in any tool_result recorded this
+    session) and recomputes any stated arithmetic (symbolic_solver). Both are
+    local and deterministic -- no LLM call, no network access. Writes a
+    signed Proof Bundle receipt to .perathos/receipts/ in the session's
+    working directory (unsigned if no local key exists yet -- run
+    'perathos keygen' to sign receipts).
+
+    What this catches: a specific claim (a number, a quoted status, a named
+    file) with no support in this session's own tool outputs -- e.g. "all
+    tests pass" with no passing test output anywhere in the transcript.
+
+    What this does NOT catch: a claim that IS grounded in a tool output but
+    still misrepresents the larger picture, or anything requiring judgment
+    beyond exact/lenient text and arithmetic matching.
+
+    Always exits 0 -- this hook only observes and records; it never blocks
+    the agent from stopping. A finding is surfaced to Claude via
+    'additionalContext' on the JSON written to stdout, per the Stop-hook
+    protocol, so the next turn sees it as context, not as an error.
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        # Malformed input from the harness -- never fail the turn over this.
+        click.echo("{}")
+        return
+    if not isinstance(payload, dict):
+        click.echo("{}")
+        return
+
+    from .hooks import check_stop_hook
+
+    result = check_stop_hook(payload)
+    cwd = payload.get("cwd") or "."
+    receipts_dir = Path(cwd) / ".perathos" / "receipts"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+
+    bundle = result["bundle"]
+    try:
+        sk_hex = load_signing_key()
+        bundle = sign(bundle, sk_hex)
+    except FileNotFoundError:
+        pass  # An unsigned receipt is still useful; signing is opt-in (perathos keygen).
+
+    session_id = str(payload.get("session_id") or "unknown")[:8]
+    stamp = str(bundle.get("issued_at", "")).replace(":", "").replace("+00:00", "Z") or "unknown"
+    receipt_path = receipts_dir / f"{stamp}-{session_id}.json"
+    receipt_path.write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
+
+    output: dict = {}
+    if result["failing_records"]:
+        details = "; ".join(r.get("detail", "") for r in result["failing_records"])
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": (
+                    f"perathos: this turn's summary has claim(s) not grounded in this "
+                    f"session's own tool outputs -- {details}. Receipt: {receipt_path}"
+                ),
+            }
+        }
+    click.echo(json.dumps(output))
 
 
 def main():

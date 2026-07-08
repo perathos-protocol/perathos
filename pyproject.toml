@@ -26,9 +26,14 @@ nli = ["transformers>=4.40", "torch>=2.0"]
 # Fine-tuning the entailment model (scripts/train_entailment.py) — adds the
 # HuggingFace Trainer stack on top of the inference deps.
 train = ["transformers>=4.40", "torch>=2.0", "accelerate>=1.1.0", "datasets>=2.0", "scikit-learn>=1.0"]
+# MCP server (perathos_verify_answer / perathos_verify_bundle tools) for any
+# MCP client (Claude Code, Claude Desktop, etc.). Not pulled by a bare
+# `pip install perathos` since most callers never run the server.
+mcp = ["mcp>=1.0"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
+perathos-mcp = "perathos.mcp_server:main"
 
 [tool.pytest.ini_options]
 markers = [
