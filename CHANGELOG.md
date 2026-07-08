@@ -5,6 +5,21 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Claude Code hook + MCP server
+- `perathos hooks install claude-code` / `perathos hooks stop-check` — a Stop
+  hook that grounds a coding agent's final turn summary against its own
+  session's tool outputs (`hallucination_detector` extractive +
+  `symbolic_solver`, both local/deterministic) and writes a signed Proof
+  Bundle receipt to `.perathos/receipts/`. Never blocks the agent; surfaces
+  findings via `additionalContext`.
+- `perathos-mcp` (optional `perathos[mcp]` extra) — an MCP server exposing
+  `perathos_verify_answer` and `perathos_verify_bundle` as tools for any MCP
+  client. Tested end-to-end via a real in-memory MCP client/server session,
+  not just direct function calls.
+- `perathos/errors.py` — the CLI's error-code explanations extracted into a
+  shared module so the CLI and the MCP server give byte-identical
+  explanations, not two copies that can drift.
+
 ## [0.3.1] - 2026-06-23
 
 ### Added — Legal Citation Verifier M1 (coverage + reproducibility protocol)

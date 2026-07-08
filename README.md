@@ -123,6 +123,41 @@ perathos verify <bundle_id> --verify-key <64-hex-public-key>
 perathos doctor
 ```
 
+## Claude Code hook
+
+Ground a coding agent's own turn-ending summary against what actually
+happened in the session — not what it claims happened:
+
+```bash
+perathos hooks install claude-code
+```
+
+Adds a Stop hook that runs after every turn: it checks the agent's final
+message against the session's own tool outputs
+(`hallucination_detector`, extractive — no LLM call) and recomputes any
+stated arithmetic (`symbolic_solver`), then writes a signed Proof Bundle
+receipt to `.perathos/receipts/`. It catches a specific claim — a number, a
+quoted status, a named file — with no support anywhere in the transcript
+(e.g. "all tests pass" with no passing test output on record). It does
+**not** catch a claim that's grounded but still misrepresents the bigger
+picture, and it never blocks the agent — a finding is surfaced as context on
+the next turn, not a failure. See `perathos hooks stop-check --help` for the
+exact scope.
+
+## MCP server
+
+Expose the same verification as MCP tools for any MCP client:
+
+```bash
+pip install perathos[mcp]
+perathos-mcp   # stdio transport
+```
+
+Two tools: `perathos_verify_answer` (check an answer with the real engines,
+optionally signed) and `perathos_verify_bundle` (re-verify an existing
+bundle's hash chain and signature offline). Point your client's MCP config
+at the `perathos-mcp` command.
+
 ## Enterprise & security
 
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — what is and isn't protected, and the deployment assumptions (notably: **pin the signer's public key out of band**).
