@@ -56,6 +56,12 @@ everything can be re-checked from the files.
 - Can you provide the original arguments or output for receipt *N*? Hash them and compare with the
   receipt's `args_hash` / `result_hash`.
 
+## Which controls this is evidence for
+
+[CONTROL_MAPPING.md](CONTROL_MAPPING.md) lists, control by control, what a pack supports in AIUC-1
+(notably D003.4 human-approval workflows and E015.4 log integrity protection), SOC 2, NCSC guidance,
+ISO/IEC 42001, the EU AI Act and NIST AI RMF, and what it does not.
+
 ## Formats
 
 Receipts, anchors and preconditions: [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md). Evidence pack
