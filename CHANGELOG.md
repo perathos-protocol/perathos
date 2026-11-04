@@ -17,6 +17,9 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
   The library default is unchanged (`False`) for backward compatibility.
 
 ### Fixed
+- Dependency caps: `mcp<2` (MCP SDK 2.x removed APIs the server and tests use)
+  and `ruff<0.16` (0.17 added rules failing untouched files). CI had not run
+  since July, so both drifts surfaced on the first new PR.
 - The Claude Code Stop hook found **0 sources in real sessions**: real
   transcripts nest `tool_result` blocks inside a `user` entry's
   `message.content`, but the extractor only read top-level lines (the format

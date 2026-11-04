@@ -29,7 +29,7 @@ train = ["transformers>=4.40", "torch>=2.0", "accelerate>=1.1.0", "datasets>=2.0
 # MCP server (perathos_verify_answer / perathos_verify_bundle tools) for any
 # MCP client (Claude Code, Claude Desktop, etc.). Not pulled by a bare
 # `pip install perathos` since most callers never run the server.
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
