@@ -287,7 +287,7 @@ def test_install_writes_hooks_json_and_preserves_others(tmp_path, home, monkeypa
     assert hooks["beforeSubmitPrompt"] == [{"command": "./redact.sh"}]
     assert hooks["beforeShellExecution"] == [
         {"command": "./audit.sh", "timeout": 5},
-        {"command": "perathos hooks record-cursor --guard", "timeout": 10},
+        {"command": "perathos hooks record-cursor --guard", "timeout": 10, "failClosed": True},
     ]
     assert hooks["beforeMCPExecution"][0]["command"] == "perathos hooks record-cursor --guard"
     assert hooks["beforeReadFile"][0]["command"] == "perathos hooks record-cursor --guard"

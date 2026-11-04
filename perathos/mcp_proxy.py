@@ -149,12 +149,21 @@ def _id_str(rid: Any) -> str | None:
     return None if rid is None else str(rid)
 
 
-def _parse(line: bytes) -> dict | None:
+def _parse(line: bytes) -> dict | list | None:
+    """One JSON-RPC message, or a batch (list) of them, or None."""
     try:
         msg = json.loads(line)
     except (ValueError, UnicodeDecodeError):
         return None
-    return msg if isinstance(msg, dict) else None
+    return msg if isinstance(msg, (dict, list)) else None
+
+
+def _as_list(msg: dict | list | None) -> list[dict]:
+    if isinstance(msg, dict):
+        return [msg]
+    if isinstance(msg, list):
+        return [m for m in msg if isinstance(m, dict)]
+    return []
 
 
 def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None = None,
@@ -174,9 +183,9 @@ def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None
     def server_to_client() -> None:
         assert proc.stdout is not None
         for line in iter(proc.stdout.readline, b""):
-            msg = _parse(line)
-            if msg is not None and "id" in msg and ("result" in msg or "error" in msg):
-                rec.on_response(msg)
+            for msg in _as_list(_parse(line)):
+                if "id" in msg and ("result" in msg or "error" in msg):
+                    rec.on_response(msg)
             to_client(line)
 
     pump = threading.Thread(target=server_to_client, daemon=True)
@@ -184,12 +193,25 @@ def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None
     try:
         assert proc.stdin is not None
         for line in iter(stdin.readline, b""):
-            msg = _parse(line)
-            if msg is not None and msg.get("method") == "tools/call" and "id" in msg:
-                reply = rec.on_tools_call(msg)
-                if reply is not None:
-                    to_client((json.dumps(reply) + "\n").encode("utf-8"))
+            parsed = _parse(line)
+            msgs = _as_list(parsed)
+            denied: list[dict] = []
+            forward: list[dict] = []
+            for msg in msgs:
+                reply = None
+                if msg.get("method") == "tools/call" and "id" in msg:
+                    reply = rec.on_tools_call(msg)
+                (denied if reply is not None else forward).append(reply if reply is not None else msg)
+            if isinstance(parsed, list):
+                # Batch: answer denied calls ourselves, forward the rest as a batch.
+                if denied:
+                    to_client((json.dumps(denied) + "\n").encode("utf-8"))
+                if not forward:
                     continue
+                line = (json.dumps(forward) + "\n").encode("utf-8")
+            elif denied:
+                to_client((json.dumps(denied[0]) + "\n").encode("utf-8"))
+                continue
             try:
                 proc.stdin.write(line if line.endswith(b"\n") else line + b"\n")
                 proc.stdin.flush()

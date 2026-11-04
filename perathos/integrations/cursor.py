@@ -424,7 +424,10 @@ def install(path: Path, *, guard: bool = False, anchor: bool = False, force: boo
         entries = hooks.setdefault(ev, [])
         if not isinstance(entries, list):
             raise HookConfigError(f"{path}: hooks.{ev} is not a list")
-        entries.append({"command": cmd, "timeout": 20 if "--anchor" in cmd else 10})
+        entry = {"command": cmd, "timeout": 20 if "--anchor" in cmd else 10}
+        if "--guard" in cmd:
+            entry["failClosed"] = True  # a missing or crashing guard blocks the action
+        entries.append(entry)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
