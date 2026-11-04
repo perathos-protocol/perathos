@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Perathos flight recorder</title>
+<meta name="description" content="An open-source flight recorder for coding agents.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./">Perathos</a>
+    <nav><a href="verify/">Verifier</a><a href="https://github.com/perathos-protocol/perathos">GitHub</a></nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <h1>An open-source flight recorder for coding agents.</h1>
+    <p class="lead">Every tool call is chained, signed and independently timestamped, and destructive actions need a signed safety check first.
+      After an incident you can show what the agent did, that nothing was cut from the record, and whether the safeguards were in place.</p>
+    <div class="links">
+      <a class="primary" href="verify/">Verify an evidence pack</a>
+      <a href="https://github.com/perathos-protocol/perathos">Source on GitHub</a>
+      <a href="https://github.com/perathos-protocol/perathos/tree/main/examples/pocketos_replay">PocketOS replay</a>
+      <a href="https://github.com/perathos-protocol/perathos/blob/main/docs/specs/RECEIPT_V1.md">Receipt spec</a>
+    </div>
+  </section>
+
+  <h2>Install (Claude Code)</h2>
+<pre><code>pip install 'perathos[anchor]'
+perathos keygen
+perathos hooks install --guard --anchor</code></pre>
+  <p class="small muted">Records every tool call, blocks destructive commands unless a person has signed a safety check, and timestamps each checkpoint with an RFC 3161 authority.</p>
+
+  <h2>What you get</h2>
+  <ul>
+    <li><strong>Recorder.</strong> A hash-chained receipt for every tool call (hashes of arguments and results, never the content), sealed each turn by an Ed25519-signed checkpoint.</li>
+    <li><strong>Independent time.</strong> Checkpoints are timestamped by an outside authority, so the log cannot be back-dated and a cut-off ending is detectable.</li>
+    <li><strong>Guard.</strong> Commands like <code>rm -rf</code>, <code>DROP TABLE</code> or <code>terraform destroy</code> are blocked unless a person has run a signed precondition check. The agent cannot approve itself.</li>
+    <li><strong>Evidence pack.</strong> <code>perathos session export</code> writes a signed bundle with a one-page report that anyone can re-check with <code>perathos evidence verify</code>, or in the <a href="verify/">browser verifier</a>.</li>
+  </ul>
+
+  <h2>Honest limits</h2>
+  <p>Perathos proves which key sealed the record, not which model ran. The guard is a seatbelt, not a sandbox: it stops accidents, not a determined hostile agent.
+    The full list is in the <a href="https://github.com/perathos-protocol/perathos/blob/main/docs/specs/RECEIPT_V1.md">receipt spec</a>.</p>
+</main>
+
+<footer class="wrap foot small muted">
+  Source: <a href="https://github.com/perathos-protocol/perathos">perathos-protocol/perathos</a>. No cookies, no analytics.
+</footer>
+</body>
+</html>
