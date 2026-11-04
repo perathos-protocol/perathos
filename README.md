@@ -131,7 +131,7 @@ Ground a coding agent's own turn-ending summary against what actually
 happened in the session — not what it claims happened:
 
 ```bash
-perathos hooks install claude-code
+perathos hooks install
 ```
 
 Adds a Stop hook that runs after every turn: it checks the agent's final
@@ -145,6 +145,40 @@ quoted status, a named file — with no support anywhere in the transcript
 picture, and it never blocks the agent — a finding is surfaced as context on
 the next turn, not a failure. See `perathos hooks stop-check --help` for the
 exact scope.
+
+## Flight recorder for coding agents
+
+Record every tool call a coding agent makes as a tamper-evident chain, sealed
+by a signed checkpoint at the end of each turn:
+
+```bash
+perathos keygen                       # once: the key that signs checkpoints
+perathos hooks install --recorder     # PreToolUse, PostToolUse, Stop, SessionEnd
+```
+
+Each tool call writes two receipts to `.perathos/sessions/<session_id>.jsonl`:
+one before it runs (tool name, hash of its arguments) and one after (hash of
+its result). Every receipt carries the hash of the one before it, and each
+turn ends with a checkpoint signed by your key. Only hashes are stored, never
+the arguments or output themselves.
+
+```bash
+perathos session list
+perathos session show <session_id>          # readable timeline
+perathos session verify <session_id> --verify-key <your 64-char hex key>
+```
+
+`session verify` fails (exit 1) on any edited, inserted, deleted or reordered
+receipt, a stripped or forged checkpoint signature, a log re-signed by a
+different key (with `--verify-key` or `--trust-jwks`), and truncation back
+before the last witnessed checkpoint.
+
+What it does **not** prove yet: that nothing was cut after the most recent
+checkpoint if the `.head.json` witness was deleted too, or what time it
+really was (timestamps come from the local clock). Independent timestamping
+of checkpoints closes both and is next on the roadmap. The `model` field is
+read from the transcript and is self-reported. The recorder never blocks the
+agent; each hook adds roughly 0.25 s. Format: [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
 
 ## MCP server
 

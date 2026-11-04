@@ -116,7 +116,10 @@ def test_hooks_install_writes_project_settings(tmp_path, monkeypatch):
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     stop_hooks = settings["hooks"]["Stop"]
     assert len(stop_hooks) == 1
-    assert stop_hooks[0]["command"] == "perathos hooks stop-check"
+    # Claude Code only runs hooks nested under a "hooks" array.
+    assert stop_hooks[0]["hooks"][0]["type"] == "command"
+    assert stop_hooks[0]["hooks"][0]["command"] == "perathos hooks stop-check"
+    assert "command" not in stop_hooks[0]
 
 
 def test_hooks_install_twice_without_force_errors(tmp_path, monkeypatch):
@@ -155,7 +158,39 @@ def test_hooks_install_preserves_existing_settings(tmp_path, monkeypatch):
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     assert settings["otherSetting"] is True
     assert settings["hooks"]["PostToolUse"] == [{"type": "command", "command": "some-other-hook"}]
-    assert settings["hooks"]["Stop"][0]["command"] == "perathos hooks stop-check"
+    assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "perathos hooks stop-check"
+
+
+def test_hooks_install_migrates_old_flat_entry(tmp_path, monkeypatch):
+    """Older versions wrote a flat entry Claude Code never ran; reinstall fixes it."""
+    monkeypatch.chdir(tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {"Stop": [{"type": "command", "command": "perathos hooks stop-check", "timeout": 30}]},
+    }), encoding="utf-8")
+    result = CliRunner().invoke(cli, ["hooks", "install"])
+    assert result.exit_code == 0, result.output
+    stop = json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]["Stop"]
+    assert stop == [{"hooks": [{"type": "command", "command": "perathos hooks stop-check", "timeout": 30}]}]
+
+
+def test_hooks_install_recorder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["hooks", "install", "--recorder"])
+    assert result.exit_code == 0, result.output
+    hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
+    for event in ("PreToolUse", "PostToolUse"):
+        assert hooks[event] == [{"matcher": "*", "hooks": [
+            {"type": "command", "command": "perathos hooks record", "timeout": 10}]}]
+    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "perathos hooks record"
+    stop_cmds = [e["hooks"][0]["command"] for e in hooks["Stop"]]
+    assert stop_cmds == ["perathos hooks stop-check", "perathos hooks record"]
+    # reinstall without --force is refused, with --force it does not duplicate
+    assert CliRunner().invoke(cli, ["hooks", "install", "--recorder"]).exit_code == 1
+    assert CliRunner().invoke(cli, ["hooks", "install", "--recorder", "--force"]).exit_code == 0
+    hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
+    assert len(hooks["PreToolUse"]) == 1 and len(hooks["Stop"]) == 2
 
 
 # ── CLI: hooks stop-check ───────────────────────────────────────────────────
