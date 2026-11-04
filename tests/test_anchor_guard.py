@@ -314,11 +314,11 @@ def test_install_guard_and_anchor_flags(tmp_path, monkeypatch, home):
     r = CliRunner().invoke(cli, ["hooks", "install", "--guard", "--anchor"])
     assert r.exit_code == 0, r.output
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
-    assert hooks["PreToolUse"][0]["hooks"][0]["command"] == "perathos hooks record --guard"
-    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "perathos hooks record"
+    assert hooks["PreToolUse"][0]["hooks"][0]["command"] == "perathos-hook record --guard"
+    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "perathos-hook record"
     stop_cmds = [e["hooks"][0]["command"] for e in hooks["Stop"]]
-    assert "perathos hooks record --anchor" in stop_cmds
-    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "perathos hooks record --anchor"
+    assert "perathos-hook record --anchor" in stop_cmds
+    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "perathos-hook record --anchor"
 
 
 def test_reinstall_with_new_flags_replaces_recorder_entries(tmp_path, monkeypatch, home):
@@ -327,7 +327,7 @@ def test_reinstall_with_new_flags_replaces_recorder_entries(tmp_path, monkeypatc
     assert runner.invoke(cli, ["hooks", "install", "--recorder"]).exit_code == 0
     assert runner.invoke(cli, ["hooks", "install", "--guard", "--force"]).exit_code == 0
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
-    assert [e["hooks"][0]["command"] for e in hooks["PreToolUse"]] == ["perathos hooks record --guard"]
+    assert [e["hooks"][0]["command"] for e in hooks["PreToolUse"]] == ["perathos-hook record --guard"]
 
 
 def test_anchor_failure_never_breaks_the_turn(tmp_path, home, monkeypatch):

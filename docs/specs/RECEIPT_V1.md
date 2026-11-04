@@ -6,7 +6,8 @@ enough to re-implement a verifier in any language in an afternoon.
 ## Log
 
 A session log is a UTF-8 JSON Lines file, one receipt per line, append-only.
-Claude Code logs live at `<cwd>/.perathos/sessions/<session_id>.jsonl`.
+Claude Code logs live at `<cwd>/.perathos/sessions/<session_id>.jsonl`; Cursor
+logs at `<first workspace root>/.perathos/sessions/<conversation_id>.jsonl`.
 
 ## Receipt fields
 
@@ -15,7 +16,7 @@ Claude Code logs live at `<cwd>/.perathos/sessions/<session_id>.jsonl`.
 | `v` | string | all | Always `perathos.receipt/v1` |
 | `kind` | string | all | `pre`, `post` or `checkpoint` |
 | `session_id` | string | all | Agent session id (`[A-Za-z0-9._-]`, max 128) |
-| `agent` | string | all | Recording integration, e.g. `claude-code` |
+| `agent` | string | all | Recording integration: `claude-code` or `cursor` |
 | `seq` | integer | all | 1 for the first receipt, then +1 per receipt |
 | `ts` | string | all | UTC, ISO 8601, microseconds, `Z` suffix; local clock |
 | `prev_hash` | hex string | all | `receipt_hash` of the previous receipt; 64 zeros for the first |
@@ -24,7 +25,7 @@ Claude Code logs live at `<cwd>/.perathos/sessions/<session_id>.jsonl`.
 | `args_hash` | hex string | pre, post | SHA-256 of the tool arguments |
 | `result_hash` | hex string | post | SHA-256 of the tool result (or of the error) |
 | `status` | string | post | `ok` or `error` |
-| `event` | string | checkpoint | Hook event that sealed it: `Stop`, `SubagentStop`, `SessionEnd` |
+| `event` | string | checkpoint | Hook event that sealed it: `Stop`, `SubagentStop`, `SessionEnd` (Claude Code); `stop`, `subagentStop`, `sessionEnd` (Cursor) |
 | `model` | string or null | checkpoint | Model named in the transcript; self-reported |
 | `signer` | hex string | signed checkpoint | Ed25519 public key (32 bytes), bound into the hash |
 | `receipt_hash` | hex string | all | See below |

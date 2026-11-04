@@ -216,6 +216,20 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                 errors.append(f"ERR_FILE_MODIFIED: {name}")
         for extra in sorted(present - set(listed)):
             errors.append(f"ERR_UNLISTED_FILE: {extra}")
+        # Preconditions carried in the pack must be intact and signed (their
+        # expiry is history by now, so it is not re-checked).
+        from .guard import precondition_hash
+        for f in sorted((pack / "preconditions").glob("*.json")) if (pack / "preconditions").exists() else []:
+            try:
+                pc = json.loads(f.read_text(encoding="utf-8"))
+                if precondition_hash(pc) != pc.get("precondition_hash"):
+                    errors.append(f"ERR_PRECONDITION_MODIFIED: {f.name}")
+                    continue
+                ok, err = verify_signature(str(pc.get("precondition_hash")), pc.get("signature") or {})
+                if not ok or (pc.get("signature") or {}).get("verify_key") != pc.get("signer"):
+                    errors.append(f"ERR_PRECONDITION_SIGNATURE: {f.name}")
+            except (OSError, ValueError, TypeError, AttributeError):
+                errors.append(f"ERR_PRECONDITION_MALFORMED: {f.name}")
         anchors = pack / "anchors.jsonl"
         rep = verify_session(pack / "session.jsonl", expected_verify_key=expected_verify_key,
                              anchors_path=anchors if anchors.exists() else None, tsa_roots=tsa_roots,

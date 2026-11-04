@@ -133,3 +133,26 @@ def test_pocketos_replay_demo_runs_offline(tmp_path):
     assert "independent re-check of the pack: VALID" in text
     events = json.loads(out_json.read_text(encoding="utf-8"))["events"]
     assert len(events) > 20
+
+
+def test_tampered_precondition_in_pack_detected(pack):
+    """Even with the manifest re-signed by an attacker, a forged precondition fails."""
+    import hashlib
+
+    from perathos.canonical import canonical_bytes
+    from perathos.signing import sign_hash
+    res, _ = pack
+    f = next((res["dir"] / "preconditions").glob("*.json"))
+    pc = json.loads(f.read_text(encoding="utf-8"))
+    pc["manual_reason"] = "edited after the fact"
+    f.write_text(json.dumps(pc), encoding="utf-8")
+    # re-sign the manifest with another key so only the precondition check can catch it
+    m = json.loads((res["dir"] / "MANIFEST.json").read_text(encoding="utf-8"))
+    from perathos.evidence import _sha256_file
+    m["files"][f"preconditions/{f.name}"] = _sha256_file(f)
+    body = {k: v for k, v in m.items() if k not in ("manifest_hash", "signature")}
+    m["manifest_hash"] = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    m["signature"] = sign_hash(m["manifest_hash"], generate_keypair()[0])
+    (res["dir"] / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
+    out = verify_evidence_pack(res["dir"])
+    assert any("ERR_PRECONDITION_MODIFIED" in e for e in out["errors"])

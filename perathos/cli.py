@@ -656,11 +656,11 @@ def cite_check(path, text, prove_flag, sign_flag, out_path):
 
 @cli.group()
 def hooks():
-    """Manage the Claude Code Stop-hook integration."""
+    """Manage the Claude Code and Cursor hook integrations."""
 
 
 _STOP_CHECK_CMD = "perathos hooks stop-check"
-_RECORD_CMD = "perathos hooks record"
+_RECORD_CMD = "perathos-hook record"  # lean entry point (perathos/hook.py)
 _RECORDER_EVENTS = ("PreToolUse", "PostToolUse", "Stop", "SessionEnd")
 _TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 
@@ -676,10 +676,15 @@ def _entry_commands(entry) -> list[str]:
     return cmds
 
 
+def _norm_cmd(c: str) -> str:
+    # `perathos hooks record` (<= 0.5) and `perathos-hook record` are the same hook.
+    return "perathos-hook record" + c[len("perathos hooks record"):] if c.startswith("perathos hooks record") else c
+
+
 def _is_perathos_entry(entry, command: str) -> bool:
     """True if the entry runs this perathos command, with or without flags."""
-    base = command.split(" --")[0]
-    return any(c == base or c.startswith(base + " ") for c in _entry_commands(entry))
+    base = _norm_cmd(command).split(" --")[0]
+    return any(_norm_cmd(c) == base or _norm_cmd(c).startswith(base + " ") for c in _entry_commands(entry))
 
 
 def _is_perathos_stop_hook(entry) -> bool:
@@ -734,7 +739,10 @@ def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: 
               help="Recorder plus the destructive-command guard (implies --recorder).")
 @click.option("--anchor", is_flag=True,
               help="Recorder plus RFC 3161 timestamps on every checkpoint (implies --recorder; needs network).")
-def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: bool):
+@click.option("--agent", type=click.Choice(["claude-code", "cursor"]), default="claude-code", show_default=True,
+              help="Which coding agent to install into. 'cursor' writes .cursor/hooks.json "
+                   "(or ~/.cursor/hooks.json with --scope user); the recorder is always on there.")
+def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: bool, agent: str):
     """Install the perathos hooks into Claude Code settings.
 
     Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
@@ -752,6 +760,9 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
 
     Neither hook ever blocks the agent.
     """
+    if agent == "cursor":
+        _install_cursor(scope, force, guard, anchor)
+        return
     if scope == "project":
         settings_path = Path(".claude") / "settings.json"
     else:
@@ -794,6 +805,32 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
     click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
 
 
+def _install_cursor(scope: str, force: bool, guard: bool, anchor: bool) -> None:
+    from .integrations import cursor
+
+    path = cursor.hooks_json_path(scope)
+    try:
+        config = cursor.install(path, guard=guard, anchor=anchor, force=force)
+    except cursor.HookConfigError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(1)
+    events = [ev for ev, entries in config["hooks"].items()
+              if any(isinstance(e, dict) and str(e.get("command", "")).startswith(cursor.RECORD_CURSOR_CMD)
+                     for e in entries)]
+    click.echo(f"Installed into {path} ({', '.join(events)}).")
+    click.echo("Flight recorder on: shell commands, MCP tool calls and file edits are recorded")
+    click.echo("to .perathos/sessions/ and sealed by a signed checkpoint when the agent stops.")
+    if guard:
+        click.echo("Guard on: destructive shell/MCP calls and reads of the signing key are denied")
+        click.echo("unless a person has run 'perathos precondition add' for that target.")
+    if anchor:
+        click.echo("Anchoring on: each checkpoint is timestamped by an outside service (freetsa.org).")
+    try:
+        load_signing_key()
+    except (FileNotFoundError, ValueError):
+        click.echo("[WARN] No signing key yet: run 'perathos keygen' or checkpoints will be unsigned.")
+
+
 def _local_verify_key() -> str | None:
     """The local public key (from 'perathos keygen'), or None if there is none."""
     try:
@@ -824,55 +861,37 @@ def hooks_record(guard: bool, anchor: bool):
 
     Always exits 0. Without --guard nothing is printed to stdout, so the
     recorder can never block or alter the agent; problems go to stderr.
+    'perathos-hook record' is the same command with a faster start-up; the
+    installer uses it.
     """
+    from .hook import run_record
+
+    run_record(sys.stdin.read(), guard=guard, anchor=anchor, out=sys.stdout, err=sys.stderr)
+
+
+@hooks.command(name="record-cursor")
+@click.option("--guard", is_flag=True,
+              help="Also deny destructive shell/MCP calls (and reads of the signing key) that have no "
+                   "signed safety precondition.")
+@click.option("--anchor", is_flag=True,
+              help="Also send each signed checkpoint to an RFC 3161 timestamp service (needs perathos[anchor]).")
+def hooks_record_cursor(guard: bool, anchor: bool):
+    """Run as a Cursor hook (reads the hook payload from stdin).
+
+    Same receipts as 'hooks record', from Cursor's events: before/after
+    shell and MCP execution, afterFileEdit, and a signed checkpoint on stop
+    and sessionEnd. Prints Cursor's JSON response: allow, or deny with a
+    message when --guard blocks the call. Always exits 0.
+    """
+    from .integrations.cursor import run_hook
+
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except json.JSONDecodeError:
-        return
-    if not isinstance(payload, dict):
-        return
-    event = payload.get("hook_event_name")
-
-    decision = None
-    if guard and event == "PreToolUse":
-        try:
-            from .guard import decide
-
-            decision = decide(str(payload.get("tool_name") or ""), payload.get("tool_input"),
-                              payload.get("cwd") or ".", trusted_key=_local_verify_key())
-        except Exception as exc:  # noqa: BLE001 -- a broken guard must not brick the agent
-            click.echo(f"perathos guard: {type(exc).__name__}: {exc}", err=True)
-
-    receipt = None
-    try:
-        from .recorder import record_hook_event
-
-        sk_hex = None
-        if event in ("Stop", "SubagentStop", "SessionEnd"):
-            try:
-                sk_hex = load_signing_key()
-            except (FileNotFoundError, ValueError):
-                sk_hex = None
-        receipt = record_hook_event(payload, signing_key_hex=sk_hex,
-                                    guard_decision=decision.receipt_field() if decision else None)
-    except Exception as exc:  # noqa: BLE001 -- a recorder must never break the session
-        click.echo(f"perathos recorder: {type(exc).__name__}: {exc}", err=True)
-
-    # The deny is emitted even if recording failed: the guard fails closed.
-    if decision is not None and decision.decision == "deny":
-        click.echo(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": decision.reason,
-        }}))
-
-    if anchor and receipt and receipt.get("kind") == "checkpoint" and receipt.get("signature"):
-        try:
-            from .anchor import anchor_checkpoint, default_anchors_path
-
-            anchor_checkpoint(receipt, default_anchors_path(receipt["session_id"]), timeout=8)
-        except Exception as exc:  # noqa: BLE001 -- the timestamp service may be down; never fail the turn
-            click.echo(f"perathos anchor: {type(exc).__name__}: {exc} (run 'perathos session anchor' later)", err=True)
+        raw = sys.stdin.read()
+    except Exception:  # noqa: BLE001 -- unreadable stdin must not crash the hook
+        raw = ""
+    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=load_signing_key,
+                        verify_key=_local_verify_key, warn=lambda m: click.echo(m, err=True))
+    click.echo(json.dumps(response))
 
 
 @hooks.command(name="stop-check")
@@ -1285,6 +1304,43 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_js
         for err in res["errors"]:
             click.echo(f"[ERROR] {err}", err=True)
     sys.exit(0 if res["valid"] else 1)
+
+
+@cli.command(name="mcp-proxy", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+@click.option("--name", required=True, help="Short server name; tools are recorded as mcp__<name>__<tool>.")
+@click.option("--session", "session_id", default=None, help="Session id (default: mcp-<name>-<UTC timestamp>).")
+@click.option("--project", "project_dir", type=click.Path(file_okay=False), default=None,
+              help="Where .perathos/ lives (default: $PERATHOS_PROJECT_DIR or the current directory).")
+@click.option("--guard", is_flag=True, help="Block destructive tool calls without a signed precondition.")
+@click.option("--anchor", is_flag=True, help="RFC 3161-timestamp each checkpoint (needs perathos[anchor]).")
+@click.option("--seal-every", default=20, show_default=True, type=click.IntRange(1, 10_000),
+              help="Write a signed checkpoint after this many tool calls (and always at the end).")
+@click.argument("server_cmd", nargs=-1, required=True, type=click.UNPROCESSED)
+def mcp_proxy_cmd(name, session_id, project_dir, guard, anchor, seal_every, server_cmd):
+    """Record (and optionally guard) every tool call to an MCP server.
+
+    Use it in any MCP client's server configuration in place of the server
+    command, with the real command after '--':
+
+    \b
+        perathos mcp-proxy --name postgres --guard -- npx -y @modelcontextprotocol/server-postgres <url>
+
+    Messages are relayed unchanged; tool calls become receipts in
+    <project>/.perathos/sessions/<session>.jsonl, sealed by signed
+    checkpoints. Verify with 'perathos session verify <session>'.
+    """
+    from .mcp_proxy import McpRecorder, env_project_dir, run_proxy
+
+    try:
+        sk_hex = load_signing_key()
+    except (FileNotFoundError, ValueError):
+        sk_hex = None
+        click.echo("perathos mcp-proxy: no signing key, checkpoints will be unsigned (run 'perathos keygen')", err=True)
+    project = Path(project_dir) if project_dir else env_project_dir()
+    rec = McpRecorder(name=name, project=project, session_id=session_id, guard=guard, signing_key_hex=sk_hex,
+                      trusted_key=_local_verify_key(), anchor=anchor, seal_every=seal_every)
+    click.echo(f"perathos mcp-proxy: recording session {rec.session_id} to {rec.log}", err=True)
+    sys.exit(run_proxy(list(server_cmd), rec))
 
 
 def main():

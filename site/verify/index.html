@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Perathos evidence verifier</title>
+<meta name="description" content="Check a Perathos evidence pack in your browser. Nothing is uploaded.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="../">Perathos</a>
+    <nav><a href="../">Home</a><a href="https://github.com/perathos-protocol/perathos">GitHub</a></nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Evidence verifier</h1>
+  <p class="lead">
+    Drop a Perathos evidence pack (.zip) to check, in this browser, that every file matches the signed manifest,
+    that the receipt chain is unbroken and every checkpoint signature is valid, and that the head witness and
+    timestamp anchors line up with the log.
+    It does not verify the RFC 3161 timestamp signatures themselves (use <code>perathos evidence verify</code> for that),
+    and it cannot tell you which model ran or whether the signer key really belongs to who you think: confirm the key separately.
+  </p>
+  <p class="small muted">Nothing is uploaded: the pack is read and checked locally, and this page makes no network requests except to load itself, JSZip and (only on browsers without built-in Ed25519) a signature library.</p>
+
+  <section class="panel" aria-label="Load a pack">
+    <label id="drop" class="drop" for="file">
+      <input id="file" type="file" accept=".zip,application/zip">
+      <span class="drop-title">Drop an evidence-pack .zip here</span>
+      <span class="muted small">or click to choose a file</span>
+    </label>
+    <div class="row">
+      <button id="sample" type="button" class="btn">Try the sample</button>
+      <span class="muted small">Loads the PocketOS replay pack from this site.</span>
+    </div>
+    <div class="field">
+      <label for="key">Expected signer key <span class="muted">(optional, 64 hex characters)</span></label>
+      <input id="key" type="text" inputmode="text" autocomplete="off" spellcheck="false"
+             placeholder="e.g. d53f11ff38959d472a2e619b346340b44a79866fb8650d96f22ada467f524707">
+      <span class="muted small">If set, a pack signed by any other key fails.</span>
+    </div>
+  </section>
+
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <section id="result" hidden></section>
+
+  <section class="limits">
+    <h2>What a VERIFIED result means</h2>
+    <ul>
+      <li>The holder of the signer key sealed exactly these receipts, and nothing up to the last checkpoint was edited, removed, inserted or reordered since.</li>
+      <li>It proves which key sealed the record, not which model ran (the model name is self-reported).</li>
+      <li>Event times come from the local clock; only anchored checkpoints have an independent time, and this page checks the anchors' link to the log, not the timestamp authority's signature.</li>
+      <li>Tool arguments and outputs are not in the pack, only their SHA-256 hashes.</li>
+      <li>The guard is a seatbelt, not a sandbox: it matches command patterns.</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="wrap foot small muted">
+  Receipt format: <a href="https://github.com/perathos-protocol/perathos/blob/main/docs/specs/RECEIPT_V1.md">RECEIPT_V1</a>.
+  No cookies, no analytics.
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+        integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="verify.js"></script>
+</body>
+</html>

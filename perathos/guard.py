@@ -35,8 +35,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -130,10 +128,34 @@ def evaluate(tool_name: str, tool_input: Any) -> Match | None:
             r = SELF_AUTH_RULES[1]
             return Match(r.rule_id, r.description, target, self_auth=True)
         return None
-    if tool_name.startswith("mcp__") and _DESTRUCTIVE_TOOL_NAME.search(tool_name.split("__")[-1]):
+    if tool_name.startswith("mcp__"):
         subject = tool_name + " " + json.dumps(tool_input, sort_keys=True, default=str)[:500]
-        return Match("mcp.destructive-tool", "MCP tool whose name says it destroys data", subject)
+        if _DESTRUCTIVE_TOOL_NAME.search(tool_name.split("__")[-1]):
+            return Match("mcp.destructive-tool", "MCP tool whose name says it destroys data", subject)
+        # A generic tool (e.g. a database server's `query` / `execute_sql`, or a
+        # shell server's `run`) can still carry a destructive command in its
+        # arguments: scan every string argument with the shell/SQL rules.
+        for text in _string_values(tool_input):
+            for rule in SELF_AUTH_RULES:
+                if rule.pattern.search(text):
+                    return Match(rule.rule_id, rule.description, subject, self_auth=True)
+            for rule in SHELL_RULES:
+                if rule.pattern.search(text):
+                    return Match(rule.rule_id, f"{rule.description} inside an MCP tool call", subject)
     return None
+
+
+def _string_values(value: Any, _depth: int = 0) -> list[str]:
+    """All string leaves of a JSON-like value (bounded depth)."""
+    if _depth > 8:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _string_values(v, _depth + 1)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _string_values(v, _depth + 1)]
+    return []
 
 
 # --------------------------------------------------------------------------- #
@@ -168,6 +190,9 @@ def create_precondition(
     Returns (precondition or None, check_result). ``check_result`` has
     ``exit_code`` and ``output`` (combined stdout/stderr) for display.
     """
+    import subprocess  # imported here: the hook path never needs it
+    import uuid
+
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     from .signing import sign_hash

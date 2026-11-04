@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "perathos"
-version = "0.5.0"
+version = "1.0.0"
 description = "Open-source flight recorder for coding agents: signed, timestamped tool-call receipts, a destructive-command guard and verifiable evidence packs"
 requires-python = ">=3.11"
 dependencies = ["click>=8.0", "cryptography>=42.0"]
@@ -36,6 +36,7 @@ anchor = ["rfc3161-client>=1.0.9,<2"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
+perathos-hook = "perathos.hook:main"
 perathos-mcp = "perathos.mcp_server:main"
 
 [tool.pytest.ini_options]

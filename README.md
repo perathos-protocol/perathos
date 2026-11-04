@@ -5,13 +5,17 @@
 ```bash
 pip install 'perathos[anchor]'
 perathos keygen
-perathos hooks install --guard --anchor     # Claude Code: recorder + guard + timestamps
+perathos hooks install --guard --anchor                  # Claude Code
+perathos hooks install --agent cursor --guard --anchor   # Cursor
+perathos mcp-proxy --name db --guard -- <your MCP server command>   # any MCP client
 ```
+
+Works with **Claude Code** and **Cursor** through their hooks, and with **any MCP client** (Claude Desktop, Windsurf, custom agents) through a recording proxy. Five-minute walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 - **Recorder:** a hash-chained receipt for every tool call (hashes of arguments and results, never the content), sealed each turn by an Ed25519-signed checkpoint. `perathos session verify` catches edited, deleted, inserted or reordered receipts and forged signatures.
 - **Independent time:** each checkpoint is timestamped by an RFC 3161 authority, so the log cannot be back-dated and a cut-off ending is detectable.
 - **Guard:** `rm -rf`, `DROP TABLE`, `terraform destroy`, cloud volume and backup deletes and similar are blocked unless a person has run `perathos precondition add --check "<backup restores>"`. The agent cannot approve itself.
-- **Evidence pack:** `perathos session export` produces a signed bundle with a one-page report that an auditor, insurer or incident reviewer re-checks with `perathos evidence verify`.
+- **Evidence pack:** `perathos session export` produces a signed bundle with a one-page report that an auditor, insurer or incident reviewer re-checks with `perathos evidence verify`, or by dropping the zip into the [browser verifier](https://perathos-protocol.github.io/perathos/verify/) (nothing is uploaded). Guide for reviewers: [docs/FOR_AUDITORS.md](docs/FOR_AUDITORS.md).
 
 **See it:** `python examples/pocketos_replay/replay.py` replays the April 2026 incident where a coding agent deleted a production database volume and its backups: once without Perathos, once with it. [Details below](#flight-recorder-for-coding-agents).
 
@@ -189,7 +193,8 @@ different key (with `--verify-key` or `--trust-jwks`), and truncation back
 before the last witnessed checkpoint.
 
 The `model` field is read from the transcript and is self-reported. Each
-hook adds roughly 0.25 s. Format: [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
+hook adds a short Python start-up, about 0.35 s per hook on a typical Windows laptop
+(writing the receipt itself takes about 20 ms; Linux and macOS start faster). Format: [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
 
 ### Independent timestamps
 
@@ -239,6 +244,78 @@ It is a seatbelt against accidents like an agent deleting a production
 database and its backups, not a sandbox against a deliberately hostile
 agent: a command can be disguised past any pattern, and the signing key
 lives on the same machine.
+
+### Cursor
+
+```bash
+perathos keygen
+perathos hooks install --agent cursor --guard --anchor   # writes .cursor/hooks.json
+# --scope user writes ~/.cursor/hooks.json instead; --force reinstalls
+```
+
+This adds `perathos hooks record-cursor` to Cursor's
+[hooks](https://cursor.com/docs/agent/hooks) and keeps any other hooks
+already in the file. The receipts are the same `perathos.receipt/v1`
+chain, tagged `"agent": "cursor"`, in
+`<workspace root>/.perathos/sessions/<conversation_id>.jsonl`, so
+`session verify`, `session export` and `session anchor` work unchanged.
+
+| Cursor event | Receipt |
+|---|---|
+| `beforeShellExecution` | `pre`, tool `Bash`, hash of the command; guarded |
+| `afterShellExecution` | `post`, hash of the terminal output |
+| `beforeMCPExecution` | `pre`, tool `mcp__<server>__<tool>`, hash of the parameters; guarded |
+| `afterMCPExecution` | `post`, hash of `result_json` |
+| `afterFileEdit` | `pre` + `post` for tool `Edit` (hash of the path and edits) |
+| `beforeReadFile` (`--guard` only) | nothing for normal reads; a `pre` with the guard decision when the agent tries to read the signing key |
+| `stop`, `sessionEnd` | signed `checkpoint` (timestamped with `--anchor`) |
+
+A guard deny is returned as Cursor's `{"permission": "deny", "user_message",
+"agent_message"}`; the hook always exits 0.
+
+Differences from Claude Code:
+
+* Cursor's shell, MCP and file-edit hooks are the ones recorded. Its other
+  built-in tools (read, grep, delete, task) are not; Cursor's generic
+  `preToolUse`/`postToolUse` hooks are not used yet.
+* Cursor reports file edits only after they happen, so an edit's `pre` and
+  `post` are written together and the guard cannot stop an edit.
+* The `model` in a checkpoint is the `model` field Cursor sends (self-reported).
+* The Stop-hook summary check (`hooks stop-check`) is Claude Code only.
+* If `perathos` is not on the PATH Cursor runs hooks with, the hook fails
+  and Cursor lets the action through. Add `"failClosed": true` to the
+  `beforeShellExecution`/`beforeMCPExecution` entries if a broken guard
+  should block instead.
+
+### Any MCP client: the recording proxy
+
+Put `perathos mcp-proxy` in front of an MCP server in your client's configuration, with the
+real server command after `--`. Messages pass through unchanged; every `tools/call` becomes a
+receipt, and with `--guard` destructive calls are refused with a normal tool error, including
+SQL inside generic tools (`execute_sql` with `DROP TABLE`).
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "perathos",
+      "args": ["mcp-proxy", "--name", "postgres", "--guard", "--anchor", "--",
+               "npx", "-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/app"]
+    }
+  }
+}
+```
+
+Logs go to `./.perathos/sessions/` (or `--project DIR`, or `$PERATHOS_PROJECT_DIR`), sealed
+every `--seal-every` calls (default 20) and when the session ends. Verify them with
+`perathos session verify` like any other session.
+
+### Verify in a browser
+
+[https://perathos-protocol.github.io/perathos/verify/](https://perathos-protocol.github.io/perathos/verify/) checks an evidence pack entirely in the browser: the signed manifest,
+every file, the receipt chain, checkpoint and precondition signatures, and that each timestamp
+matches its checkpoint. RFC 3161 token signatures are checked by the CLI
+(`perathos evidence verify`); the page says so.
 
 ## MCP server
 

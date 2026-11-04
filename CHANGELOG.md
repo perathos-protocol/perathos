@@ -5,6 +5,53 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-04
+
+The flight recorder is feature-complete: Claude Code, Cursor and any MCP
+client; tamper-evident receipts, signed checkpoints, independent timestamps,
+a destructive-command guard, evidence packs, and two independent verifiers
+(CLI and browser).
+
+### Added: any MCP client, via a recording proxy
+- `perathos mcp-proxy --name X [--guard] [--anchor] [--seal-every N] -- <server cmd>`
+  relays MCP stdio unchanged and records every `tools/call` as `pre`/`post`
+  receipts (`mcp__<name>__<tool>`); guarded calls get an `isError` tool
+  result instead of reaching the server; signed checkpoints every N calls and
+  at the end. Tested with the official MCP client against a real MCP server.
+- The guard now scans the string arguments of generically named MCP tools
+  with the shell/SQL rules (`execute_sql` carrying `DROP TABLE` is blocked).
+
+### Added: browser verifier and project site
+- `site/verify/`: verifies an evidence pack entirely in the browser (signed
+  manifest, files, receipt chain, checkpoint and precondition signatures,
+  anchor/checkpoint consistency). RFC 3161 token signatures remain CLI-only,
+  and the page says so. `site/` deploys to GitHub Pages.
+- `perathos evidence verify` now also checks each precondition in a pack is
+  unmodified and signed, matching the browser verifier.
+
+### Changed
+- Package imports are lazy (PEP 562); the public API is unchanged.
+- New lean `perathos-hook record` entry point; `perathos hooks install` uses
+  it and upgrades earlier `perathos hooks record` entries on `--force`.
+- CI runs on Linux, Windows and macOS with Python 3.11 to 3.13.
+- Docs: `docs/QUICKSTART.md`, `docs/FOR_AUDITORS.md`; README covers Cursor,
+  the MCP proxy and the browser verifier; the per-hook overhead is stated as
+  measured (about 0.35 s on a Windows laptop, ~20 ms of it recording).
+
+### Added: Cursor support for the flight recorder and guard
+- `perathos hooks install --agent cursor [--guard] [--anchor] [--scope project|user]`
+  writes Cursor's `.cursor/hooks.json` (or `~/.cursor/hooks.json`), keeping
+  unrelated hooks; `--force` replaces earlier perathos entries. The default
+  `--agent claude-code` is unchanged.
+- `perathos hooks record-cursor [--guard] [--anchor]` (new module
+  `perathos/integrations/cursor.py`) records `beforeShellExecution`,
+  `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution` and
+  `afterFileEdit` as `pre`/`post` receipts, and seals the chain with a
+  signed checkpoint on `stop` and `sessionEnd`. With `--guard`, destructive
+  shell commands and MCP tools, and reads of the signing key
+  (`beforeReadFile`), are denied in Cursor's `permission` format unless a
+  signed precondition covers them; the deny holds even if recording fails.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added: evidence packs and the PocketOS replay demo
