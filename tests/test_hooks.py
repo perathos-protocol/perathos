@@ -182,10 +182,10 @@ def test_hooks_install_recorder(tmp_path, monkeypatch):
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
     for event in ("PreToolUse", "PostToolUse"):
         assert hooks[event] == [{"matcher": "*", "hooks": [
-            {"type": "command", "command": "perathos hooks record", "timeout": 10}]}]
-    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "perathos hooks record"
+            {"type": "command", "command": "perathos-hook record", "timeout": 10}]}]
+    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "perathos-hook record"
     stop_cmds = [e["hooks"][0]["command"] for e in hooks["Stop"]]
-    assert stop_cmds == ["perathos hooks stop-check", "perathos hooks record"]
+    assert stop_cmds == ["perathos hooks stop-check", "perathos-hook record"]
     # reinstall without --force is refused, with --force it does not duplicate
     assert CliRunner().invoke(cli, ["hooks", "install", "--recorder"]).exit_code == 1
     assert CliRunner().invoke(cli, ["hooks", "install", "--recorder", "--force"]).exit_code == 0
@@ -285,3 +285,32 @@ def test_stop_hook_grounds_against_real_transcript():
     })
     assert result["sources_count"] == 2
     assert result["verdict"] != "NOT_APPLICABLE"
+
+
+def test_reinstall_upgrades_old_recorder_command(tmp_path, monkeypatch):
+    """Installs from <= 0.5 used `perathos hooks record`; --force replaces them, no duplicates."""
+    monkeypatch.chdir(tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    old = {"hooks": [{"type": "command", "command": "perathos hooks record --guard", "timeout": 10}]}
+    settings_path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", **old}]}}), encoding="utf-8")
+    assert CliRunner().invoke(cli, ["hooks", "install", "--guard"]).exit_code == 1  # needs --force
+    assert CliRunner().invoke(cli, ["hooks", "install", "--guard", "--force"]).exit_code == 0
+    pre = json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    assert [e["hooks"][0]["command"] for e in pre] == ["perathos-hook record --guard"]
+
+
+def test_lean_hook_entry_matches_cli(tmp_path):
+    """`perathos-hook record` and `perathos hooks record` write identical receipt shapes."""
+    import io
+
+    from perathos.hook import main, run_record
+    payload = {"hook_event_name": "PreToolUse", "session_id": "lean", "cwd": str(tmp_path),
+               "tool_name": "Bash", "tool_use_id": "x1", "tool_input": {"command": "ls"}}
+    out, err = io.StringIO(), io.StringIO()
+    run_record(json.dumps(payload), guard=True, anchor=False, out=out, err=err)
+    assert out.getvalue() == ""
+    log = tmp_path / ".perathos" / "sessions" / "lean.jsonl"
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["kind"] == "pre" and rec["tool"] == "Bash"
+    assert main(["bogus"]) == 0  # usage errors never fail an agent turn

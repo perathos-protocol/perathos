@@ -11,52 +11,46 @@ Example:
     >>> valid, err = verify(bundle)
     >>> print(valid)  # True
 """
-from .bundle import create_bundle, sign_bundle, verify_bundle
-from .calibration import (
-    BinningCalibrator,
-    TemperatureCalibrator,
-    expected_calibration_error,
-)
-from .engines import (
-    HallucinationDetector,
-    SchemaValidator,
-    SymbolicSolver,
-    TemporalConsistency,
-    all_engines,
-)
-from .inspector import inspect_bundle
-from .keytrust import (
-    KmsSigner,
-    LocalSigner,
-    Signer,
-    TrustStore,
-    kid_for,
-)
-from .pipeline import (
-    MultiVerifierPipeline,
-    VerificationResult,
-    verify_output,
-)
-from .signing import generate_keypair, verify_signature
-from .verdict import VerdictRecord
-from .verifiers import (
-    ClaimEntailmentVerifier,
-    CrossExaminer,
-    VerificationContext,
-    Verifier,
-    default_verifiers,
-)
+from importlib import import_module as _import_module
+
+# Public names are loaded on first use (PEP 562) so that light entry points,
+# such as the flight-recorder hooks that run on every agent tool call, do not
+# pay for importing the verifier engines. `from perathos import X` and
+# `perathos.X` behave exactly as before.
+_LAZY = {
+    "create_bundle": ".bundle", "sign_bundle": ".bundle", "verify_bundle": ".bundle",
+    "BinningCalibrator": ".calibration", "TemperatureCalibrator": ".calibration",
+    "expected_calibration_error": ".calibration",
+    "HallucinationDetector": ".engines", "SchemaValidator": ".engines", "SymbolicSolver": ".engines",
+    "TemporalConsistency": ".engines", "all_engines": ".engines",
+    "inspect_bundle": ".inspector",
+    "KmsSigner": ".keytrust", "LocalSigner": ".keytrust", "Signer": ".keytrust", "TrustStore": ".keytrust",
+    "kid_for": ".keytrust",
+    "MultiVerifierPipeline": ".pipeline", "VerificationResult": ".pipeline", "verify_output": ".pipeline",
+    "generate_keypair": ".signing", "verify_signature": ".signing",
+    "VerdictRecord": ".verdict",
+    "ClaimEntailmentVerifier": ".verifiers", "CrossExaminer": ".verifiers", "VerificationContext": ".verifiers",
+    "Verifier": ".verifiers", "default_verifiers": ".verifiers",
+}
+# Short public aliases: the SAME function objects as the long names.
+_ALIASES = {"prove": "create_bundle", "sign": "sign_bundle", "verify": "verify_bundle", "inspect": "inspect_bundle"}
+
+
+def __getattr__(name: str):
+    target = _ALIASES.get(name, name)
+    module = _LAZY.get(target)
+    if module is None:
+        raise AttributeError(f"module 'perathos' has no attribute {name!r}")
+    value = getattr(_import_module(module, __name__), target)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY) | set(_ALIASES))
+
 
 __version__ = "0.5.0"
-
-# Public API aliases for library users. These are the SAME function objects as
-# create_bundle/sign_bundle/verify_bundle/inspect_bundle — deliberately not
-# reassigning __doc__ here, because doing so would clobber the underlying
-# functions' own docstrings (an alias shares the object, not a copy).
-prove = create_bundle
-sign = sign_bundle
-verify = verify_bundle
-inspect = inspect_bundle
 
 __all__ = [
     "prove",
