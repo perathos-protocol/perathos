@@ -11,7 +11,7 @@ dependencies = ["click>=8.0", "cryptography>=42.0"]
 
 [project.optional-dependencies]
 # jsonschema is in dev so CI exercises the SchemaValidator engine.
-dev = ["pytest>=8.0", "ruff>=0.4", "jsonschema>=4.21"]
+dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21"]
 # SchemaValidator engine (real JSON Schema validation; SSRF-safe).
 schema = ["jsonschema>=4.21"]
 # Autonomous-agent harness deps — version-bounded (away from yanked/compromised
@@ -29,7 +29,7 @@ train = ["transformers>=4.40", "torch>=2.0", "accelerate>=1.1.0", "datasets>=2.0
 # MCP server (perathos_verify_answer / perathos_verify_bundle tools) for any
 # MCP client (Claude Code, Claude Desktop, etc.). Not pulled by a bare
 # `pip install perathos` since most callers never run the server.
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]
 
 [project.scripts]
 perathos = "perathos.cli:main"

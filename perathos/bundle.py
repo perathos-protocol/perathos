@@ -241,7 +241,8 @@ def sign_bundle(bundle: dict, signing_key_hex: str) -> dict:
     return {**bundle, "provider_signature": sig}
 
 
-def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_store=None) -> tuple[bool, str]:
+def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_store=None,
+                  *, require_signed: bool = False) -> tuple[bool, str]:
     """Recompute all hashes from stored data and check they match.
 
     Verifies the integrity chain: _trace → trace_hash → integrity_hash → bundle_id,
@@ -257,6 +258,11 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
             pins provenance: the signature itself only proves *some* key signed the
             hash, and verify_key lives outside integrity_hash, so without pinning an
             attacker can strip the signature and re-sign with their own key.
+        require_signed: If True, an unsigned bundle fails with ERR_UNSIGNED.
+            An unsigned bundle proves only internal hash consistency: anyone
+            can produce one, so it says nothing about who issued it. The CLI
+            and MCP verifiers set this by default; the library default stays
+            False for backward compatibility.
 
     Returns:
         A tuple (valid, error_code) where:
@@ -327,6 +333,8 @@ def verify_bundle(bundle: dict, expected_verify_key: str | None = None, trust_st
         # pass verification if that signature does not validate — otherwise the
         # public verify() reports a forged signature as valid.
         sig = bundle.get("provider_signature")
+        if sig is None and require_signed:
+            return False, "ERR_UNSIGNED"
         if sig is not None:
             from .signing import verify_signature  # local import avoids a cycle
             sig_valid, sig_err = verify_signature(bundle["integrity_hash"], sig)

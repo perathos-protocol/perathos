@@ -11,9 +11,11 @@ on:
         description: "Dry run — print plan but don't commit"
         required: false
         default: "false"
-  schedule:
-    # Every 2 hours
-    - cron: "0 */2 * * *"
+  # Schedule disabled 2026-11-04: the cycle had produced no commits since July
+  # and was spending Actions minutes every 2 hours. Run manually via
+  # workflow_dispatch if needed.
+  # schedule:
+  #   - cron: "0 */2 * * *"
 
 permissions:
   contents: write

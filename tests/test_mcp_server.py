@@ -68,8 +68,16 @@ async def test_verify_bundle_round_trips_a_bundle_from_verify_answer():
         )
         bundle_json = answer_result.content[0].text
 
+        # No local signing key in the test env, so the bundle is unsigned:
+        # rejected by default, accepted only with an explicit opt-out.
         verify_result = await client.call_tool(
             "perathos_verify_bundle", {"params": {"bundle_json": bundle_json}}
+        )
+        verdict = json.loads(verify_result.content[0].text)
+        assert verdict["valid"] is False and verdict["error_code"] == "ERR_UNSIGNED"
+
+        verify_result = await client.call_tool(
+            "perathos_verify_bundle", {"params": {"bundle_json": bundle_json, "allow_unsigned": True}}
         )
         verdict = json.loads(verify_result.content[0].text)
         assert verdict == {"valid": True, "error_code": "", "explanation": ""}

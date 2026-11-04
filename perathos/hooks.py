@@ -56,18 +56,48 @@ def extract_transcript_sources(transcript_path: str, *, max_chars: int = _MAX_SO
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(entry, dict) or entry.get("type") != "tool_result":
+        if not isinstance(entry, dict):
             continue
-        content = entry.get("content")
-        if isinstance(content, str):
-            sources.append(content[:max_chars])
-        elif isinstance(content, list):
-            # Some transcript entries nest content as a list of blocks
-            # (mirroring the Messages API tool_result shape).
-            for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    sources.append(block["text"][:max_chars])
+        for block in _tool_result_blocks(entry):
+            sources.extend(_block_texts(block.get("content"), max_chars))
     return sources
+
+
+def _tool_result_blocks(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the tool_result blocks carried by one transcript line.
+
+    Real Claude Code transcripts record a tool result as a ``user`` entry
+    whose ``message.content`` is a list of Messages-API blocks, one or more of
+    them ``{"type": "tool_result", "content": ...}``. A flat top-level
+    ``{"type": "tool_result", "content": ...}`` line is also accepted for
+    older or hand-built transcripts.
+    """
+    if entry.get("type") == "tool_result":
+        return [entry]
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+
+def _block_texts(content: Any, max_chars: int) -> list[str]:
+    """Pull the text out of a tool_result's content (a string or a block list).
+
+    Non-text blocks (images, tool references) carry no groundable text and
+    are skipped rather than stringified.
+    """
+    if isinstance(content, str):
+        return [content[:max_chars]] if content else []
+    texts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type", "text") == "text" and isinstance(block.get("text"), str):
+                if block["text"]:
+                    texts.append(block["text"][:max_chars])
+    return texts
 
 
 def check_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:

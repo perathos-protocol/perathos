@@ -144,7 +144,7 @@ def test_prove_with_evidence_runs_verification(home):
     bundle = json.loads(Path(out_file).read_text(encoding="utf-8"))
     assert "verification" in bundle
     # the bound verification survives offline verification
-    verify = runner.invoke(cli, ["verify", "--file", out_file])
+    verify = runner.invoke(cli, ["verify", "--file", out_file, "--allow-unsigned"])
     assert verify.exit_code == 0, verify.output
 
 
@@ -169,16 +169,34 @@ def test_doctor_runs(home):
     assert "python" in r.output
 
 
-def test_require_signed_policy(home):
+def test_unsigned_bundle_fails_by_default(home):
+    """Anyone can forge an unsigned bundle, so verify must not pass it silently."""
     runner = CliRunner()
     out_file = str(home / "u.json")
     runner.invoke(cli, ["prove", "x", "--output-file", out_file, "--quiet"])
-    # unsigned bundle is valid but fails the signed policy gate
-    ok = runner.invoke(cli, ["verify", "--file", out_file])
-    assert ok.exit_code == 0
-    policy = runner.invoke(cli, ["verify", "--file", out_file, "--require-signed"])
-    assert policy.exit_code == 1
-    assert "POLICY" in policy.output
+    default = runner.invoke(cli, ["verify", "--file", out_file])
+    assert default.exit_code == 1
+    assert "UNSIGNED" in default.output
+    # legacy flag still accepted and still rejects
+    legacy = runner.invoke(cli, ["verify", "--file", out_file, "--require-signed"])
+    assert legacy.exit_code == 1
+    # explicit opt-out for local consistency checks
+    allowed = runner.invoke(cli, ["verify", "--file", out_file, "--allow-unsigned"])
+    assert allowed.exit_code == 0, allowed.output
+    assert "VALID_UNSIGNED" in allowed.output
+    # conflicting flags are a usage error
+    both = runner.invoke(cli, ["verify", "--file", out_file, "--require-signed", "--allow-unsigned"])
+    assert both.exit_code == 2
+
+
+def test_forged_unsigned_bundle_rejected_by_default(home):
+    """A hand-built, self-consistent bundle with no signature must not verify."""
+    from perathos import create_bundle
+    forged = create_bundle("transfer approved", "Approved: $1,000,000 to account 42")
+    out_file = home / "forged.json"
+    out_file.write_text(json.dumps(forged), encoding="utf-8")
+    r = CliRunner().invoke(cli, ["verify", "--file", str(out_file)])
+    assert r.exit_code == 1
 
 
 def test_require_pass_policy(home):
@@ -194,7 +212,7 @@ def test_require_pass_policy(home):
     ])
     bundle = json.loads(Path(out_file).read_text(encoding="utf-8"))
     verdict = bundle["verification"]["aggregate"]["verdict"]
-    r = runner.invoke(cli, ["verify", "--file", out_file, "--require-pass"])
+    r = runner.invoke(cli, ["verify", "--file", out_file, "--require-pass", "--allow-unsigned"])
     if verdict == "PASS":
         assert r.exit_code == 0
     else:

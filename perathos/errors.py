@@ -13,6 +13,7 @@ _ERROR_EXPLANATIONS = {
     "ERR_BAD_SIGNATURE": "Cryptographic signature is invalid. The bundle or signature was modified after signing, or the signing key is incorrect. Next step: Verify the provider's public key and ask them to confirm the bundle hasn't been modified.",
     "ERR_MISSING_FIELD": "Bundle is missing a required field. The bundle structure is invalid or corrupted. Next step: Check the bundle file with 'python -m json.tool <bundle_path>' to see which fields are present.",
     "ERR_NO_SIGNING_KEY": "Signing key not found. To generate a keypair, run: perathos keygen. Then sign your bundle with: perathos prove '<output_text>' --sign",
+    "ERR_UNSIGNED": "The bundle has no signature. Its hashes are internally consistent, but anyone can produce such a bundle, so it does not show who issued it. Next step: Ask the issuer for a signed bundle, or pass --allow-unsigned if you only need a local consistency check.",
     "ERR_UNEXPECTED_SIGNER": "The bundle's signature is valid but was made by a different key than the one you pinned with --verify-key. Next step: Confirm the expected signer's public key; this bundle was signed by someone else.",
     "ERR_UNTRUSTED_SIGNER": "The bundle's signature is valid but the signing key is not in the trust set you provided (--trust-jwks). Next step: Obtain the issuer's published JWKS and confirm the key is one you trust.",
     "ERR_VERDICT_MISMATCH": "The bundle's top-level verdict does not match its bound aggregate verdict — the convenience field was tampered with. Next step: Do not trust this bundle.",
