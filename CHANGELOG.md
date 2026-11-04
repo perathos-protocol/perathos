@@ -5,6 +5,29 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: flight recorder for coding agents
+- `perathos hooks install --recorder` installs PreToolUse, PostToolUse, Stop
+  and SessionEnd hooks running `perathos hooks record`. Every tool call is
+  written to `.perathos/sessions/<session_id>.jsonl` as hash-chained receipts
+  (hashes of arguments and results only, never content), and every turn is
+  sealed by an Ed25519-signed checkpoint. A `.head.json` witness records the
+  latest checkpoint.
+- `perathos session list | show | verify`. `verify` detects edited, inserted,
+  deleted and reordered receipts, stripped or forged signatures, re-signing
+  by another key (with `--verify-key` / `--trust-jwks`) and truncation before
+  the witnessed checkpoint. Unsigned checkpoints fail unless
+  `--allow-unsigned`.
+- Library: `perathos.recorder.record_hook_event`, `verify_session`.
+- Receipt format spec: `docs/specs/RECEIPT_V1.md`.
+
+### Fixed
+- `perathos hooks install` wrote the Stop hook in a flat shape that Claude
+  Code does not run, so the Stop hook never fired for anyone who installed it.
+  It now writes the nested `{"hooks": [{"type": "command", ...}]}` shape and
+  migrates old flat entries on reinstall.
+- README showed `perathos hooks install claude-code`, which errors (the
+  command takes no argument).
+
 ### Changed (breaking for CLI and MCP callers)
 - `perathos verify` now **fails on unsigned bundles by default** (exit 1,
   `ERR_UNSIGNED`). An unsigned bundle only proves its hashes are internally

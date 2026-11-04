@@ -659,31 +659,32 @@ def hooks():
     """Manage the Claude Code Stop-hook integration."""
 
 
+_STOP_CHECK_CMD = "perathos hooks stop-check"
+_RECORD_CMD = "perathos hooks record"
+_RECORDER_EVENTS = ("PreToolUse", "PostToolUse", "Stop", "SessionEnd")
+_TOOL_EVENTS = ("PreToolUse", "PostToolUse")
+
+
+def _entry_commands(entry) -> list[str]:
+    """Commands in one settings entry, in either the nested or the old flat shape."""
+    if not isinstance(entry, dict):
+        return []
+    cmds = [str(entry.get("command", ""))] if "command" in entry else []
+    for h in entry.get("hooks") or []:
+        if isinstance(h, dict):
+            cmds.append(str(h.get("command", "")))
+    return cmds
+
+
+def _is_perathos_entry(entry, command: str) -> bool:
+    return any(c.startswith(command) for c in _entry_commands(entry))
+
+
 def _is_perathos_stop_hook(entry) -> bool:
-    return isinstance(entry, dict) and str(entry.get("command", "")).startswith("perathos hooks stop-check")
+    return _is_perathos_entry(entry, _STOP_CHECK_CMD)
 
 
-@hooks.command(name="install")
-@click.option("--scope", type=click.Choice(["project", "user"]), default="project",
-              help="Install into .claude/settings.json (project, default) or ~/.claude/settings.json (user).")
-@click.option("--force", is_flag=True, help="Replace an already-installed perathos Stop hook entry.")
-def hooks_install(scope: str, force: bool):
-    """Install the perathos Stop hook into Claude Code settings.
-
-    Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
-    It grounds the agent's final summary against this session's own tool
-    outputs (extractive hallucination_detector) and recomputes any arithmetic
-    (symbolic_solver) -- both local and deterministic, no LLM call, no
-    network -- then writes a signed Proof Bundle receipt to
-    .perathos/receipts/ in the session's working directory.
-
-    It never blocks the agent. A finding is surfaced to Claude as context on
-    the next turn, not as a failure. See 'perathos hooks stop-check --help'
-    for exactly what it does and does not catch.
-    """
-    settings_path = (Path(".claude") / "settings.json") if scope == "project" else (Path.home() / ".claude" / "settings.json")
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
+def _load_settings(settings_path: Path) -> dict:
     settings: dict = {}
     if settings_path.exists():
         try:
@@ -695,27 +696,111 @@ def hooks_install(scope: str, force: bool):
         if not isinstance(settings, dict):
             click.echo(f"[ERROR] {settings_path} does not contain a JSON object.", err=True)
             sys.exit(1)
+    return settings
 
-    hooks_block = settings.setdefault("hooks", {})
-    stop_hooks = hooks_block.setdefault("Stop", [])
-    existing = [h for h in stop_hooks if _is_perathos_stop_hook(h)]
+
+def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: bool, settings_path: Path) -> None:
+    """Add one command hook in Claude Code's nested shape.
+
+    {"EventName": [{"matcher": "*", "hooks": [{"type": "command", ...}]}]}.
+    Older perathos versions wrote a flat {"type": "command"} entry, which
+    Claude Code does not run; those are removed and replaced here.
+    """
+    entries = hooks_block.setdefault(event, [])
+    flat_legacy = [e for e in entries if _is_perathos_entry(e, command) and "hooks" not in e]
+    existing = [e for e in entries if _is_perathos_entry(e, command) and "hooks" in e]
     if existing and not force:
-        click.echo(f"[ERROR] A perathos Stop hook is already installed in {settings_path}.", err=True)
+        click.echo(f"[ERROR] A perathos {event} hook is already installed in {settings_path}.", err=True)
         click.echo("Use --force to reinstall.", err=True)
         sys.exit(1)
-    if existing:
-        hooks_block["Stop"] = [h for h in stop_hooks if not _is_perathos_stop_hook(h)]
-        stop_hooks = hooks_block["Stop"]
+    if existing or flat_legacy:
+        entries[:] = [e for e in entries if not _is_perathos_entry(e, command)]
+    entry: dict = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+    if event in _TOOL_EVENTS:
+        entry = {"matcher": "*", **entry}
+    entries.append(entry)
 
-    stop_hooks.append({"type": "command", "command": "perathos hooks stop-check", "timeout": 30})
+
+@hooks.command(name="install")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="project",
+              help="Install into .claude/settings.json (project, default) or ~/.claude/settings.json (user).")
+@click.option("--force", is_flag=True, help="Replace already-installed perathos hook entries.")
+@click.option("--recorder", is_flag=True,
+              help="Also install the flight recorder: a hash-chained receipt for every tool call, "
+                   "sealed by a signed checkpoint at the end of each turn.")
+def hooks_install(scope: str, force: bool, recorder: bool):
+    """Install the perathos hooks into Claude Code settings.
+
+    Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
+    It grounds the agent's final summary against this session's own tool
+    outputs (extractive hallucination_detector) and recomputes any arithmetic
+    (symbolic_solver) -- both local and deterministic, no LLM call, no
+    network -- then writes a signed Proof Bundle receipt to
+    .perathos/receipts/ in the session's working directory.
+
+    With --recorder it also installs the flight recorder (PreToolUse,
+    PostToolUse, Stop and SessionEnd hooks running 'perathos hooks record'),
+    which writes .perathos/sessions/<session_id>.jsonl. Check a log with
+    'perathos session verify'. Run 'perathos keygen' first so checkpoints
+    are signed.
+
+    Neither hook ever blocks the agent.
+    """
+    if scope == "project":
+        settings_path = Path(".claude") / "settings.json"
+    else:
+        settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = _load_settings(settings_path)
+    hooks_block = settings.setdefault("hooks", {})
+
+    _add_hook(hooks_block, "Stop", _STOP_CHECK_CMD, 30, force, settings_path)
+    if recorder:
+        for event in _RECORDER_EVENTS:
+            _add_hook(hooks_block, event, _RECORD_CMD, 10, force, settings_path)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
     click.echo(f"Installed into {settings_path}.")
     click.echo("Every turn's summary will now be grounded against this session's tool")
     click.echo("outputs, and a signed Proof Bundle receipt written to .perathos/receipts/.")
+    if recorder:
+        click.echo("")
+        click.echo("Flight recorder on: every tool call is recorded to .perathos/sessions/")
+        click.echo("as a hash-chained receipt and sealed by a signed checkpoint each turn.")
+        try:
+            load_signing_key()
+        except (FileNotFoundError, ValueError):
+            click.echo("[WARN] No signing key yet: run 'perathos keygen' or checkpoints will be unsigned.")
     click.echo("")
     click.echo("This grounds claims against what tools actually returned. It does not")
     click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
+
+
+@hooks.command(name="record")
+def hooks_record():
+    """Run as a Claude Code hook: append a flight-recorder receipt.
+
+    Reads the hook payload from stdin. PreToolUse and PostToolUse append a
+    chained receipt holding hashes (never content) of the tool's arguments
+    and result. Stop and SessionEnd append a checkpoint signed with the local
+    key from 'perathos keygen'. Always exits 0 and prints nothing to stdout,
+    so it can never block or alter the agent; problems go to stderr.
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            return
+        from .recorder import record_hook_event
+
+        sk_hex = None
+        if payload.get("hook_event_name") in ("Stop", "SubagentStop", "SessionEnd"):
+            try:
+                sk_hex = load_signing_key()
+            except (FileNotFoundError, ValueError):
+                sk_hex = None
+        record_hook_event(payload, signing_key_hex=sk_hex)
+    except Exception as exc:  # noqa: BLE001 -- a recorder must never break the session
+        click.echo(f"perathos recorder: {type(exc).__name__}: {exc}", err=True)
 
 
 @hooks.command(name="stop-check")
@@ -786,6 +871,121 @@ def hooks_stop_check():
             }
         }
     click.echo(json.dumps(output))
+
+
+@cli.group()
+def session():
+    """Inspect and verify flight-recorder session logs."""
+
+
+def _resolve_session_log(target: str) -> Path:
+    p = Path(target)
+    if p.exists():
+        return p
+    sessions_dir = Path(".perathos") / "sessions"
+    candidate = sessions_dir / f"{target}.jsonl"
+    if candidate.exists():
+        return candidate
+    matches = sorted(sessions_dir.glob(f"{target}*.jsonl")) if sessions_dir.exists() else []
+    if len(matches) == 1:
+        return matches[0]
+    click.echo(f"[ERROR] Session log not found: {target}", err=True)
+    click.echo("List logs with: perathos session list", err=True)
+    sys.exit(2)
+
+
+@session.command(name="list")
+def session_list():
+    """List session logs in ./.perathos/sessions/."""
+    d = Path(".perathos") / "sessions"
+    logs = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if d.exists() else []
+    if not logs:
+        click.echo("No session logs in ./.perathos/sessions/. Install with: perathos hooks install --recorder")
+        return
+    for p in logs:
+        n = sum(1 for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+        click.echo(f"{p.stem}  {n} receipts  {p}")
+
+
+@session.command(name="verify")
+@click.argument("target")
+@click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
+              help="Pin the expected signer's 64-char hex public key.")
+@click.option("--trust-jwks", "trust_jwks", type=click.Path(exists=True), default=None, metavar="PATH",
+              help="Accept only checkpoints signed by a key in this JWKS file.")
+@click.option("--allow-unsigned", is_flag=True,
+              help="Accept unsigned checkpoints (hash-chain consistency only).")
+@click.option("--json", "as_json", is_flag=True, help="Print the full report as JSON.")
+def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow_unsigned: bool, as_json: bool):
+    """Verify a session log: chain, sequence, signatures and truncation.
+
+    TARGET is a path to a .jsonl log or a session id (prefix) under
+    ./.perathos/sessions/. Exit 0 = valid, 1 = invalid, 2 = usage error.
+
+    Detects any edited, deleted, inserted or reordered receipt, a forged or
+    re-signed checkpoint, and truncation before the last witnessed
+    checkpoint. Receipts after the last checkpoint are reported as unsealed.
+    """
+    from .recorder import verify_session
+
+    trust_store = None
+    if trust_jwks:
+        from .keytrust import TrustStore
+        try:
+            trust_store = TrustStore.from_jwks(json.loads(Path(trust_jwks).read_text(encoding="utf-8")))
+        except ValueError as exc:
+            click.echo(f"[ERROR] Invalid JWKS file {trust_jwks}: {exc}", err=True)
+            sys.exit(2)
+
+    log = _resolve_session_log(target)
+    report = verify_session(log, expected_verify_key=expected_verify_key,
+                            trust_store=trust_store, require_signed=not allow_unsigned)
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        status = "VALID" if report.valid else "INVALID"
+        click.echo(f"{status}  {log}")
+        click.echo(f"  session       {report.session_id}")
+        click.echo(f"  receipts      {report.receipts} ({report.tool_calls} tool calls, {report.checkpoints} checkpoints)")
+        click.echo(f"  sealed        through seq {report.sealed_through} by {report.signed_checkpoints} signed checkpoint(s)")
+        if report.signers:
+            click.echo(f"  signer        {', '.join(report.signers)}")
+        if report.models:
+            click.echo(f"  model         {', '.join(report.models)} (self-reported)")
+        if report.first_ts:
+            click.echo(f"  time          {report.first_ts} to {report.last_ts}")
+        for e in report.errors:
+            click.echo(f"[ERROR] {e}", err=True)
+        for w in report.warnings:
+            click.echo(f"[WARN]  {w}")
+    sys.exit(0 if report.valid else 1)
+
+
+@session.command(name="show")
+@click.argument("target")
+def session_show(target: str):
+    """Print a session log as a readable timeline."""
+    log = _resolve_session_log(target)
+    for line in log.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            click.echo("  ?? unparseable line")
+            continue
+        kind = r.get("kind")
+        ts = str(r.get("ts", ""))[11:23]
+        seq = str(r.get("seq")).rjust(5)
+        if kind == "pre":
+            click.echo(f"{seq}  {ts}  call    {r.get('tool')}  args {str(r.get('args_hash'))[:12]}")
+        elif kind == "post":
+            click.echo(f"{seq}  {ts}  result  {r.get('tool')}  {r.get('status')}  out {str(r.get('result_hash'))[:12]}")
+        elif kind == "checkpoint":
+            signed = "signed" if r.get("signature") else "UNSIGNED"
+            click.echo(f"{seq}  {ts}  SEAL    {r.get('event')}  {signed}  {str(r.get('receipt_hash'))[:12]}")
+        else:
+            click.echo(f"{seq}  {ts}  {kind}")
 
 
 def main():
