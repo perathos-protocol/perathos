@@ -11,7 +11,7 @@ dependencies = ["click>=8.0", "cryptography>=42.0"]
 
 [project.optional-dependencies]
 # jsonschema is in dev so CI exercises the SchemaValidator engine.
-dev = ["pytest>=8.0", "ruff>=0.4", "jsonschema>=4.21"]
+dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21"]
 # SchemaValidator engine (real JSON Schema validation; SSRF-safe).
 schema = ["jsonschema>=4.21"]
 # Autonomous-agent harness deps — version-bounded (away from yanked/compromised
