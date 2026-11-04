@@ -677,7 +677,9 @@ def _entry_commands(entry) -> list[str]:
 
 
 def _is_perathos_entry(entry, command: str) -> bool:
-    return any(c.startswith(command) for c in _entry_commands(entry))
+    """True if the entry runs this perathos command, with or without flags."""
+    base = command.split(" --")[0]
+    return any(c == base or c.startswith(base + " ") for c in _entry_commands(entry))
 
 
 def _is_perathos_stop_hook(entry) -> bool:
@@ -728,7 +730,11 @@ def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: 
 @click.option("--recorder", is_flag=True,
               help="Also install the flight recorder: a hash-chained receipt for every tool call, "
                    "sealed by a signed checkpoint at the end of each turn.")
-def hooks_install(scope: str, force: bool, recorder: bool):
+@click.option("--guard", is_flag=True,
+              help="Recorder plus the destructive-command guard (implies --recorder).")
+@click.option("--anchor", is_flag=True,
+              help="Recorder plus RFC 3161 timestamps on every checkpoint (implies --recorder; needs network).")
+def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: bool):
     """Install the perathos hooks into Claude Code settings.
 
     Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
@@ -754,10 +760,17 @@ def hooks_install(scope: str, force: bool, recorder: bool):
     settings = _load_settings(settings_path)
     hooks_block = settings.setdefault("hooks", {})
 
+    recorder = recorder or guard or anchor
     _add_hook(hooks_block, "Stop", _STOP_CHECK_CMD, 30, force, settings_path)
     if recorder:
         for event in _RECORDER_EVENTS:
-            _add_hook(hooks_block, event, _RECORD_CMD, 10, force, settings_path)
+            flags = ""
+            if guard and event == "PreToolUse":
+                flags += " --guard"
+            if anchor and event in ("Stop", "SessionEnd"):
+                flags += " --anchor"
+            _add_hook(hooks_block, event, _RECORD_CMD + flags, 20 if "--anchor" in flags else 10,
+                      force, settings_path)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
     click.echo(f"Installed into {settings_path}.")
@@ -767,6 +780,11 @@ def hooks_install(scope: str, force: bool, recorder: bool):
         click.echo("")
         click.echo("Flight recorder on: every tool call is recorded to .perathos/sessions/")
         click.echo("as a hash-chained receipt and sealed by a signed checkpoint each turn.")
+        if guard:
+            click.echo("Guard on: destructive commands are blocked unless a person has run")
+            click.echo("'perathos precondition add' for that target.")
+        if anchor:
+            click.echo("Anchoring on: each checkpoint is timestamped by an outside service (freetsa.org).")
         try:
             load_signing_key()
         except (FileNotFoundError, ValueError):
@@ -776,31 +794,85 @@ def hooks_install(scope: str, force: bool, recorder: bool):
     click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
 
 
+def _local_verify_key() -> str | None:
+    """The local public key (from 'perathos keygen'), or None if there is none."""
+    try:
+        vk = (keys_dir() / "verify.key").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return vk if len(vk) == 64 else None
+
+
 @hooks.command(name="record")
-def hooks_record():
+@click.option("--guard", is_flag=True,
+              help="Also block destructive commands that have no signed safety precondition.")
+@click.option("--anchor", is_flag=True,
+              help="Also send each signed checkpoint to an RFC 3161 timestamp service (needs perathos[anchor]).")
+def hooks_record(guard: bool, anchor: bool):
     """Run as a Claude Code hook: append a flight-recorder receipt.
 
     Reads the hook payload from stdin. PreToolUse and PostToolUse append a
     chained receipt holding hashes (never content) of the tool's arguments
     and result. Stop and SessionEnd append a checkpoint signed with the local
-    key from 'perathos keygen'. Always exits 0 and prints nothing to stdout,
-    so it can never block or alter the agent; problems go to stderr.
+    key from 'perathos keygen'.
+
+    With --guard, a PreToolUse call matching a destructive-command rule is
+    denied (via the hook's JSON permissionDecision) unless an unexpired
+    precondition signed by the local key covers it; the decision is bound
+    into the receipt. With --anchor, each signed checkpoint is timestamped
+    by an outside TSA and the token saved under ~/.perathos/anchors/.
+
+    Always exits 0. Without --guard nothing is printed to stdout, so the
+    recorder can never block or alter the agent; problems go to stderr.
     """
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-        if not isinstance(payload, dict):
-            return
+    except json.JSONDecodeError:
+        return
+    if not isinstance(payload, dict):
+        return
+    event = payload.get("hook_event_name")
+
+    decision = None
+    if guard and event == "PreToolUse":
+        try:
+            from .guard import decide
+
+            decision = decide(str(payload.get("tool_name") or ""), payload.get("tool_input"),
+                              payload.get("cwd") or ".", trusted_key=_local_verify_key())
+        except Exception as exc:  # noqa: BLE001 -- a broken guard must not brick the agent
+            click.echo(f"perathos guard: {type(exc).__name__}: {exc}", err=True)
+
+    receipt = None
+    try:
         from .recorder import record_hook_event
 
         sk_hex = None
-        if payload.get("hook_event_name") in ("Stop", "SubagentStop", "SessionEnd"):
+        if event in ("Stop", "SubagentStop", "SessionEnd"):
             try:
                 sk_hex = load_signing_key()
             except (FileNotFoundError, ValueError):
                 sk_hex = None
-        record_hook_event(payload, signing_key_hex=sk_hex)
+        receipt = record_hook_event(payload, signing_key_hex=sk_hex,
+                                    guard_decision=decision.receipt_field() if decision else None)
     except Exception as exc:  # noqa: BLE001 -- a recorder must never break the session
         click.echo(f"perathos recorder: {type(exc).__name__}: {exc}", err=True)
+
+    # The deny is emitted even if recording failed: the guard fails closed.
+    if decision is not None and decision.decision == "deny":
+        click.echo(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": decision.reason,
+        }}))
+
+    if anchor and receipt and receipt.get("kind") == "checkpoint" and receipt.get("signature"):
+        try:
+            from .anchor import anchor_checkpoint, default_anchors_path
+
+            anchor_checkpoint(receipt, default_anchors_path(receipt["session_id"]), timeout=8)
+        except Exception as exc:  # noqa: BLE001 -- the timestamp service may be down; never fail the turn
+            click.echo(f"perathos anchor: {type(exc).__name__}: {exc} (run 'perathos session anchor' later)", err=True)
 
 
 @hooks.command(name="stop-check")
@@ -915,8 +987,15 @@ def session_list():
               help="Accept only checkpoints signed by a key in this JWKS file.")
 @click.option("--allow-unsigned", is_flag=True,
               help="Accept unsigned checkpoints (hash-chain consistency only).")
+@click.option("--anchors", "anchors_file", type=click.Path(), default=None, metavar="PATH",
+              help="Anchors file to check (default: ~/.perathos/anchors/<session_id>.jsonl if present).")
+@click.option("--require-anchor", is_flag=True,
+              help="Fail unless the last checkpoint carries a valid independent timestamp.")
+@click.option("--tsa-root", "tsa_roots", multiple=True, type=click.Path(exists=True), metavar="PEM",
+              help="Extra trusted TSA root certificate(s), besides the pinned FreeTSA root.")
 @click.option("--json", "as_json", is_flag=True, help="Print the full report as JSON.")
-def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow_unsigned: bool, as_json: bool):
+def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow_unsigned: bool,
+                   anchors_file: str, require_anchor: bool, tsa_roots: tuple, as_json: bool):
     """Verify a session log: chain, sequence, signatures and truncation.
 
     TARGET is a path to a .jsonl log or a session id (prefix) under
@@ -938,8 +1017,22 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
             sys.exit(2)
 
     log = _resolve_session_log(target)
+    anchors_path = Path(anchors_file) if anchors_file else None
+    if anchors_path is None:
+        from .recorder import safe_session_id
+        default = Path.home() / ".perathos" / "anchors" / f"{safe_session_id(log.stem)}.jsonl"
+        anchors_path = default if default.exists() else None
+    roots = None
+    if anchors_path is not None or require_anchor:
+        try:
+            from .anchor import load_roots
+            roots = load_roots(list(tsa_roots))
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"[ERROR] Cannot check timestamps: {exc}", err=True)
+            sys.exit(2)
     report = verify_session(log, expected_verify_key=expected_verify_key,
-                            trust_store=trust_store, require_signed=not allow_unsigned)
+                            trust_store=trust_store, require_signed=not allow_unsigned,
+                            anchors_path=anchors_path, tsa_roots=roots, require_anchor=require_anchor)
     if as_json:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
@@ -953,7 +1046,12 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
         if report.models:
             click.echo(f"  model         {', '.join(report.models)} (self-reported)")
         if report.first_ts:
-            click.echo(f"  time          {report.first_ts} to {report.last_ts}")
+            click.echo(f"  time          {report.first_ts} to {report.last_ts} (local clock)")
+        if report.anchors:
+            click.echo(f"  timestamped   through seq {report.anchored_through} at {report.anchored_time} "
+                       f"(independent, {report.anchors} token(s))")
+        if report.blocked:
+            click.echo(f"  blocked       {report.blocked} destructive call(s) stopped by the guard")
         for e in report.errors:
             click.echo(f"[ERROR] {e}", err=True)
         for w in report.warnings:
@@ -986,6 +1084,109 @@ def session_show(target: str):
             click.echo(f"{seq}  {ts}  SEAL    {r.get('event')}  {signed}  {str(r.get('receipt_hash'))[:12]}")
         else:
             click.echo(f"{seq}  {ts}  {kind}")
+
+
+@session.command(name="anchor")
+@click.argument("target")
+@click.option("--tsa-url", default=None, metavar="URL", help="RFC 3161 service (default: https://freetsa.org/tsr).")
+@click.option("--tsa-root", "tsa_roots", multiple=True, type=click.Path(exists=True), metavar="PEM",
+              help="Trusted root for a non-default TSA.")
+@click.option("--anchors", "anchors_file", type=click.Path(), default=None, metavar="PATH",
+              help="Where to store anchors (default: ~/.perathos/anchors/<session_id>.jsonl).")
+def session_anchor(target: str, tsa_url: str, tsa_roots: tuple, anchors_file: str):
+    """Timestamp every not-yet-anchored checkpoint of a session with an outside TSA.
+
+    The TSA signs "this checkpoint hash existed at time T". Keep a copy of the
+    anchors file somewhere the agent cannot reach: then cutting the end off
+    the log is detectable by 'perathos session verify --anchors <copy>'.
+    """
+    from .anchor import DEFAULT_TSA_URL, anchor_session, load_roots
+
+    log = _resolve_session_log(target)
+    try:
+        new = anchor_session(log, Path(anchors_file) if anchors_file else None,
+                             url=tsa_url or DEFAULT_TSA_URL, roots=load_roots(list(tsa_roots)))
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"[ERROR] Timestamping failed: {type(exc).__name__}: {exc}", err=True)
+        sys.exit(1)
+    if not new:
+        click.echo("Nothing to anchor: every checkpoint already has a timestamp (or there are none).")
+        return
+    for a in new:
+        click.echo(f"anchored  seq {a['seq']}  {a['gen_time']}  {a['tsa']}")
+
+
+@cli.group()
+def precondition():
+    """Signed safety checks that let the guard allow a destructive command."""
+
+
+@precondition.command(name="add")
+@click.option("--scope", required=True,
+              help="Text that must appear in the destructive command (e.g. a database or volume name), or '*'.")
+@click.option("--check", "check_cmd", default=None, metavar="COMMAND",
+              help="Command proving the safeguard holds, e.g. that a backup restores. Must exit 0.")
+@click.option("--manual", "manual_reason", default=None, metavar="REASON",
+              help="Instead of a command: your own signed attestation and the reason for it.")
+@click.option("--ttl", "ttl_minutes", default=30, show_default=True, type=click.IntRange(1, 24 * 60),
+              help="Minutes until the precondition expires.")
+def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes: int):
+    """Run a safety check and, if it passes, sign a precondition for SCOPE.
+
+    Run this yourself, outside the agent session. The guard refuses agent
+    attempts to call it.
+
+    Example:
+        perathos precondition add --scope prod-db --check "pg_restore --list backups/prod.dump"
+    """
+    from .guard import create_precondition
+
+    try:
+        sk_hex = load_signing_key()
+    except (FileNotFoundError, ValueError):
+        click.echo("[ERROR] No signing key. Run: perathos keygen", err=True)
+        sys.exit(1)
+    try:
+        pc, result = create_precondition(Path("."), scope=scope, signing_key_hex=sk_hex, check=check_cmd,
+                                         manual_reason=manual_reason, ttl_minutes=ttl_minutes)
+    except ValueError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(2)
+    if pc is None:
+        click.echo(f"[ERROR] Check failed (exit {result['exit_code']}); no precondition was created.", err=True)
+        tail = result["output"].strip().splitlines()[-5:]
+        for line in tail:
+            click.echo(f"  {line}", err=True)
+        sys.exit(1)
+    click.echo(f"precondition  {pc['id']}")
+    click.echo(f"scope         {pc['scope']}")
+    if pc["check"]:
+        click.echo(f"check         {pc['check']}  (exit 0)")
+    else:
+        click.echo(f"manual        {pc['manual_reason']}")
+    click.echo(f"expires       {pc['expires']}")
+
+
+@precondition.command(name="list")
+def precondition_list():
+    """List preconditions in ./.perathos/preconditions/ and whether each is usable now."""
+    from .guard import check_precondition, preconditions_dir
+
+    d = preconditions_dir(".")
+    files = sorted(d.glob("*.json")) if d.exists() else []
+    if not files:
+        click.echo("No preconditions.")
+        return
+    vk = _local_verify_key()
+    for f in files:
+        try:
+            pc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            click.echo(f"?  {f.name}  unreadable")
+            continue
+        problem = check_precondition(pc, trusted_key=vk) if vk else "no local key"
+        status = "VALID" if problem is None else problem
+        click.echo(f"{pc.get('id', f.stem)[:8]}  scope={pc.get('scope')!r}  expires={pc.get('expires')}  {status}")
 
 
 def main():

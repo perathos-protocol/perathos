@@ -29,6 +29,7 @@ Claude Code logs live at `<cwd>/.perathos/sessions/<session_id>.jsonl`.
 | `signer` | hex string | signed checkpoint | Ed25519 public key (32 bytes), bound into the hash |
 | `receipt_hash` | hex string | all | See below |
 | `signature` | object | signed checkpoint | `{algorithm: "ed25519", verify_key, signature}`; not hashed |
+| `guard` | object | pre (optional) | `{decision: "allow"\|"deny", rule, precondition}`: the guard's decision and the `precondition_hash` it relied on |
 
 ## Hashing
 
@@ -65,6 +66,45 @@ A log is valid when every line is a JSON object and:
 Receipts after the last checkpoint are reported as an unsealed tail, not an
 error: the session may still be running.
 
+A `pre` receipt whose `guard.decision` is `deny` is a call that never ran, so
+no `post` follows it.
+
+## Anchors (`perathos.anchor/v1`)
+
+Independent RFC 3161 timestamps live in a separate JSON Lines file
+(default `~/.perathos/anchors/<session_id>.jsonl`), one object per anchored
+checkpoint:
+
+| Field | Meaning |
+|---|---|
+| `v` | `perathos.anchor/v1` |
+| `session_id`, `seq`, `receipt_hash` | The checkpoint this anchors |
+| `tsa` | URL of the Time Stamping Authority |
+| `gen_time` | Time the TSA asserted |
+| `token` | Base64 DER `TimeStampResp` |
+
+The TSA request's message imprint is SHA-256 over the 32 raw bytes of
+`receipt_hash`. A token is valid only if it chains to a pinned TSA root; the
+certificates embedded in the token are never used as trust anchors.
+
+Additional rules when anchors are checked:
+
+10. Every anchor names a checkpoint present in the log with the same
+    `receipt_hash`. An anchor whose `seq` is past the log's last checkpoint
+    proves the log was truncated.
+11. Every token verifies over its checkpoint hash against a pinned root.
+12. With "require anchor", the last checkpoint must be anchored.
+
+## Preconditions (`perathos.precondition/v1`)
+
+Signed safety checks in `<cwd>/.perathos/preconditions/<id>.json`:
+`id`, `kind`, `scope` (text that must appear in the command, or `*`),
+`check` (command run) and `check_exit_code` (always 0), `check_output_hash`,
+or instead `manual_reason`, then `created`, `expires`, `signer`,
+`precondition_hash` (SHA-256 of the canonical body without the hash and the
+signature) and `signature` (Ed25519 over the raw hash bytes). The guard
+accepts one only if it is unmodified, signed by the local key and unexpired.
+
 ## What a valid log proves, and what it does not
 
 Proves: the holder of the signing key sealed this exact sequence of receipts,
@@ -74,8 +114,8 @@ show it matches the recorded hash.
 
 Does not prove (v1):
 * that nothing was cut after the last checkpoint, if the head witness was
-  also removed (external timestamping of checkpoints addresses this);
-* the real time of each event (local clock);
+  also removed and no anchor copy is held elsewhere;
+* the real time of each event, unless the checkpoint is anchored (local clock);
 * which model ran (the `model` field is self-reported);
 * that the recorder was running for the whole session. A gap where hooks were
   disabled is not visible;

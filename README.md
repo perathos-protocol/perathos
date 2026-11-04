@@ -173,12 +173,57 @@ receipt, a stripped or forged checkpoint signature, a log re-signed by a
 different key (with `--verify-key` or `--trust-jwks`), and truncation back
 before the last witnessed checkpoint.
 
-What it does **not** prove yet: that nothing was cut after the most recent
-checkpoint if the `.head.json` witness was deleted too, or what time it
-really was (timestamps come from the local clock). Independent timestamping
-of checkpoints closes both and is next on the roadmap. The `model` field is
-read from the transcript and is self-reported. The recorder never blocks the
-agent; each hook adds roughly 0.25 s. Format: [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
+The `model` field is read from the transcript and is self-reported. Each
+hook adds roughly 0.25 s. Format: [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
+
+### Independent timestamps
+
+```bash
+pip install 'perathos[anchor]'
+perathos hooks install --anchor        # timestamp every checkpoint as it is sealed
+perathos session anchor <session_id>   # or timestamp existing checkpoints later
+perathos session verify <session_id> --require-anchor
+```
+
+Each signed checkpoint is sent to an RFC 3161 Time Stamping Authority
+(default: freetsa.org), which signs "this checkpoint existed at time T". The
+token is stored in `~/.perathos/anchors/<session_id>.jsonl`, outside the
+project, and verified offline against a TSA root pinned inside perathos. This
+gives each turn a time the local clock cannot fake. It also makes cutting
+the end off a log detectable: if an anchor names a checkpoint the log no
+longer contains, `session verify` fails with `ERR_TRUNCATED`. For that to
+hold against someone with access to the machine, keep a copy of the anchors
+file somewhere they cannot reach and pass it with `--anchors`.
+
+### Destructive-command guard
+
+```bash
+perathos hooks install --guard
+```
+
+Before a tool call runs, the guard checks it against rules for commands that
+destroy data or backups: `rm -rf`, `DROP`/`TRUNCATE`/`DELETE` without
+`WHERE`, `dropdb`, `FLUSHALL`, `terraform destroy`, `kubectl delete` of
+stateful resources, deleting AWS/GCP/Azure storage or backups, Railway,
+Vercel, Fly and Neon deletes, Docker volume deletes, database resets, force
+pushes to main, and MCP tools named like `*_delete`. A matching call is
+**denied** unless a person has signed a precondition for that target:
+
+```bash
+perathos precondition add --scope pg-data --check "pg_restore --list backups/pg-data.dump"
+```
+
+The check runs, and only if it exits 0 is a precondition signed with your
+key, valid for 30 minutes (`--ttl`). The decision, allow or deny, and the
+precondition used are bound into the receipt, so `session verify` reports
+how many calls were blocked. The guard also denies an agent that tries to
+run `perathos precondition` or `perathos keygen` itself, or to read the
+signing key.
+
+It is a seatbelt against accidents like an agent deleting a production
+database and its backups, not a sandbox against a deliberately hostile
+agent: a command can be disguised past any pattern, and the signing key
+lives on the same machine.
 
 ## MCP server
 

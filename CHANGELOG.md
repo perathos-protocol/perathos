@@ -5,6 +5,31 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-04
+
+### Added: independent timestamps and the destructive-command guard
+- `perathos[anchor]` extra (rfc3161-client). `perathos session anchor`,
+  `perathos hooks install --anchor` and `perathos hooks record --anchor`
+  timestamp each signed checkpoint with an RFC 3161 TSA (default
+  freetsa.org; root pinned in `perathos/data/tsa/`). Anchors live in
+  `~/.perathos/anchors/`. `session verify --anchors/--require-anchor/--tsa-root`
+  verifies tokens offline and reports `ERR_TRUNCATED` when an anchor names a
+  checkpoint the log no longer has. Embedded token certificates are never
+  trusted as roots (a test pins this).
+- `perathos hooks install --guard` / `hooks record --guard`: PreToolUse
+  denies destructive commands (about 20 rule families plus destructive MCP
+  tool names) unless an unexpired precondition signed by the local key covers
+  the target. Fails closed: the deny is emitted even if recording fails.
+  Agents may not run `perathos precondition`/`keygen` or read the key.
+- `perathos precondition add --scope X --check CMD | --manual REASON [--ttl]`
+  and `precondition list`.
+- Receipts gain an optional `guard` field; `session verify` reports blocked
+  calls. Spec updated (anchors and preconditions).
+
+### Changed
+- Reinstalling hooks with different flags replaces the old perathos entries
+  instead of adding duplicates.
+
 ### Added: flight recorder for coding agents
 - `perathos hooks install --recorder` installs PreToolUse, PostToolUse, Stop
   and SessionEnd hooks running `perathos hooks record`. Every tool call is

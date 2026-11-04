@@ -18,8 +18,14 @@ concurrency:
 
 jobs:
   fix-failures:
-    # Only run when the triggering workflow actually failed
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    # Only run when the triggering workflow actually failed, and never for runs
+    # from forks: this job holds write access and API keys and feeds the failed
+    # run's logs to an LLM, so attacker-controlled fork logs would be a prompt-
+    # injection path to a token that can push. (Disabled on GitHub 2026-11-04
+    # along with the other autonomous agents; run manually if ever needed.)
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure'
+          && github.event.workflow_run.head_repository.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
