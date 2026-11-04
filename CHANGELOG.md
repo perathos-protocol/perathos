@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-04
+
 ### Added: evidence packs and the PocketOS replay demo
 - `perathos session export <id> --out DIR` writes an evidence pack (session
   log, head witness, anchors, the preconditions the guard relied on,
