@@ -240,6 +240,48 @@ database and its backups, not a sandbox against a deliberately hostile
 agent: a command can be disguised past any pattern, and the signing key
 lives on the same machine.
 
+### Cursor
+
+```bash
+perathos keygen
+perathos hooks install --agent cursor --guard --anchor   # writes .cursor/hooks.json
+# --scope user writes ~/.cursor/hooks.json instead; --force reinstalls
+```
+
+This adds `perathos hooks record-cursor` to Cursor's
+[hooks](https://cursor.com/docs/agent/hooks) and keeps any other hooks
+already in the file. The receipts are the same `perathos.receipt/v1`
+chain, tagged `"agent": "cursor"`, in
+`<workspace root>/.perathos/sessions/<conversation_id>.jsonl`, so
+`session verify`, `session export` and `session anchor` work unchanged.
+
+| Cursor event | Receipt |
+|---|---|
+| `beforeShellExecution` | `pre`, tool `Bash`, hash of the command; guarded |
+| `afterShellExecution` | `post`, hash of the terminal output |
+| `beforeMCPExecution` | `pre`, tool `mcp__<server>__<tool>`, hash of the parameters; guarded |
+| `afterMCPExecution` | `post`, hash of `result_json` |
+| `afterFileEdit` | `pre` + `post` for tool `Edit` (hash of the path and edits) |
+| `beforeReadFile` (`--guard` only) | nothing for normal reads; a `pre` with the guard decision when the agent tries to read the signing key |
+| `stop`, `sessionEnd` | signed `checkpoint` (timestamped with `--anchor`) |
+
+A guard deny is returned as Cursor's `{"permission": "deny", "user_message",
+"agent_message"}`; the hook always exits 0.
+
+Differences from Claude Code:
+
+* Cursor's shell, MCP and file-edit hooks are the ones recorded. Its other
+  built-in tools (read, grep, delete, task) are not; Cursor's generic
+  `preToolUse`/`postToolUse` hooks are not used yet.
+* Cursor reports file edits only after they happen, so an edit's `pre` and
+  `post` are written together and the guard cannot stop an edit.
+* The `model` in a checkpoint is the `model` field Cursor sends (self-reported).
+* The Stop-hook summary check (`hooks stop-check`) is Claude Code only.
+* If `perathos` is not on the PATH Cursor runs hooks with, the hook fails
+  and Cursor lets the action through. Add `"failClosed": true` to the
+  `beforeShellExecution`/`beforeMCPExecution` entries if a broken guard
+  should block instead.
+
 ## MCP server
 
 Expose the same verification as MCP tools for any MCP client:

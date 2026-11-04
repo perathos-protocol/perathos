@@ -5,6 +5,20 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: Cursor support for the flight recorder and guard
+- `perathos hooks install --agent cursor [--guard] [--anchor] [--scope project|user]`
+  writes Cursor's `.cursor/hooks.json` (or `~/.cursor/hooks.json`), keeping
+  unrelated hooks; `--force` replaces earlier perathos entries. The default
+  `--agent claude-code` is unchanged.
+- `perathos hooks record-cursor [--guard] [--anchor]` (new module
+  `perathos/integrations/cursor.py`) records `beforeShellExecution`,
+  `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution` and
+  `afterFileEdit` as `pre`/`post` receipts, and seals the chain with a
+  signed checkpoint on `stop` and `sessionEnd`. With `--guard`, destructive
+  shell commands and MCP tools, and reads of the signing key
+  (`beforeReadFile`), are denied in Cursor's `permission` format unless a
+  signed precondition covers them; the deny holds even if recording fails.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added: evidence packs and the PocketOS replay demo

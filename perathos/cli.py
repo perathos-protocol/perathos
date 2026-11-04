@@ -656,7 +656,7 @@ def cite_check(path, text, prove_flag, sign_flag, out_path):
 
 @cli.group()
 def hooks():
-    """Manage the Claude Code Stop-hook integration."""
+    """Manage the Claude Code and Cursor hook integrations."""
 
 
 _STOP_CHECK_CMD = "perathos hooks stop-check"
@@ -734,7 +734,10 @@ def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: 
               help="Recorder plus the destructive-command guard (implies --recorder).")
 @click.option("--anchor", is_flag=True,
               help="Recorder plus RFC 3161 timestamps on every checkpoint (implies --recorder; needs network).")
-def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: bool):
+@click.option("--agent", type=click.Choice(["claude-code", "cursor"]), default="claude-code", show_default=True,
+              help="Which coding agent to install into. 'cursor' writes .cursor/hooks.json "
+                   "(or ~/.cursor/hooks.json with --scope user); the recorder is always on there.")
+def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: bool, agent: str):
     """Install the perathos hooks into Claude Code settings.
 
     Adds a Stop hook that runs 'perathos hooks stop-check' after every turn.
@@ -752,6 +755,9 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
 
     Neither hook ever blocks the agent.
     """
+    if agent == "cursor":
+        _install_cursor(scope, force, guard, anchor)
+        return
     if scope == "project":
         settings_path = Path(".claude") / "settings.json"
     else:
@@ -792,6 +798,32 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
     click.echo("")
     click.echo("This grounds claims against what tools actually returned. It does not")
     click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
+
+
+def _install_cursor(scope: str, force: bool, guard: bool, anchor: bool) -> None:
+    from .integrations import cursor
+
+    path = cursor.hooks_json_path(scope)
+    try:
+        config = cursor.install(path, guard=guard, anchor=anchor, force=force)
+    except cursor.HookConfigError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(1)
+    events = [ev for ev, entries in config["hooks"].items()
+              if any(isinstance(e, dict) and str(e.get("command", "")).startswith(cursor.RECORD_CURSOR_CMD)
+                     for e in entries)]
+    click.echo(f"Installed into {path} ({', '.join(events)}).")
+    click.echo("Flight recorder on: shell commands, MCP tool calls and file edits are recorded")
+    click.echo("to .perathos/sessions/ and sealed by a signed checkpoint when the agent stops.")
+    if guard:
+        click.echo("Guard on: destructive shell/MCP calls and reads of the signing key are denied")
+        click.echo("unless a person has run 'perathos precondition add' for that target.")
+    if anchor:
+        click.echo("Anchoring on: each checkpoint is timestamped by an outside service (freetsa.org).")
+    try:
+        load_signing_key()
+    except (FileNotFoundError, ValueError):
+        click.echo("[WARN] No signing key yet: run 'perathos keygen' or checkpoints will be unsigned.")
 
 
 def _local_verify_key() -> str | None:
@@ -873,6 +905,31 @@ def hooks_record(guard: bool, anchor: bool):
             anchor_checkpoint(receipt, default_anchors_path(receipt["session_id"]), timeout=8)
         except Exception as exc:  # noqa: BLE001 -- the timestamp service may be down; never fail the turn
             click.echo(f"perathos anchor: {type(exc).__name__}: {exc} (run 'perathos session anchor' later)", err=True)
+
+
+@hooks.command(name="record-cursor")
+@click.option("--guard", is_flag=True,
+              help="Also deny destructive shell/MCP calls (and reads of the signing key) that have no "
+                   "signed safety precondition.")
+@click.option("--anchor", is_flag=True,
+              help="Also send each signed checkpoint to an RFC 3161 timestamp service (needs perathos[anchor]).")
+def hooks_record_cursor(guard: bool, anchor: bool):
+    """Run as a Cursor hook (reads the hook payload from stdin).
+
+    Same receipts as 'hooks record', from Cursor's events: before/after
+    shell and MCP execution, afterFileEdit, and a signed checkpoint on stop
+    and sessionEnd. Prints Cursor's JSON response: allow, or deny with a
+    message when --guard blocks the call. Always exits 0.
+    """
+    from .integrations.cursor import run_hook
+
+    try:
+        raw = sys.stdin.read()
+    except Exception:  # noqa: BLE001 -- unreadable stdin must not crash the hook
+        raw = ""
+    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=load_signing_key,
+                        verify_key=_local_verify_key, warn=lambda m: click.echo(m, err=True))
+    click.echo(json.dumps(response))
 
 
 @hooks.command(name="stop-check")
