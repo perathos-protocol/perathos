@@ -5,6 +5,24 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-04
+
+### Added: evidence packs and the PocketOS replay demo
+- `perathos session export <id> --out DIR` writes an evidence pack (session
+  log, head witness, anchors, the preconditions the guard relied on,
+  `verification.json`, a one-page `REPORT.md`/`REPORT.html`, `VERIFY.md`) and
+  a `MANIFEST.json` listing every file's SHA-256, signed with the local key;
+  plus a `.zip`.
+- `perathos evidence verify <dir|zip>` re-checks a pack from its own files:
+  manifest signature, missing/added/modified files, receipt chain,
+  checkpoint signatures and RFC 3161 tokens. Zip paths are checked for
+  traversal.
+- `examples/pocketos_replay/replay.py`: the April 2026 production-volume
+  deletion replayed without and with Perathos, in a throwaway folder with a
+  temporary key. Runs in CI with `--offline`.
+- `python -m perathos` works as an alias for the CLI.
+- README now leads with the flight recorder.
+
 ## [0.4.0] - 2026-11-04
 
 ### Added: independent timestamps and the destructive-command guard
