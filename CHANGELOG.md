@@ -5,6 +5,12 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `docs/CONTROL_MAPPING.md`: artefact-by-artefact mapping to AIUC-1 (D003.x, E015.x,
+  E001, E004, E009, B006, B007, A008, E018), SOC 2 TSC, NCSC guidance, ISO/IEC 42001 Annex A,
+  EU AI Act Articles 12 and 14, NIST AI RMF and FRE 902(13)/(14), with coverage and gaps
+  stated per control; linked from the README and the auditor guide.
+
 ## [1.1.0] - 2026-11-04
 
 Guard hardening after an independent red-team of 1.0.0.
