@@ -5,6 +5,45 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-04
+
+Guard hardening after an independent red-team of 1.0.0.
+
+### Fixed
+- The guard let about thirty accident-class commands through. Now blocked:
+  any recursive `rm` (with or without `-f`), Windows `del /s`, `rmdir /s`,
+  `rd /s`, `format`, PowerShell `rm -r`/`ri -Recurse`, `find -delete`,
+  `truncate -s 0`, `dd of=`, `shred`, `mv … /dev/null`, `: > file`,
+  `git reset --hard`, `git clean -fdx`, `git checkout -- .`, `git branch -D`,
+  `git stash drop`, `git push --mirror`, `shutil.rmtree`, `fs.rmSync`,
+  `rimraf`, and SQL with comments or newlines. Commands are normalised
+  (quotes stripped, comments collapsed) before matching, so `r""m -rf` and
+  `k''eys` no longer slip past.
+- Scripts are scanned: `bash x.sh`, `./x.sh`, `python x.py`, `psql -f x.sql`
+  have the file's content checked, and writing a script (`.sh`, `.py`, `.sql`
+  …) that contains a destructive command is denied like the command itself.
+- The agent can no longer switch the recorder off unnoticed: writes to
+  `.claude/settings*`, `.cursor/hooks.json`, managed settings and anything
+  under `.perathos/` are denied (reads are fine). Any mention of
+  `signing.key` is denied.
+- Precondition `--scope` now matches whole tokens, so `--scope build` no
+  longer covers `postgres-build-data`.
+- `session verify` and `evidence verify` print `VALID_UNCONFIRMED_SIGNER`
+  when no key is pinned, instead of a bare VALID.
+- The MCP proxy handles JSON-RPC batch arrays: each call is recorded and
+  guarded, denied calls are answered in a batch response.
+- The `[Unreleased]` MIT claim is now backed by a LICENSE file and
+  `pyproject.toml` license metadata (GitHub showed "no license").
+
+### Added
+- Fail-closed hooks: `onFailure: "block"` on the Claude Code guard hook,
+  `failClosed: true` on Cursor's.
+- `perathos hooks install --scope managed`: writes Claude Code's managed
+  policy file with `allowManagedHooksOnly: true`.
+- `tests/test_guard_hardening.py`: the red-team's bypass list (41 commands),
+  27 safe commands, script and write scanning, scope matching, fail-closed
+  installs, unpinned-verify wording, MCP batches.
+
 ## [1.0.0] - 2026-11-04
 
 The flight recorder is feature-complete: Claude Code, Cursor and any MCP

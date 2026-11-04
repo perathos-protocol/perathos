@@ -6,6 +6,8 @@ everything can be re-checked from the files.
 
 ## Check it
 
+0. A pack verified without a pinned key shows `VALID_UNCONFIRMED_SIGNER`: the record is
+   internally consistent, but anyone with a key can produce such a record. Always pin.
 1. Get the signer's **public key** from the operator through a channel other than the pack itself
    (email signature, ticket, call). A pack signed by a key you have not confirmed proves only that
    *someone* sealed it.
@@ -49,7 +51,8 @@ everything can be re-checked from the files.
   the machine's users cannot change? If so, check the pack against that copy with
   `perathos session verify <log> --anchors <copy>`.
 - Which hooks were installed (`.claude/settings.json`, `.cursor/hooks.json`, MCP client config),
-  and was `--guard` on?
+  was `--guard` on, and were the hooks installed in the managed policy file (which the agent
+  cannot edit) rather than the project file?
 - Can you provide the original arguments or output for receipt *N*? Hash them and compare with the
   receipt's `args_hash` / `result_hash`.
 

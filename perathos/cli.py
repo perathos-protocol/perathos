@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -691,6 +692,15 @@ def _is_perathos_stop_hook(entry) -> bool:
     return _is_perathos_entry(entry, _STOP_CHECK_CMD)
 
 
+def _managed_settings_path() -> Path:
+    """Claude Code's managed policy file for this OS (code.claude.com/docs/en/managed-settings)."""
+    if sys.platform.startswith("win"):
+        return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    return Path("/etc/claude-code/managed-settings.json")
+
+
 def _load_settings(settings_path: Path) -> dict:
     settings: dict = {}
     if settings_path.exists():
@@ -706,7 +716,8 @@ def _load_settings(settings_path: Path) -> dict:
     return settings
 
 
-def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: bool, settings_path: Path) -> None:
+def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: bool, settings_path: Path,
+              *, fail_closed: bool = False) -> None:
     """Add one command hook in Claude Code's nested shape.
 
     {"EventName": [{"matcher": "*", "hooks": [{"type": "command", ...}]}]}.
@@ -722,15 +733,22 @@ def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: 
         sys.exit(1)
     if existing or flat_legacy:
         entries[:] = [e for e in entries if not _is_perathos_entry(e, command)]
-    entry: dict = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+    hook: dict = {"type": "command", "command": command, "timeout": timeout}
+    if fail_closed:
+        # Claude Code >= 2.1.295: if the hook cannot start or crashes, block the
+        # tool call instead of letting it through (older versions ignore this).
+        hook["onFailure"] = "block"
+    entry: dict = {"hooks": [hook]}
     if event in _TOOL_EVENTS:
         entry = {"matcher": "*", **entry}
     entries.append(entry)
 
 
 @hooks.command(name="install")
-@click.option("--scope", type=click.Choice(["project", "user"]), default="project",
-              help="Install into .claude/settings.json (project, default) or ~/.claude/settings.json (user).")
+@click.option("--scope", type=click.Choice(["project", "user", "managed"]), default="project",
+              help="Install into .claude/settings.json (project, default), ~/.claude/settings.json (user), or the "
+                   "machine's managed policy file (managed: needs admin rights; also sets allowManagedHooksOnly so "
+                   "the agent cannot add, remove or edit hooks).")
 @click.option("--force", is_flag=True, help="Replace already-installed perathos hook entries.")
 @click.option("--recorder", is_flag=True,
               help="Also install the flight recorder: a hash-chained receipt for every tool call, "
@@ -767,9 +785,16 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
         settings_path = Path(".claude") / "settings.json"
     else:
         settings_path = Path.home() / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if scope == "managed":
+        settings_path = _managed_settings_path()
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # reported below when writing fails
     settings = _load_settings(settings_path)
     hooks_block = settings.setdefault("hooks", {})
+    if scope == "managed":
+        settings["allowManagedHooksOnly"] = True
 
     recorder = recorder or guard or anchor
     _add_hook(hooks_block, "Stop", _STOP_CHECK_CMD, 30, force, settings_path)
@@ -781,8 +806,14 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
             if anchor and event in ("Stop", "SessionEnd"):
                 flags += " --anchor"
             _add_hook(hooks_block, event, _RECORD_CMD + flags, 20 if "--anchor" in flags else 10,
-                      force, settings_path)
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+                      force, settings_path, fail_closed=bool(guard and event == "PreToolUse"))
+    try:
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    except PermissionError:
+        click.echo(f"[ERROR] Cannot write {settings_path} (needs administrator rights).", err=True)
+        click.echo("Run this command elevated, or write the following there yourself:", err=True)
+        click.echo(json.dumps(settings, indent=2), err=True)
+        sys.exit(1)
 
     click.echo(f"Installed into {settings_path}.")
     click.echo("Every turn's summary will now be grounded against this session's tool")
@@ -1055,13 +1086,17 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
     if as_json:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
-        status = "VALID" if report.valid else "INVALID"
+        pinned = expected_verify_key is not None or trust_store is not None
+        status = ("VALID" if pinned else "VALID_UNCONFIRMED_SIGNER") if report.valid else "INVALID"
         click.echo(f"{status}  {log}")
         click.echo(f"  session       {report.session_id}")
         click.echo(f"  receipts      {report.receipts} ({report.tool_calls} tool calls, {report.checkpoints} checkpoints)")
         click.echo(f"  sealed        through seq {report.sealed_through} by {report.signed_checkpoints} signed checkpoint(s)")
         if report.signers:
             click.echo(f"  signer        {', '.join(report.signers)}")
+            if not pinned:
+                click.echo("  NOTE          anyone with their own key can produce a self-consistent log; confirm this")
+                click.echo("                key with the session owner and pass --verify-key (or --trust-jwks)")
         if report.models:
             click.echo(f"  model         {', '.join(report.models)} (self-reported)")
         if report.first_ts:
@@ -1295,7 +1330,10 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_js
         click.echo(json.dumps(res, indent=2))
     else:
         s = res["session"]
-        click.echo(f"{'VALID' if res['valid'] else 'INVALID'}  {pack}")
+        pinned = expected_verify_key is not None
+        click.echo(f"{('VALID' if pinned else 'VALID_UNCONFIRMED_SIGNER') if res['valid'] else 'INVALID'}  {pack}")
+        if res["valid"] and not pinned:
+            click.echo("  NOTE         confirm the signer key with the pack's owner and pass --verify-key")
         click.echo(f"  session      {s.get('session_id')}")
         click.echo(f"  tool calls   {s.get('tool_calls')} ({s.get('blocked')} blocked by the guard)")
         click.echo(f"  sealed       through receipt {s.get('sealed_through')}, signer {', '.join(s.get('signers') or []) or 'none'}")

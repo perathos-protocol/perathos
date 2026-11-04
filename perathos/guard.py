@@ -58,11 +58,30 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
 
 
 # Shell / CLI commands that can destroy data or the means to recover it.
+# Matched against a normalised copy of the command (quotes removed, SQL
+# comments collapsed), so `r""m -rf`, `k''eys` and `DROP/**/TABLE` match.
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
-       r"\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive\b.*--force|--force\b.*--recursive|-r\s+-f|-f\s+-r)\b",
-       "recursive forced delete"),
-    _r("fs.remove-item-recurse", r"\bremove-item\b.*-recurse", "PowerShell recursive delete"),
+       r"\brm\s+(-\S+\s+)*(-[a-z]*r|--recursive\b)|\brm\s+(-\S+\s+)*-[a-z]*f[a-z]*r",
+       "recursive delete"),
+    _r("fs.win-delete",
+       r"(^|[\s;&|(])(del|erase)\s+(/\w\s+)*/[sq]\b|(^|[\s;&|(])(rd|rmdir)\s+(/\w\s+)*/s\b|(^|[\s;&|(])format\s+[a-z]:",
+       "Windows recursive or quiet delete"),
+    _r("fs.ps-delete",
+       r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+(\S+\s+)*-(r|recurse|rec|force)\b",
+       "PowerShell recursive delete"),
+    _r("fs.find-delete", r"\bfind\b.*\s(-delete\b|-exec\s+rm\b)", "find -delete"),
+    _r("fs.truncate-or-overwrite",
+       r"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+.*\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null|(^|[;&|])\s*:\s*>\s*\S",
+       "file truncated, overwritten or shredded"),
+    _r("fs.interpreter-delete",
+       r"shutil\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(.*recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\(.*\*",
+       "delete through an interpreter one-liner"),
+    _r("git.destructive",
+       r"\bgit\s+(reset\s+--hard|clean\s+-\S*[fd]|checkout\s+(--\s|\.\s*$|\.\s)|restore\s+(--staged\s+)?(\.|--\s)|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
+       "git command that discards work"),
+    _r("git.force-push-main", r"\bgit\s+push\b.*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b|\bgit\s+push\s+--mirror\b",
+       "force push to a main branch"),
     _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
     _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.\"`]+", "SQL TRUNCATE"),
     _r("sql.delete-all", r"\bdelete\s+from\s+[\w.\"`]+\s*(;|$|\"|')", "SQL DELETE without WHERE"),
@@ -76,7 +95,7 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("k8s.delete", r"\bkubectl\s+delete\s+(ns|namespace|pv|pvc|persistentvolume\w*|statefulset|deployment|all)\b",
        "kubectl delete of stateful resources"),
     _r("cloud.aws-delete",
-       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-)",
+       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-)",
        "AWS delete of storage or backups"),
     _r("cloud.gcloud-delete", r"\bgcloud\s+.*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b|\bgcloud\s+storage\s+rm\b",
        "Google Cloud delete of storage or backups"),
@@ -86,20 +105,46 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("paas.fly", r"\bfly(ctl)?\s+(volumes?\s+(destroy|delete)|apps?\s+destroy|postgres\s+destroy)\b", "Fly destroy"),
     _r("paas.neon", r"\bneon(ctl)?\s+(branches?|projects?|databases?)\s+delete\b", "Neon delete"),
     _r("docker.volume", r"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes)", "Docker volume delete"),
-    _r("git.force-push-main", r"\bgit\s+push\b.*(--force\b|-f\b).*\b(main|master|prod|production)\b", "force push to a main branch"),
 )
 
-# Self-authorization: the agent must not create its own preconditions or read the key.
+# Self-authorization and self-disabling: the agent must not create its own
+# preconditions, touch the signing key, or change the files that keep the
+# recorder and guard running.
+_ENFORCEMENT_PATHS = r"(\.perathos[\\/]|\.claude[\\/]+settings|\.cursor[\\/]+hooks|managed-settings|claudecode[\\/]+managed)"
 SELF_AUTH_RULES: tuple[Rule, ...] = (
     _r("guard.self-authorize", r"\bperathos\s+(precondition|keygen)\b",
        "agent tried to create its own safety precondition or replace the signing key"),
-    _r("guard.key-access", r"\.perathos[\\/]+keys\b", "agent tried to access the perathos signing key"),
+    _r("guard.key-access", r"\.perathos[\\/]+keys\b|signing\.key\b", "agent tried to access the perathos signing key"),
+    _r("guard.self-disable", _ENFORCEMENT_PATHS,
+       "agent tried to change the files that keep the recorder and guard running"),
 )
+# Reading those files is fine; only commands that could write them are denied.
+_READ_ONLY_PREFIX = re.compile(r"^\s*(cat|type|ls|dir|head|tail|less|more|stat|get-content|gc|get-childitem|perathos|git\s+(status|diff|log|show))\b", re.I)
 
 # Non-shell tools (MCP servers etc.) whose *name* says they destroy things.
 _DESTRUCTIVE_TOOL_NAME = re.compile(r"(delete|drop|destroy|purge|truncate|wipe|reset|remove)", re.IGNORECASE)
 _SHELL_TOOLS = {"Bash", "PowerShell", "bash", "shell"}
 _FILE_TOOLS_WITH_PATH = {"Read", "Write", "Edit", "MultiEdit", "NotebookEdit"}
+_WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+_SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".bat", ".cmd", ".sql", ".rb", ".pl")
+# `bash x.sh`, `python x.py`, `psql -f x.sql`, `./x.sh`: scripts the command runs
+_SCRIPT_RUN = re.compile(
+    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+)*|powershell\s+(?:-\S+\s+)*|psql\b.*?\s-f\s+|mysql\b.*?<\s*|sqlite3\b.*?<\s*)"
+    r"([^\s;&|)<>\"']+)", re.I)
+_MAX_SCRIPT_BYTES = 1 << 20
+_CMD_NORMALISERS = (
+    (re.compile(r"""['"`]"""), ""),            # r""m -rf, k''eys
+    (re.compile(r"\\\r?\n"), " "),             # line continuations
+    (re.compile(r"/\*.*?\*/", re.S), " "),     # SQL block comments
+    (re.compile(r"[ \t]+"), " "),
+)
+
+
+def normalize_command(command: str) -> str:
+    """The text rules are matched against: quotes stripped, comments collapsed."""
+    for rx, rep in _CMD_NORMALISERS:
+        command = rx.sub(rep, command)
+    return command
 
 
 @dataclass(frozen=True)
@@ -110,23 +155,64 @@ class Match:
     self_auth: bool = False
 
 
-def evaluate(tool_name: str, tool_input: Any) -> Match | None:
-    """Return the first destructive-action rule a tool call matches, or None."""
+def _first_match(text: str, *, include_self_auth: bool = True) -> Match | None:
+    norm = normalize_command(text)
+    if include_self_auth:
+        for rule in SELF_AUTH_RULES:
+            if rule.pattern.search(norm):
+                if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(norm):
+                    continue
+                return Match(rule.rule_id, rule.description, text, self_auth=True)
+    for rule in SHELL_RULES:
+        if rule.pattern.search(norm):
+            return Match(rule.rule_id, rule.description, text)
+    return None
+
+
+def _scan_script_files(command: str, cwd: str | os.PathLike | None) -> Match | None:
+    """If the command runs a script file that exists, scan the script's content too."""
+    if cwd is None:
+        return None
+    for m in _SCRIPT_RUN.finditer(command):
+        name = m.group(1)
+        if not name or name.startswith("-"):
+            continue
+        path = Path(name) if os.path.isabs(name) else Path(cwd) / name
+        try:
+            if not path.is_file() or path.stat().st_size > _MAX_SCRIPT_BYTES:
+                continue
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        hit = _first_match(content)
+        if hit is not None:
+            return Match(f"script:{hit.rule_id}", f"{hit.description} inside {name}", command, self_auth=hit.self_auth)
+    return None
+
+
+def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = None) -> Match | None:
+    """Return the first destructive-action rule a tool call matches, or None.
+
+    ``cwd`` lets the guard read a script the command would run and scan it.
+    """
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name in _SHELL_TOOLS:
         command = str(tool_input.get("command") or "")
-        for rule in SELF_AUTH_RULES:
-            if rule.pattern.search(command):
-                return Match(rule.rule_id, rule.description, command, self_auth=True)
-        for rule in SHELL_RULES:
-            if rule.pattern.search(command):
-                return Match(rule.rule_id, rule.description, command)
-        return None
+        return _first_match(command) or _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        if SELF_AUTH_RULES[1].pattern.search(target):
-            r = SELF_AUTH_RULES[1]
-            return Match(r.rule_id, r.description, target, self_auth=True)
+        norm_target = normalize_command(target)
+        for rule in SELF_AUTH_RULES[1:]:
+            if rule.pattern.search(norm_target) and (tool_name in _WRITE_TOOLS or rule.rule_id == "guard.key-access"):
+                return Match(rule.rule_id, rule.description, target, self_auth=True)
+        if tool_name in _WRITE_TOOLS and target.lower().endswith(_SCRIPT_EXT):
+            body = " ".join(str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source"))
+            for e in tool_input.get("edits") or []:
+                if isinstance(e, dict):
+                    body += " " + str(e.get("new_string") or "")
+            hit = _first_match(body, include_self_auth=False)
+            if hit is not None:
+                return Match(f"write:{hit.rule_id}", f"writes a script containing a {hit.description}", target)
         return None
     if tool_name.startswith("mcp__"):
         subject = tool_name + " " + json.dumps(tool_input, sort_keys=True, default=str)[:500]
@@ -136,12 +222,10 @@ def evaluate(tool_name: str, tool_input: Any) -> Match | None:
         # shell server's `run`) can still carry a destructive command in its
         # arguments: scan every string argument with the shell/SQL rules.
         for text in _string_values(tool_input):
-            for rule in SELF_AUTH_RULES:
-                if rule.pattern.search(text):
-                    return Match(rule.rule_id, rule.description, subject, self_auth=True)
-            for rule in SHELL_RULES:
-                if rule.pattern.search(text):
-                    return Match(rule.rule_id, f"{rule.description} inside an MCP tool call", subject)
+            hit = _first_match(text)
+            if hit is not None:
+                desc = hit.description if hit.self_auth else f"{hit.description} inside an MCP tool call"
+                return Match(hit.rule_id, desc, subject, self_auth=hit.self_auth)
     return None
 
 
@@ -263,7 +347,11 @@ def check_precondition(pc: dict, *, trusted_key: str, now: datetime | None = Non
 
 
 def _covers(scope: str, subject: str) -> bool:
-    return scope == "*" or scope.lower() in subject.lower()
+    """`*` covers everything; otherwise the scope must appear as a whole token
+    (so `--scope build` does not also cover `postgres-build-data`)."""
+    if scope == "*":
+        return True
+    return re.search(r"(?<![\w.-])" + re.escape(scope) + r"(?![\w.-])", subject, re.IGNORECASE) is not None
 
 
 def find_precondition(cwd: str | os.PathLike, subject: str, *, trusted_key: str) -> dict | None:
@@ -298,7 +386,7 @@ class Decision:
 
 def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_key: str | None) -> Decision | None:
     """Guard decision for one tool call; None when no rule matches."""
-    m = evaluate(tool_name, tool_input)
+    m = evaluate(tool_name, tool_input, cwd)
     if m is None:
         return None
     if m.self_auth:

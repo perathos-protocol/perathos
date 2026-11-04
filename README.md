@@ -188,9 +188,12 @@ perathos session verify <session_id> --verify-key <your 64-char hex key>
 ```
 
 `session verify` fails (exit 1) on any edited, inserted, deleted or reordered
-receipt, a stripped or forged checkpoint signature, a log re-signed by a
-different key (with `--verify-key` or `--trust-jwks`), and truncation back
-before the last witnessed checkpoint.
+receipt. Without `--verify-key` or `--trust-jwks` it reports
+`VALID_UNCONFIRMED_SIGNER`: anyone with their own key can make a
+self-consistent log, so confirm the signer's key with the owner and pin it.
+It also fails on a stripped or forged checkpoint signature, a log re-signed by a
+different key (when pinned), and truncation back before the last witnessed
+checkpoint.
 
 The `model` field is read from the transcript and is self-reported. Each
 hook adds a short Python start-up, about 0.35 s per hook on a typical Windows laptop
@@ -222,12 +225,22 @@ perathos hooks install --guard
 ```
 
 Before a tool call runs, the guard checks it against rules for commands that
-destroy data or backups: `rm -rf`, `DROP`/`TRUNCATE`/`DELETE` without
-`WHERE`, `dropdb`, `FLUSHALL`, `terraform destroy`, `kubectl delete` of
-stateful resources, deleting AWS/GCP/Azure storage or backups, Railway,
-Vercel, Fly and Neon deletes, Docker volume deletes, database resets, force
-pushes to main, and MCP tools named like `*_delete`. A matching call is
-**denied** unless a person has signed a precondition for that target:
+destroy data or backups: any recursive `rm`, Windows `del /s`, `rmdir /s`,
+`format` and PowerShell `Remove-Item -Recurse`, `find -delete`, `truncate`,
+`dd`, `shred`, `git reset --hard` / `clean -fdx` / `checkout -- .` /
+`branch -D`, `shutil.rmtree` and `fs.rmSync` one-liners, `DROP`/`TRUNCATE`/
+`DELETE` without `WHERE`, `dropdb`, `FLUSHALL`, `terraform destroy`,
+`kubectl delete` of stateful resources, AWS/GCP/Azure storage or backup
+deletes, Railway, Vercel, Fly and Neon deletes, Docker volumes, database
+resets, force pushes to main, and MCP tools named like `*_delete` or carrying
+such a command in their arguments. Quotes and SQL comments are stripped before
+matching (`r""m -rf`, `DROP/**/TABLE`). When a command runs a script file
+(`bash x.sh`, `./x.sh`, `psql -f x.sql`), the file is scanned too, and
+writing a script that contains such a command is treated the same way. The
+agent is also denied any change to the files that keep the guard running
+(`.claude/settings.json`, `.cursor/hooks.json`, `.perathos/`) and any access
+to the signing key. A matching call is **denied** unless a person has signed
+a precondition for that target:
 
 ```bash
 perathos precondition add --scope pg-data --check "pg_restore --list backups/pg-data.dump"
@@ -242,8 +255,19 @@ signing key.
 
 It is a seatbelt against accidents like an agent deleting a production
 database and its backups, not a sandbox against a deliberately hostile
-agent: a command can be disguised past any pattern, and the signing key
-lives on the same machine.
+agent: a command can be disguised past any pattern (environment-variable
+indirection, downloaded scripts), and the signing key lives on the same
+machine. An independent red-team of 1.0.0 found about thirty accident-class
+commands that passed; 1.1.0 blocks all of them, and the list it used is now
+a test (`tests/test_guard_hardening.py`).
+
+**Fail closed and lock the hooks.** The installer sets `onFailure: "block"`
+on the Claude Code guard hook (Claude Code 2.1.295+) and `failClosed` on
+Cursor's, so a missing or crashing guard blocks the call instead of letting
+it through. On a machine you administer, `perathos hooks install --scope
+managed --guard --anchor` writes the hooks into Claude Code's managed policy
+file and sets `allowManagedHooksOnly`, so the agent cannot add, remove or
+edit hooks at all.
 
 ### Cursor
 
