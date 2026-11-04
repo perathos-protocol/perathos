@@ -24,13 +24,15 @@ pip install perathos
 # 2. Generate a signing keypair (one-time setup)
 perathos keygen
 
-# 3. Prove an AI output
-perathos prove "The capital of France is Paris."
+# 3. Prove and sign an AI output
+perathos prove "The capital of France is Paris." --sign
 # Output: bundle_id 550e8400-e29b-41d4-a716-446655440000 saved
 
 # 4. Verify the bundle
 perathos verify 550e8400-e29b-41d4-a716-446655440000
-# Output: VALID_UNSIGNED  550e8400-e29b-41d4-a716-446655440000
+# Output: VALID_SIGNED  550e8400-e29b-41d4-a716-446655440000
+# Unsigned bundles fail verification by default, because anyone can create one.
+# Use --allow-unsigned only for a local hash-consistency check.
 
 # 5. Inspect it (human-readable)
 perathos inspect 550e8400-e29b-41d4-a716-446655440000
@@ -268,8 +270,10 @@ integrity_hash 2cf24dba5fb0a30e26e83b2ac5b9e29e1...
 issued_at      2024-01-15T14:30:45.123456+00:00
 saved          /home/user/.perathos/bundles/550e8400-e29b-41d4-a716-446655440000.json
 
-# 3. Verify the bundle
+# 3. Verify the bundle (unsigned bundles fail unless you opt out explicitly)
 $ perathos verify 550e8400-e29b-41d4-a716-446655440000
+[ERROR] UNSIGNED  bundle has no signature, so its issuer is unproven
+$ perathos verify 550e8400-e29b-41d4-a716-446655440000 --allow-unsigned
 VALID_UNSIGNED  550e8400-e29b-41d4-a716-446655440000
 
 # 4. Inspect for human readability
@@ -361,7 +365,7 @@ $ perathos prove "Output text" --sign --json
 ```bash
 # Verify a bundle exported from another system
 $ perathos verify --file /path/to/bundle.json
-VALID_UNSIGNED  /path/to/bundle.json
+VALID_SIGNED  /path/to/bundle.json
 
 # Verify and display full bundle
 $ perathos verify --file bundle.json --json

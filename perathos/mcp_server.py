@@ -83,6 +83,10 @@ class VerifyBundleInput(BaseModel):
         default=None,
         description="Pin the expected signer: reject the bundle unless its signature key equals this 64-char hex key.",
     )
+    allow_unsigned: bool = Field(
+        default=False,
+        description="Accept an unsigned bundle. Unsigned bundles fail by default because anyone can create one.",
+    )
 
 
 def _run_verify_answer(params: VerifyAnswerInput) -> dict:
@@ -219,7 +223,11 @@ async def perathos_verify_bundle(params: VerifyBundleInput) -> str:
           error_code and a plain-language explanation -- never a crash.
     """
     bundle = json.loads(params.bundle_json)
-    valid, err = _verify_bundle(bundle, expected_verify_key=params.expected_verify_key)
+    valid, err = _verify_bundle(
+        bundle,
+        expected_verify_key=params.expected_verify_key,
+        require_signed=not params.allow_unsigned,
+    )
     return json.dumps(
         {"valid": valid, "error_code": err, "explanation": _explain_error(err) if err else ""},
         indent=2,

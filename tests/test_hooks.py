@@ -219,3 +219,34 @@ def test_hooks_stop_check_never_blocks_exit_code(tmp_path, home):
     payload = {"last_assistant_message": "5 + 5 = 11.", "transcript_path": "", "cwd": str(tmp_path)}
     result = runner.invoke(cli, ["hooks", "stop-check"], input=json.dumps(payload))
     assert result.exit_code == 0
+
+
+# --- Real Claude Code transcript format -------------------------------------
+# Real transcripts nest tool results inside a ``user`` entry's
+# ``message.content`` list; they never appear as top-level lines. The fixture
+# copies the field structure of a real Claude Code session with synthetic
+# values. Before this fix the extractor found 0 sources in real sessions.
+
+_REAL_FIXTURE = Path(__file__).parent / "fixtures" / "claude_code_transcript_v2.jsonl"
+
+
+def test_extract_sources_from_real_transcript_format():
+    sources = extract_transcript_sources(str(_REAL_FIXTURE))
+    assert sources == ["314 passed in 8.2s", "version 0.3.1"]
+
+
+def test_real_transcript_skips_non_text_blocks_and_assistant_text():
+    sources = extract_transcript_sources(str(_REAL_FIXTURE))
+    joined = " ".join(sources)
+    assert "AAAA" not in joined            # image data is not grounding text
+    assert "tool_reference" not in joined  # nor are tool references
+    assert "All 314 tests passed" not in joined  # the agent's own claim is never a source
+
+
+def test_stop_hook_grounds_against_real_transcript():
+    result = check_stop_hook({
+        "last_assistant_message": "All 314 tests passed on version 0.3.1.",
+        "transcript_path": str(_REAL_FIXTURE),
+    })
+    assert result["sources_count"] == 2
+    assert result["verdict"] != "NOT_APPLICABLE"

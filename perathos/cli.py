@@ -335,22 +335,25 @@ def prove_cmd(text: str, input_text: str, input_file: str, output_file: str, sig
               help="Display full 64-character hashes instead of truncated 8-character previews.")
 @click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
               help="Pin the expected signer: accept a signed bundle only if its public key matches this 64-char hex key. Prevents silent signer substitution.")
-@click.option("--require-signed", is_flag=True,
-              help="Policy gate: exit non-zero unless the bundle carries a valid signature.")
+@click.option("--require-signed", is_flag=True, hidden=True,
+              help="Deprecated no-op: signatures are now required by default.")
+@click.option("--allow-unsigned", is_flag=True,
+              help="Accept an unsigned bundle (hash-chain consistency only). Unsigned bundles fail by default because anyone can create one.")
 @click.option("--require-pass", is_flag=True,
               help="Policy gate: exit non-zero unless the bound verification aggregate verdict is PASS.")
 @click.option("--trust-jwks", "trust_jwks", type=click.Path(exists=True), default=None, metavar="PATH",
               help="Verify the signer against a trusted key set (JWKS file). Rejects any signer whose key is not in the set.")
 def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, expected_verify_key: str,
-               require_signed: bool, require_pass: bool, trust_jwks: str):
+               require_signed: bool, allow_unsigned: bool, require_pass: bool, trust_jwks: str):
     """Verify a VRL Proof Bundle by BUNDLE_ID or from a JSON file.
     
     Verifies the integrity chain (hash chain) of a stored bundle using its UUID,
     or loads and verifies a bundle from an external JSON file via --file.
     
     Exit codes:
-        0 = Bundle is valid (hash chain verified, signature valid if present)
-        1 = Bundle is invalid (tamper detection, hash mismatch, bad signature)
+        0 = Bundle is valid (hash chain verified and signature valid)
+        1 = Bundle is invalid (tamper detection, hash mismatch, bad signature,
+            or unsigned without --allow-unsigned)
         2 = Usage error (missing arguments, conflicting options)
     
     For stored bundles: Use BUNDLE_ID (the bundle's UUID).
@@ -366,6 +369,10 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, exp
         perathos verify 550e8400-e29b-41d4-a716-446655440000 --json
             → Verify and display full bundle JSON on success
     """
+    if require_signed and allow_unsigned:
+        click.echo("[ERROR] --require-signed and --allow-unsigned conflict.", err=True)
+        sys.exit(2)
+
     if file_path and bundle_id:
         click.echo("[ERROR] Use either BUNDLE_ID or --file, not both.", err=True)
         click.echo("", err=True)
@@ -447,8 +454,9 @@ def verify_cmd(bundle_id: str, file_path: str, as_json: bool, verbose: bool, exp
     # Step 2: policy gates (a deployment may require signed + PASS in one call).
     # The bundle is already cryptographically valid at this point, so any present
     # signature has validated and any bound verdict is tamper-evident.
-    if require_signed and "provider_signature" not in bundle:
-        click.echo("[ERROR] POLICY  bundle is unsigned but --require-signed was set", err=True)
+    if not allow_unsigned and "provider_signature" not in bundle:
+        click.echo("[ERROR] UNSIGNED  bundle has no signature, so its issuer is unproven", err=True)
+        click.echo(f"Reason: {_explain_error('ERR_UNSIGNED')}", err=True)
         sys.exit(1)
     if require_pass:
         verification = bundle.get("verification")

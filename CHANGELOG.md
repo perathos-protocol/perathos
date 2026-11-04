@@ -5,6 +5,25 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed (breaking for CLI and MCP callers)
+- `perathos verify` now **fails on unsigned bundles by default** (exit 1,
+  `ERR_UNSIGNED`). An unsigned bundle only proves its hashes are internally
+  consistent; anyone can create one, so it says nothing about who issued it.
+  Pass `--allow-unsigned` for a local consistency check. `--require-signed`
+  is kept as a hidden, deprecated no-op.
+- The MCP tool `perathos_verify_bundle` applies the same default and takes an
+  `allow_unsigned` field.
+- Library: `verify_bundle(..., require_signed=True)` returns `ERR_UNSIGNED`.
+  The library default is unchanged (`False`) for backward compatibility.
+
+### Fixed
+- The Claude Code Stop hook found **0 sources in real sessions**: real
+  transcripts nest `tool_result` blocks inside a `user` entry's
+  `message.content`, but the extractor only read top-level lines (the format
+  the old tests invented). It now reads the nested format, keeps the flat one
+  as a fallback, and skips non-text blocks (images, tool references). New
+  tests use a fixture with the exact field structure of a real session.
+
 ### Added — Claude Code hook + MCP server
 - `perathos hooks install claude-code` / `perathos hooks stop-check` — a Stop
   hook that grounds a coding agent's final turn summary against its own
