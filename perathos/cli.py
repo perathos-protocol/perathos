@@ -1189,5 +1189,103 @@ def precondition_list():
         click.echo(f"{pc.get('id', f.stem)[:8]}  scope={pc.get('scope')!r}  expires={pc.get('expires')}  {status}")
 
 
+@session.command(name="export")
+@click.argument("target")
+@click.option("--out", "out_dir", required=True, type=click.Path(), metavar="DIR",
+              help="Folder to write the evidence pack into (replaced if it exists). A .zip is written next to it.")
+@click.option("--anchors", "anchors_file", type=click.Path(), default=None, metavar="PATH",
+              help="Anchors file (default: ~/.perathos/anchors/<session_id>.jsonl if present).")
+@click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
+              help="Pin the expected signer when verifying before export.")
+@click.option("--no-zip", is_flag=True, help="Only write the folder.")
+def session_export(target: str, out_dir: str, anchors_file: str, expected_verify_key: str, no_zip: bool):
+    """Export an evidence pack for a session: log, timestamps, preconditions,
+    verification result, a one-page report and a signed manifest.
+
+    The pack can be handed to an auditor, insurer or incident reviewer, who
+    re-checks it with 'perathos evidence verify'. It contains hashes of tool
+    arguments and outputs, never the content.
+    """
+    from .evidence import export_evidence_pack
+    from .recorder import safe_session_id
+
+    log = _resolve_session_log(target)
+    anchors = Path(anchors_file) if anchors_file else Path.home() / ".perathos" / "anchors" / f"{safe_session_id(log.stem)}.jsonl"
+    try:
+        sk_hex = load_signing_key()
+    except (FileNotFoundError, ValueError):
+        sk_hex = None
+        click.echo("[WARN] No signing key: the pack manifest will be unsigned. Run 'perathos keygen'.", err=True)
+    roots = None
+    if anchors.exists():
+        try:
+            from .anchor import load_roots
+            roots = load_roots()
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"[ERROR] Cannot check timestamps: {exc}", err=True)
+            sys.exit(2)
+    res = export_evidence_pack(log, out_dir, anchors_path=anchors if anchors.exists() else None,
+                               expected_verify_key=expected_verify_key, tsa_roots=roots,
+                               signing_key_hex=sk_hex, make_zip=not no_zip)
+    rep = res["report"]
+    click.echo(f"{'VALID' if res['valid'] else 'INVALID'}  evidence pack for {rep.get('session_id')}")
+    click.echo(f"  folder   {res['dir']}")
+    if res["zip"]:
+        click.echo(f"  zip      {res['zip']}")
+    click.echo(f"  report   {Path(res['dir']) / 'REPORT.html'}")
+    click.echo(f"  tool calls {rep.get('tool_calls')}, blocked {rep.get('blocked')}, "
+               f"timestamps {rep.get('anchors')}")
+    for err in rep.get("errors", []):
+        click.echo(f"[ERROR] {err}", err=True)
+    sys.exit(0 if res["valid"] else 1)
+
+
+@cli.group()
+def evidence():
+    """Check evidence packs exported with 'perathos session export'."""
+
+
+@evidence.command(name="verify")
+@click.argument("pack", type=click.Path(exists=True))
+@click.option("--verify-key", "expected_verify_key", default=None, metavar="HEX",
+              help="The signer key you expect (confirm it with the sender separately).")
+@click.option("--tsa-root", "tsa_roots", multiple=True, type=click.Path(exists=True), metavar="PEM",
+              help="Extra trusted TSA root certificate(s).")
+@click.option("--json", "as_json", is_flag=True, help="Print the full result as JSON.")
+def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_json: bool):
+    """Re-check an evidence pack (folder or .zip) from its own files.
+
+    Checks the signed manifest (no file added, removed or changed), the
+    receipt chain and checkpoint signatures, and every independent timestamp.
+    Exit 0 = valid, 1 = invalid.
+    """
+    from .evidence import verify_evidence_pack
+
+    roots = None
+    try:
+        from .anchor import load_roots
+        roots = load_roots(list(tsa_roots))
+    except Exception:  # noqa: BLE001 -- without the [anchor] extra, packs with anchors fail clearly below
+        roots = None
+    try:
+        res = verify_evidence_pack(pack, expected_verify_key=expected_verify_key, tsa_roots=roots)
+    except (OSError, ValueError, KeyError) as exc:
+        click.echo(f"[ERROR] Cannot read evidence pack: {exc}", err=True)
+        sys.exit(1)
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    else:
+        s = res["session"]
+        click.echo(f"{'VALID' if res['valid'] else 'INVALID'}  {pack}")
+        click.echo(f"  session      {s.get('session_id')}")
+        click.echo(f"  tool calls   {s.get('tool_calls')} ({s.get('blocked')} blocked by the guard)")
+        click.echo(f"  sealed       through receipt {s.get('sealed_through')}, signer {', '.join(s.get('signers') or []) or 'none'}")
+        if s.get("anchors"):
+            click.echo(f"  timestamped  through receipt {s.get('anchored_through')} at {s.get('anchored_time')}")
+        for err in res["errors"]:
+            click.echo(f"[ERROR] {err}", err=True)
+    sys.exit(0 if res["valid"] else 1)
+
+
 def main():
     cli()

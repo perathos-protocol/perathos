@@ -1,8 +1,23 @@
 # Perathos
 
-Cryptographic proof layer for AI outputs. Every AI response gets a tamper-evident bundle — a hash chain + optional Ed25519 signature — that can be verified offline with no network calls. A pluggable **multi-verifier pipeline** can additionally attach hallucination/factuality verdicts (self-consistency, claim-level entailment) that are bound into the signed bundle, so the verdicts are reproducible and tamper-evident too.
+**An open-source flight recorder for coding agents.** Every tool call is chained, signed and independently timestamped, and destructive actions need a signed safety check first. After an incident you can prove what the agent did, that nothing was cut from the record, and whether the safeguards were in place.
 
-> **Evidence, not guarantee.** A `PASS` means the configured verifiers found no problem with the evidence they had — not that the output is true. `INCONCLUSIVE` ("not enough evidence") is a first-class outcome, never silently promoted to PASS. See [docs/ENTERPRISE_FAQ.md](docs/ENTERPRISE_FAQ.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+```bash
+pip install 'perathos[anchor]'
+perathos keygen
+perathos hooks install --guard --anchor     # Claude Code: recorder + guard + timestamps
+```
+
+- **Recorder:** a hash-chained receipt for every tool call (hashes of arguments and results, never the content), sealed each turn by an Ed25519-signed checkpoint. `perathos session verify` catches edited, deleted, inserted or reordered receipts and forged signatures.
+- **Independent time:** each checkpoint is timestamped by an RFC 3161 authority, so the log cannot be back-dated and a cut-off ending is detectable.
+- **Guard:** `rm -rf`, `DROP TABLE`, `terraform destroy`, cloud volume and backup deletes and similar are blocked unless a person has run `perathos precondition add --check "<backup restores>"`. The agent cannot approve itself.
+- **Evidence pack:** `perathos session export` produces a signed bundle with a one-page report that an auditor, insurer or incident reviewer re-checks with `perathos evidence verify`.
+
+**See it:** `python examples/pocketos_replay/replay.py` replays the April 2026 incident where a coding agent deleted a production database volume and its backups: once without Perathos, once with it. [Details below](#flight-recorder-for-coding-agents).
+
+> **Evidence, not guarantee.** Perathos shows which key sealed a record, not which model ran, and the guard is a seatbelt against accidents, not a sandbox against a hostile agent. Limits are listed in [docs/specs/RECEIPT_V1.md](docs/specs/RECEIPT_V1.md).
+
+Perathos started as a proof layer for single AI outputs (signed Proof Bundles with optional verifier verdicts). That remains available and is documented below.
 
 ## What Problem Does This Solve?
 
