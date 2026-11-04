@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "perathos"
-version = "0.3.1"
+version = "0.4.0"
 description = "Cryptographic proof layer for AI outputs — VRL Proof Bundles"
 requires-python = ">=3.11"
 dependencies = ["click>=8.0", "cryptography>=42.0"]
 
 [project.optional-dependencies]
 # jsonschema is in dev so CI exercises the SchemaValidator engine.
-dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21"]
+dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21", "rfc3161-client>=1.0.9,<2"]
 # SchemaValidator engine (real JSON Schema validation; SSRF-safe).
 schema = ["jsonschema>=4.21"]
 # Autonomous-agent harness deps — version-bounded (away from yanked/compromised
@@ -30,6 +30,9 @@ train = ["transformers>=4.40", "torch>=2.0", "accelerate>=1.1.0", "datasets>=2.0
 # MCP client (Claude Code, Claude Desktop, etc.). Not pulled by a bare
 # `pip install perathos` since most callers never run the server.
 mcp = ["mcp>=1.0,<2"]
+# Independent RFC 3161 timestamps on flight-recorder checkpoints
+# (`perathos session anchor`, `perathos hooks install --anchor`).
+anchor = ["rfc3161-client>=1.0.9,<2"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
@@ -46,3 +49,4 @@ include = ["perathos*"]
 
 [tool.setuptools.package-data]
 "perathos.legal" = ["data/*.json"]
+"perathos.data.tsa" = ["*.pem"]

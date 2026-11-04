@@ -24,3 +24,4 @@ calib*.json
 tmp_*/
 tmp_*.json
 tmp_out.txt
+!perathos/data/

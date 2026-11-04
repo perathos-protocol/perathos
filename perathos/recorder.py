@@ -262,7 +262,12 @@ def _model_from_transcript(transcript_path: str | None) -> str | None:
     return None
 
 
-def record_hook_event(payload: dict[str, Any], *, signing_key_hex: str | None = None) -> dict[str, Any] | None:
+def record_hook_event(
+    payload: dict[str, Any],
+    *,
+    signing_key_hex: str | None = None,
+    guard_decision: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Turn one Claude Code hook payload into a receipt. Returns it, or None.
 
     PreToolUse -> ``pre``; PostToolUse / PostToolUseFailure -> ``post``;
@@ -270,6 +275,9 @@ def record_hook_event(payload: dict[str, Any], *, signing_key_hex: str | None = 
     are ignored. Only checkpoints are signed: a signature commits to the whole
     chain before it, and signing every tool call would add latency for no
     extra guarantee.
+
+    ``guard_decision`` (from ``perathos.guard.decide``) is bound into a
+    ``pre`` receipt as ``guard``: {decision, rule, precondition}.
     """
     event = payload.get("hook_event_name")
     session_id = safe_session_id(payload.get("session_id"))
@@ -285,6 +293,8 @@ def record_hook_event(payload: dict[str, Any], *, signing_key_hex: str | None = 
             "tool_use_id": payload.get("tool_use_id"),
             "args_hash": content_hash(payload.get("tool_input")),
         }
+        if guard_decision is not None:
+            fields["guard"] = guard_decision
         return append_receipt(log_path, fields)
 
     if event in ("PostToolUse", "PostToolUseFailure"):
@@ -335,6 +345,10 @@ class SessionReport:
     tools: dict[str, int] = field(default_factory=dict)
     first_ts: str | None = None
     last_ts: str | None = None
+    blocked: int = 0
+    anchors: int = 0
+    anchored_through: int = 0
+    anchored_time: str | None = None
 
     def fail(self, msg: str) -> None:
         self.valid = False
@@ -382,6 +396,9 @@ def verify_session(
     trust_store=None,
     require_signed: bool = True,
     check_head: bool = True,
+    anchors_path: str | os.PathLike | None = None,
+    tsa_roots=None,
+    require_anchor: bool = False,
 ) -> SessionReport:
     """Verify a session log end to end.
 
@@ -397,6 +414,12 @@ def verify_session(
     checkpoint are reported as an unsealed tail (a warning: the session may
     still be running). If a ``.head.json`` witness exists, a log that ends
     before the witnessed checkpoint is reported as truncated.
+
+    With ``anchors_path`` (independent RFC 3161 timestamps, see
+    ``perathos.anchor``) every anchor must match a checkpoint in the log and
+    verify against pinned TSA roots; an anchor for a checkpoint the log no
+    longer contains proves truncation. ``require_anchor`` additionally
+    requires the last checkpoint to be anchored.
     """
     path = Path(log_path)
     report = SessionReport(path=str(path))
@@ -411,6 +434,7 @@ def verify_session(
     last_ts = ""
     open_pre: dict[str, str] = {}
     checkpoint_hashes: dict[int, str] = {}
+    checkpoint_index: dict[int, dict] = {}
 
     for lineno, raw in enumerate(lines, start=1):
         if not raw.strip():
@@ -459,7 +483,10 @@ def verify_session(
             report.tool_calls += 1
             tool = str(rec.get("tool") or "")
             report.tools[tool] = report.tools.get(tool, 0) + 1
-            if rec.get("tool_use_id"):
+            guard = rec.get("guard")
+            if isinstance(guard, dict) and guard.get("decision") == "deny":
+                report.blocked += 1  # the tool never ran, so no result receipt follows
+            elif rec.get("tool_use_id"):
                 open_pre[str(rec["tool_use_id"])] = tool
         elif kind == "post":
             tuid = rec.get("tool_use_id")
@@ -470,6 +497,7 @@ def verify_session(
             report.checkpoints += 1
             if isinstance(seq, int):
                 checkpoint_hashes[seq] = str(rec.get("receipt_hash"))
+                checkpoint_index[seq] = rec
                 report.sealed_through = seq
             model = rec.get("model")
             if isinstance(model, str) and model not in report.models:
@@ -515,4 +543,24 @@ def verify_session(
                         )
                     else:
                         report.fail(f"ERR_HEAD_MISMATCH: checkpoint seq {hseq} differs from the head witness")
+
+    if anchors_path is not None and Path(anchors_path).exists():
+        from .anchor import check_anchors, load_roots
+
+        arep = check_anchors(Path(anchors_path), checkpoint_index, report.sealed_through,
+                             tsa_roots if tsa_roots is not None else load_roots())
+        report.anchors = arep.verified
+        report.anchored_through = arep.anchored_through
+        report.anchored_time = arep.anchored_time
+        for e in arep.errors:
+            report.fail(e)
+        report.warnings.extend(arep.warnings)
+    if require_anchor:
+        if report.anchors == 0:
+            report.fail("ERR_NOT_ANCHORED: no independent timestamp anchors this log")
+        elif report.anchored_through < report.sealed_through:
+            report.fail(
+                f"ERR_NOT_ANCHORED: the last checkpoint (seq {report.sealed_through}) has no independent "
+                f"timestamp; anchored only through seq {report.anchored_through}"
+            )
     return report
