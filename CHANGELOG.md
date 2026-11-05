@@ -40,6 +40,29 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
   E001, E004, E009, B006, B007, A008, E018), SOC 2 TSC, NCSC guidance, ISO/IEC 42001 Annex A,
   EU AI Act Articles 12 and 14, NIST AI RMF and FRE 902(13)/(14), with coverage and gaps
   stated per control; linked from the README and the auditor guide.
+- `docs/SECURITY_ASSESSMENT.md`: a vendor security questionnaire answered from the code
+  (data handled, egress, dependencies, keys, supply chain, disclosure, threat model and
+  limits, red-team summary). Notes that an unexpected exception inside guard evaluation
+  is logged and does not deny the call; fail-closed covers a missing or failing hook process.
+- `docs/specs/PRECONDITION_V1.md`: standalone specification of signed safety
+  preconditions for agent actions (data model, canonicalisation, signature, validity
+  and scope rules, binding into receipts, security considerations), offered as input
+  to IETF SCITT agent-receipt work.
+- Release workflow: GitHub build provenance attestations
+  (`actions/attest-build-provenance@v4`) for the sdist, wheel and SBOM; a CycloneDX
+  SBOM of the wheel generated from a clean virtualenv; a GitHub Release per tag with
+  those files attached. PyPI trusted publishing is unchanged. Verify with
+  `gh attestation verify <file> -R perathos-protocol/perathos`.
+- Site: a "Work with us" section (AIUC-1 agent-evidence readiness) linking the control
+  mapping and the security assessment.
+- README: "Security and procurement" section.
+
+### Changed
+- `SECURITY.md`: contact is now hello@perathos.com (the old security@perathos.io address
+  is removed), response targets, 90-day coordinated disclosure, supported versions 1.x,
+  scope covers the flight recorder, guard, MCP proxy and browser verifier.
+- `docs/specs/RECEIPT_V1.md`: precondition scope wording matches 1.1.0 whole-token
+  matching; links the new precondition spec.
 
 ## [1.1.0] - 2026-11-04
 

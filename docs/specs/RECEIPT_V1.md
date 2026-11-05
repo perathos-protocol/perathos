@@ -99,12 +99,16 @@ Additional rules when anchors are checked:
 ## Preconditions (`perathos.precondition/v1`)
 
 Signed safety checks in `<cwd>/.perathos/preconditions/<id>.json`:
-`id`, `kind`, `scope` (text that must appear in the command, or `*`),
+`id`, `kind`, `scope` (a target name that must appear in the command as a
+whole token, or `*`),
 `check` (command run) and `check_exit_code` (always 0), `check_output_hash`,
 or instead `manual_reason`, then `created`, `expires`, `signer`,
 `precondition_hash` (SHA-256 of the canonical body without the hash and the
 signature) and `signature` (Ed25519 over the raw hash bytes). The guard
-accepts one only if it is unmodified, signed by the local key and unexpired.
+accepts one only if it is unmodified, signed by the local key and unexpired,
+and its scope appears in the command as a whole token. The standalone
+specification, with validity and binding rules, is
+[PRECONDITION_V1.md](PRECONDITION_V1.md).
 
 ## What a valid log proves, and what it does not
 
