@@ -116,6 +116,12 @@ def export_evidence_pack(
     if anchors_path and Path(anchors_path).exists():
         shutil.copyfile(anchors_path, out / "anchors.jsonl")
 
+    from .approvers import list_approvers
+    approvers = list_approvers()
+    if approvers:
+        # Public keys and names only, so a reviewer can see who approved what.
+        (out / "approvers.json").write_text(json.dumps({"approvers": approvers}, indent=2), encoding="utf-8")
+
     receipts = _read_receipts(log)
     used = {str(r["guard"]["precondition"]) for r in receipts
             if r.get("kind") == "pre" and isinstance(r.get("guard"), dict) and r["guard"].get("precondition")}
@@ -158,8 +164,9 @@ def export_evidence_pack(
     manifest: dict[str, Any] = {"v": MANIFEST_VERSION, "session_id": report.session_id, "files": files}
     manifest["manifest_hash"] = hashlib.sha256(canonical_bytes({k: v for k, v in manifest.items()})).hexdigest()
     if signing_key_hex:
-        from .signing import sign_hash
-        manifest["signature"] = sign_hash(manifest["manifest_hash"], signing_key_hex)
+        from .keytrust import coerce_signer
+        from .signing import sign_hash_with_signer
+        manifest["signature"] = sign_hash_with_signer(manifest["manifest_hash"], coerce_signer(signing_key_hex))
     (out / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     zip_path = None

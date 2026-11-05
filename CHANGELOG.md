@@ -5,11 +5,65 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-05
+
+### Added
+- Remote signers (`perathos/signers.py`): `vault:<mount>/<key>` (HashiCorp
+  Vault transit), `gcpkms:<key version>` (Google Cloud KMS Ed25519) and
+  `command:<program>` (any HSM/YubiKey/remote signer via a two-verb
+  protocol). Every remote signature is verified against the public key before
+  use. `perathos signer [SPEC]` tests one; `perathos config signer SPEC`
+  makes it the recorder's signer for checkpoints, evidence-pack manifests and
+  the MCP proxy.
+- Approver keys (`perathos/approvers.py`, `perathos approvers add|list|remove`):
+  once any approver is listed, the guard accepts only preconditions signed by
+  a listed key. `perathos precondition add --signer SPEC` signs with an
+  approver key held off the machine. Evidence packs include `approvers.json`.
+- Anchor mirror: `perathos config anchor_mirror DIR` (or
+  `PERATHOS_ANCHOR_MIRROR`) appends a copy of every timestamp to a second
+  folder.
+- Readiness report: `perathos doctor --recorder [--network] [--json]
+  [--out report.md]` with PASS/WARN/FAIL per check; exit 1 on any FAIL.
+- `perathos config` for `signer` and `anchor_mirror`.
+
+### Fixed
+- Hooks are installed in exec form (absolute `perathos-hook` path + args), so
+  they run whether Claude Code uses PowerShell, cmd or bash and regardless of
+  PATH. Found in a live test against Claude Code 2.1.308: with the bare
+  command name, a virtual-environment install was not found from PowerShell,
+  which with fail-closed hooks would block every tool call.
+  `PERATHOS_HOOK_COMMAND_STYLE=shell` keeps the old form.
+- `command:` signer paths with quotes on Windows.
+
 ### Added
 - `docs/CONTROL_MAPPING.md`: artefact-by-artefact mapping to AIUC-1 (D003.x, E015.x,
   E001, E004, E009, B006, B007, A008, E018), SOC 2 TSC, NCSC guidance, ISO/IEC 42001 Annex A,
   EU AI Act Articles 12 and 14, NIST AI RMF and FRE 902(13)/(14), with coverage and gaps
   stated per control; linked from the README and the auditor guide.
+- `docs/SECURITY_ASSESSMENT.md`: a vendor security questionnaire answered from the code
+  (data handled, egress, dependencies, keys, supply chain, disclosure, threat model and
+  limits, red-team summary).
+- The guard now also fails closed inside the hook: an exception in guard evaluation
+  denies the call (rule `guard.error`) on Claude Code and Cursor, instead of allowing it.
+- `docs/specs/PRECONDITION_V1.md`: standalone specification of signed safety
+  preconditions for agent actions (data model, canonicalisation, signature, validity
+  and scope rules, binding into receipts, security considerations), offered as input
+  to IETF SCITT agent-receipt work.
+- Release workflow: GitHub build provenance attestations
+  (`actions/attest-build-provenance@v4`) for the sdist, wheel and SBOM; a CycloneDX
+  SBOM of the wheel generated from a clean virtualenv; a GitHub Release per tag with
+  those files attached. PyPI trusted publishing is unchanged. Verify with
+  `gh attestation verify <file> -R perathos-protocol/perathos`.
+- Site: a "Work with us" section (AIUC-1 agent-evidence readiness) linking the control
+  mapping and the security assessment.
+- README: "Security and procurement" section.
+
+### Changed
+- `SECURITY.md`: contact is now hello@perathos.com (the old security@perathos.io address
+  is removed), response targets, 90-day coordinated disclosure, supported versions 1.x,
+  scope covers the flight recorder, guard, MCP proxy and browser verifier.
+- `docs/specs/RECEIPT_V1.md`: precondition scope wording matches 1.1.0 whole-token
+  matching; links the new precondition spec.
 
 ## [1.1.0] - 2026-11-04
 

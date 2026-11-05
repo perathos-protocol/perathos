@@ -144,3 +144,8 @@ h2 { font-size: 1.15rem; margin: 28px 0 10px; }
 }
 .links a.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 @media (prefers-color-scheme: dark) { .links a.primary { color: #0f1216; } }
+
+.work { margin-top: 36px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.work h2 { margin-top: 0; }
+.work .links { margin-bottom: 0; }
+.work .links a:not(.primary) { background: var(--bg); }

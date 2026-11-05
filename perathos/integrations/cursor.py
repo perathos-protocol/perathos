@@ -319,9 +319,11 @@ def run_hook(
 
                 decision = decide(target[0], target[1], workspace_root(payload),
                                   trusted_key=verify_key() if verify_key else None)
-        except Exception as exc:  # noqa: BLE001 -- a broken guard must not brick the agent
+        except Exception as exc:  # noqa: BLE001
+            # Fail closed: a guard that crashes cannot clear the call, so deny it.
+            from ..guard import Decision
             warn(f"perathos guard: {type(exc).__name__}: {exc}")
-            decision = None
+            decision = Decision("deny", "guard.error", None, f"perathos guard: blocked because the guard itself failed ({type(exc).__name__}: {exc}). The guard fails closed; fix the error or remove --guard.")
 
     receipts: list[dict[str, Any]] = []
     try:

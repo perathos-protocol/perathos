@@ -136,11 +136,31 @@ def append_anchor(anchors_path: Path, checkpoint: dict[str, Any], token_der: byt
         "gen_time": gen_time,
         "token": base64.b64encode(token_der).decode("ascii"),
     }
+    line = json.dumps(rec, sort_keys=True) + "\n"
     with open(anchors_path, "a", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps(rec, sort_keys=True) + "\n")
+        fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+    mirror = anchor_mirror_dir()
+    if mirror is not None:
+        # A second copy somewhere the agent cannot reach (a network share, a
+        # synced folder) is what makes a cut-off log provable later.
+        try:
+            mirror.mkdir(parents=True, exist_ok=True)
+            with open(mirror / anchors_path.name, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            pass
     return rec
+
+
+def anchor_mirror_dir() -> Path | None:
+    """$PERATHOS_ANCHOR_MIRROR, else `perathos config` anchor_mirror, else None."""
+    from .approvers import get_config
+    value = os.environ.get("PERATHOS_ANCHOR_MIRROR") or get_config().get("anchor_mirror")
+    return Path(value) if value else None
 
 
 def read_anchors(anchors_path: Path) -> list[dict]:

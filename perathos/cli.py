@@ -523,7 +523,26 @@ def list_cmd():
 
 
 @cli.command()
-def doctor():
+@click.option("--recorder", is_flag=True,
+              help="Readiness report for the flight recorder: keys, approvers, hooks, fail-closed, "
+                   "timestamps, and whether recent session logs verify.")
+@click.option("--project", "project_dir", type=click.Path(file_okay=False), default=".",
+              help="Project to check (with --recorder).")
+@click.option("--network", is_flag=True, help="Also contact the timestamp authority (with --recorder).")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output (with --recorder).")
+@click.option("--out", "out_file", type=click.Path(dir_okay=False), default=None,
+              help="Also write a Markdown report to this file (with --recorder).")
+def doctor(recorder: bool, project_dir: str, network: bool, as_json: bool, out_file: str):
+    if recorder:
+        from .readiness import FAIL, render_markdown, render_text, run_checks, to_json
+        proj = Path(project_dir).resolve()
+        checks = run_checks(proj, network=network)
+        click.echo(to_json(checks) if as_json else render_text(checks))
+        if out_file:
+            Path(out_file).write_text(render_markdown(checks, proj), encoding="utf-8")
+            if not as_json:
+                click.echo(f"report written to {out_file}")
+        sys.exit(1 if any(c.status == FAIL for c in checks) else 0)
     """Diagnose the local Perathos environment.
 
     Reports Python/package versions, optional-extra availability (NLI),
@@ -666,14 +685,67 @@ _RECORDER_EVENTS = ("PreToolUse", "PostToolUse", "Stop", "SessionEnd")
 _TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 
 
+def _load_signer_or_none(warn: str | None = None):
+    """The configured recorder signer (local key or remote), or None with a warning."""
+    from .signers import SignerError, load_signer
+    try:
+        return load_signer()
+    except SignerError as exc:
+        if warn:
+            click.echo(f"{warn}: {exc}", err=True)
+        return None
+
+
+def _trusted_approvers():
+    from .approvers import trusted_approver_keys
+    return trusted_approver_keys()
+
+
+def _resolve_exe(name: str) -> str | None:
+    """Absolute path of a perathos console script, so hooks do not depend on PATH."""
+    import shutil
+    here = Path(sys.executable).parent
+    for cand in (here / f"{name}.exe", here / name, here / "Scripts" / f"{name}.exe", here / "bin" / name):
+        if cand.is_file():
+            return str(cand)
+    found = shutil.which(name)
+    return str(Path(found).resolve()) if found else None
+
+
+def _hook_command(command: str) -> dict:
+    """Claude Code hook fields for a perathos command.
+
+    Exec form (absolute executable + args, no shell) unless
+    PERATHOS_HOOK_COMMAND_STYLE=shell or the executable cannot be found. Exec
+    form works whether Claude Code runs hooks through PowerShell, cmd or bash,
+    and does not depend on the agent's PATH.
+    """
+    parts = command.split()
+    exe_name = "perathos" if parts[0] == "perathos" else parts[0]
+    exe = None if os.environ.get("PERATHOS_HOOK_COMMAND_STYLE") == "shell" else _resolve_exe(exe_name)
+    if exe is None:
+        return {"command": command}
+    return {"command": exe, "args": parts[1:]}
+
+
 def _entry_commands(entry) -> list[str]:
     """Commands in one settings entry, in either the nested or the old flat shape."""
     if not isinstance(entry, dict):
         return []
-    cmds = [str(entry.get("command", ""))] if "command" in entry else []
+    def render(h: dict) -> str:
+        cmd = str(h.get("command", ""))
+        args = h.get("args")
+        if isinstance(args, list):
+            # exec form: show it as "<script name> <args>" so matching is path-independent
+            stem = Path(cmd).name
+            stem = stem[:-4] if stem.lower().endswith(".exe") else stem
+            return " ".join([stem, *[str(a) for a in args]])
+        return cmd
+
+    cmds = [render(entry)] if "command" in entry else []
     for h in entry.get("hooks") or []:
         if isinstance(h, dict):
-            cmds.append(str(h.get("command", "")))
+            cmds.append(render(h))
     return cmds
 
 
@@ -733,7 +805,7 @@ def _add_hook(hooks_block: dict, event: str, command: str, timeout: int, force: 
         sys.exit(1)
     if existing or flat_legacy:
         entries[:] = [e for e in entries if not _is_perathos_entry(e, command)]
-    hook: dict = {"type": "command", "command": command, "timeout": timeout}
+    hook: dict = {"type": "command", **_hook_command(command), "timeout": timeout}
     if fail_closed:
         # Claude Code >= 2.1.295: if the hook cannot start or crashes, block the
         # tool call instead of letting it through (older versions ignore this).
@@ -920,8 +992,8 @@ def hooks_record_cursor(guard: bool, anchor: bool):
         raw = sys.stdin.read()
     except Exception:  # noqa: BLE001 -- unreadable stdin must not crash the hook
         raw = ""
-    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=load_signing_key,
-                        verify_key=_local_verify_key, warn=lambda m: click.echo(m, err=True))
+    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=lambda: _load_signer_or_none(),
+                        verify_key=_trusted_approvers, warn=lambda m: click.echo(m, err=True))
     click.echo(json.dumps(response))
 
 
@@ -1184,7 +1256,10 @@ def precondition():
               help="Instead of a command: your own signed attestation and the reason for it.")
 @click.option("--ttl", "ttl_minutes", default=30, show_default=True, type=click.IntRange(1, 24 * 60),
               help="Minutes until the precondition expires.")
-def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes: int):
+@click.option("--signer", "signer_spec", default=None, metavar="SPEC",
+              help="Approver key to sign with: local (default), command:<cmd>, vault:<mount>/<key> or "
+                   "gcpkms:<key version>. Use a key the agent cannot reach.")
+def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes: int, signer_spec: str):
     """Run a safety check and, if it passes, sign a precondition for SCOPE.
 
     Run this yourself, outside the agent session. The guard refuses agent
@@ -1195,11 +1270,18 @@ def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes
     """
     from .guard import create_precondition
 
+    from .approvers import approver_name, trusted_approver_keys
+    from .signers import SignerError, signer_from_spec
     try:
-        sk_hex = load_signing_key()
-    except (FileNotFoundError, ValueError):
-        click.echo("[ERROR] No signing key. Run: perathos keygen", err=True)
+        sk_hex = signer_from_spec(signer_spec or "local")
+    except SignerError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
         sys.exit(1)
+    trusted = trusted_approver_keys() or set()
+    if sk_hex.public_key.hex() not in trusted:
+        click.echo(f"[WARN] key {sk_hex.public_key.hex()[:16]}... is not a trusted approver, so the guard will "
+                   f"ignore this precondition. Add it with: perathos approvers add --name <you> "
+                   f"--key {sk_hex.public_key.hex()}", err=True)
     try:
         pc, result = create_precondition(Path("."), scope=scope, signing_key_hex=sk_hex, check=check_cmd,
                                          manual_reason=manual_reason, ttl_minutes=ttl_minutes)
@@ -1219,6 +1301,7 @@ def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes
     else:
         click.echo(f"manual        {pc['manual_reason']}")
     click.echo(f"expires       {pc['expires']}")
+    click.echo(f"approver      {approver_name(pc['signer']) or pc['signer'][:16] + '...'}")
 
 
 @precondition.command(name="list")
@@ -1265,11 +1348,7 @@ def session_export(target: str, out_dir: str, anchors_file: str, expected_verify
 
     log = _resolve_session_log(target)
     anchors = Path(anchors_file) if anchors_file else Path.home() / ".perathos" / "anchors" / f"{safe_session_id(log.stem)}.jsonl"
-    try:
-        sk_hex = load_signing_key()
-    except (FileNotFoundError, ValueError):
-        sk_hex = None
-        click.echo("[WARN] No signing key: the pack manifest will be unsigned. Run 'perathos keygen'.", err=True)
+    sk_hex = _load_signer_or_none("[WARN] No signer, the pack manifest will be unsigned")
     roots = None
     if anchors.exists():
         try:
@@ -1369,16 +1448,133 @@ def mcp_proxy_cmd(name, session_id, project_dir, guard, anchor, seal_every, serv
     """
     from .mcp_proxy import McpRecorder, env_project_dir, run_proxy
 
-    try:
-        sk_hex = load_signing_key()
-    except (FileNotFoundError, ValueError):
-        sk_hex = None
-        click.echo("perathos mcp-proxy: no signing key, checkpoints will be unsigned (run 'perathos keygen')", err=True)
+    sk_hex = _load_signer_or_none("perathos mcp-proxy: no signer, checkpoints will be unsigned")
     project = Path(project_dir) if project_dir else env_project_dir()
     rec = McpRecorder(name=name, project=project, session_id=session_id, guard=guard, signing_key_hex=sk_hex,
-                      trusted_key=_local_verify_key(), anchor=anchor, seal_every=seal_every)
+                      trusted_key=_trusted_approvers(), anchor=anchor, seal_every=seal_every)
     click.echo(f"perathos mcp-proxy: recording session {rec.session_id} to {rec.log}", err=True)
     sys.exit(run_proxy(list(server_cmd), rec))
+
+
+@cli.group()
+def approvers():
+    """People whose keys may sign safety preconditions.
+
+    With no approvers listed, the guard trusts the local recorder key. Once any
+    approver is listed, only listed keys can approve destructive actions, so an
+    agent that reads the recorder key still cannot approve itself.
+    """
+
+
+@approvers.command(name="add")
+@click.option("--name", required=True, help="Who this key belongs to, e.g. a person's name or role.")
+@click.option("--key", "key_hex", default=None, metavar="HEX", help="Their Ed25519 public key (64 hex).")
+@click.option("--signer", "signer_spec", default=None, metavar="SPEC",
+              help="Read the public key from a signer instead: local, command:, vault: or gcpkms:.")
+def approvers_add(name: str, key_hex: str, signer_spec: str):
+    """Trust NAME's key to sign safety preconditions."""
+    from .approvers import add_approver, approvers_path
+    if (key_hex is None) == (signer_spec is None):
+        click.echo("[ERROR] give exactly one of --key or --signer", err=True)
+        sys.exit(2)
+    if signer_spec:
+        from .signers import SignerError, signer_from_spec
+        try:
+            key_hex = signer_from_spec(signer_spec).public_key.hex()
+        except SignerError as exc:
+            click.echo(f"[ERROR] {exc}", err=True)
+            sys.exit(1)
+    try:
+        items = add_approver(name, key_hex)
+    except ValueError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"approver {name} added ({len(items)} total) in {approvers_path()}")
+    click.echo("Only listed approvers' preconditions are now accepted by the guard.")
+
+
+@approvers.command(name="list")
+def approvers_list():
+    """List trusted approvers."""
+    from .approvers import list_approvers, local_verify_key
+    items = list_approvers()
+    if not items:
+        vk = local_verify_key()
+        click.echo("No approvers listed: the guard trusts the local recorder key"
+                   + (f" ({vk[:16]}...)." if vk else ", and there is none (run perathos keygen)."))
+        return
+    for a in items:
+        click.echo(f"{a['name']:20} {a['verify_key']}  added {a.get('added', '?')}")
+
+
+@approvers.command(name="remove")
+@click.argument("name_or_key")
+def approvers_remove(name_or_key: str):
+    """Stop trusting an approver (by name or key)."""
+    from .approvers import remove_approver
+    items = remove_approver(name_or_key)
+    click.echo(f"{len(items)} approver(s) remain.")
+
+
+@cli.command(name="config")
+@click.argument("key", required=False)
+@click.argument("value", required=False)
+@click.option("--unset", is_flag=True, help="Remove KEY.")
+def config_cmd(key: str, value: str, unset: bool):
+    """Show or change settings in ~/.perathos/config.json.
+
+    \b
+      perathos config                       show all settings
+      perathos config signer vault:transit/perathos
+      perathos config anchor_mirror //fileserver/audit/perathos-anchors
+      perathos config anchor_mirror --unset
+    """
+    from .approvers import CONFIG_KEYS, config_path, get_config, set_config
+    if key is None:
+        cfg = get_config()
+        for k in CONFIG_KEYS:
+            click.echo(f"{k:14} {cfg.get(k, '(not set)')}")
+        click.echo(f"file           {config_path()}")
+        return
+    try:
+        if unset:
+            set_config(key, None)
+        elif value is None:
+            click.echo(get_config().get(key, "(not set)"))
+            return
+        else:
+            set_config(key, value)
+    except ValueError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"{key} {'unset' if unset else 'set'}")
+
+
+@cli.command(name="signer")
+@click.argument("spec", required=False)
+def signer_cmd(spec: str):
+    """Test a signer: load it, sign a test message, verify the signature.
+
+    SPEC defaults to the configured recorder signer. Examples: local,
+    command:"python my_hsm.py", vault:transit/perathos, gcpkms:projects/.../cryptoKeyVersions/1
+    """
+    import hashlib
+
+    from .signers import SignerError, configured_spec, signer_from_spec
+    from .signing import sign_hash_with_signer, verify_signature
+    spec = spec or configured_spec()
+    try:
+        s = signer_from_spec(spec)
+        h = hashlib.sha256(b"perathos signer self-test").hexdigest()
+        ok, err = verify_signature(h, sign_hash_with_signer(h, s))
+    except SignerError as exc:
+        click.echo(f"FAIL  {spec}: {exc}", err=True)
+        sys.exit(1)
+    if not ok:
+        click.echo(f"FAIL  {spec}: {err}", err=True)
+        sys.exit(1)
+    click.echo(f"OK    {spec}")
+    click.echo(f"      public key {s.public_key.hex()}")
 
 
 def main():
