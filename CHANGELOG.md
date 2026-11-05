@@ -42,8 +42,9 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
   stated per control; linked from the README and the auditor guide.
 - `docs/SECURITY_ASSESSMENT.md`: a vendor security questionnaire answered from the code
   (data handled, egress, dependencies, keys, supply chain, disclosure, threat model and
-  limits, red-team summary). Notes that an unexpected exception inside guard evaluation
-  is logged and does not deny the call; fail-closed covers a missing or failing hook process.
+  limits, red-team summary).
+- The guard now also fails closed inside the hook: an exception in guard evaluation
+  denies the call (rule `guard.error`) on Claude Code and Cursor, instead of allowing it.
 - `docs/specs/PRECONDITION_V1.md`: standalone specification of signed safety
   preconditions for agent actions (data model, canonicalisation, signature, validity
   and scope rules, binding into receipts, security considerations), offered as input
