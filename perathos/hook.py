@@ -69,8 +69,12 @@ def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO)
             from .guard import decide
             decision = decide(str(payload.get("tool_name") or ""), payload.get("tool_input"),
                               payload.get("cwd") or ".", trusted_key=_trusted_keys())
-        except Exception as exc:  # noqa: BLE001 -- a broken guard must not brick the agent
+        except Exception as exc:  # noqa: BLE001
+            # Fail closed: if the guard itself crashes we cannot tell whether the
+            # call is destructive, so it is denied (and recorded as denied).
+            from .guard import Decision
             print(f"perathos guard: {type(exc).__name__}: {exc}", file=err)
+            decision = Decision("deny", "guard.error", None, f"perathos guard: blocked because the guard itself failed ({type(exc).__name__}: {exc}). The guard fails closed; fix the error or remove --guard.")
 
     receipt = None
     try:

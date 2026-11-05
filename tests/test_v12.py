@@ -279,3 +279,37 @@ def test_readiness_report(tmp_path, monkeypatch, home):
     out = runner.invoke(cli, ["doctor", "--recorder", "--out", str(tmp_path / "r.md")])
     assert out.exit_code == 0, out.output
     assert "| PASS | claude code | recorder hooks (project)" in (tmp_path / "r.md").read_text(encoding="utf-8")
+
+
+# ── fail closed when the guard itself crashes ───────────────────────────────
+
+def test_guard_crash_denies_claude_code_call(tmp_path, monkeypatch):
+    import io
+
+    import perathos.guard as g
+    from perathos.hook import run_record
+
+    def boom(*a, **k):
+        raise RuntimeError("rules file corrupt")
+    monkeypatch.setattr(g, "decide", boom)
+    out, err = io.StringIO(), io.StringIO()
+    payload = {"hook_event_name": "PreToolUse", "session_id": "fc", "cwd": str(tmp_path),
+               "tool_name": "Bash", "tool_use_id": "x", "tool_input": {"command": "ls"}}
+    run_record(json.dumps(payload), guard=True, anchor=False, out=out, err=err)
+    resp = json.loads(out.getvalue())["hookSpecificOutput"]
+    assert resp["permissionDecision"] == "deny" and "fails closed" in resp["permissionDecisionReason"]
+    rec = json.loads(session_log_path(tmp_path, "fc").read_text(encoding="utf-8").splitlines()[0])
+    assert rec["guard"] == {"decision": "deny", "rule": "guard.error", "precondition": None}
+
+
+def test_guard_crash_denies_cursor_call(tmp_path, monkeypatch):
+    import perathos.guard as g
+    from perathos.integrations.cursor import run_hook
+
+    def boom(*a, **k):
+        raise RuntimeError("rules file corrupt")
+    monkeypatch.setattr(g, "decide", boom)
+    payload = {"hook_event_name": "beforeShellExecution", "conversation_id": "c1", "generation_id": "g1",
+               "command": "ls", "cwd": str(tmp_path), "workspace_roots": [str(tmp_path)]}
+    resp = run_hook(json.dumps(payload), guard=True, verify_key=lambda: None)
+    assert resp["permission"] == "deny"
