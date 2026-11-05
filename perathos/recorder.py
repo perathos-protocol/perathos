@@ -188,14 +188,15 @@ def _tail_state(path: Path) -> tuple[int, str]:
 # Writing receipts
 # --------------------------------------------------------------------------- #
 
-def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex: str | None = None) -> dict[str, Any]:
+def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex=None) -> dict[str, Any]:
     """Append one chained receipt to the log and return it.
 
     ``fields`` supplies the event-specific body (kind, tool, hashes...).
     ``seq``, ``ts``, ``prev_hash`` and ``receipt_hash`` are filled in here,
-    under an exclusive lock. If ``signing_key_hex`` is given, the receipt is
-    signed over its ``receipt_hash`` and the signer's public key is bound
-    into the hashed body as ``signer``.
+    under an exclusive lock. If ``signing_key_hex`` is given (a 64-hex local
+    key or any ``keytrust.Signer``, e.g. a remote KMS/Vault signer), the
+    receipt is signed over its ``receipt_hash`` and the signer's public key is
+    bound into the hashed body as ``signer``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with _FileLock(log_path):
@@ -208,14 +209,13 @@ def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex: s
             "prev_hash": prev,
         }
         if signing_key_hex is not None:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            from .keytrust import coerce_signer
+            from .signing import sign_hash_with_signer
 
-            from .signing import sign_hash
-
-            sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_key_hex))
-            receipt["signer"] = sk.public_key().public_bytes_raw().hex()
+            signer = coerce_signer(signing_key_hex)
+            receipt["signer"] = signer.public_key.hex()
             receipt["receipt_hash"] = receipt_hash(receipt)
-            receipt["signature"] = sign_hash(receipt["receipt_hash"], signing_key_hex)
+            receipt["signature"] = sign_hash_with_signer(receipt["receipt_hash"], signer)
         else:
             receipt["receipt_hash"] = receipt_hash(receipt)
         line = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

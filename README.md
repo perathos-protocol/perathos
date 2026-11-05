@@ -269,6 +269,64 @@ managed --guard --anchor` writes the hooks into Claude Code's managed policy
 file and sets `allowManagedHooksOnly`, so the agent cannot add, remove or
 edit hooks at all.
 
+The installer writes each hook in exec form: the absolute path of the
+`perathos-hook` program plus its arguments, with no shell in between. That
+works whether Claude Code runs hooks through PowerShell, cmd or bash, and
+does not depend on the agent's PATH (a hook that cannot be found would, with
+fail-closed on, block every tool call). Set `PERATHOS_HOOK_COMMAND_STYLE=shell`
+for the older one-line form. Tested against Claude Code 2.1.308.
+
+### Keys that never touch the agent's machine
+
+By default one local key seals the log and approves destructive actions. Two
+settings separate those roles and move the keys off the machine:
+
+```bash
+# Seal checkpoints with a remote key (checked: it must sign and verify)
+perathos signer vault:transit/perathos            # test a signer
+perathos config signer vault:transit/perathos     # use it for every checkpoint
+# Only these people may approve destructive actions
+perathos approvers add --name alice --signer gcpkms:projects/acme/locations/global/keyRings/sec/cryptoKeys/alice/cryptoKeyVersions/1
+perathos precondition add --scope pg-data --check "pg_restore --list backups/pg.dump" --signer gcpkms:projects/.../alice/cryptoKeyVersions/1
+```
+
+Signers: `local` (the key file), `vault:<mount>/<key>` (HashiCorp Vault
+transit, Ed25519; `VAULT_ADDR`, `VAULT_TOKEN`), `gcpkms:<key version>` (Google
+Cloud KMS `EC_SIGN_ED25519`; `pip install google-cloud-kms`), and
+`command:<program>` for anything else: a YubiKey or HSM wrapper, a password
+manager, a remote signing service. The program answers `pubkey` with a 64-hex
+public key and `sign` with a hex signature of the hex message on stdin. Every
+signature is checked against the public key before it is used.
+
+Once any approver is listed in `~/.perathos/approvers.json`, the guard accepts
+only preconditions signed by a listed key, so an agent that reads the recorder
+key still cannot approve itself. Evidence packs include the approver list
+(names and public keys).
+
+### Keep a second copy of the timestamps
+
+```bash
+perathos config anchor_mirror //fileserver/audit/perathos-anchors
+```
+
+Every timestamp is also appended to that folder. Point it somewhere the agent
+cannot write (a network share, a synced folder owned by another account); a
+cut-off log is then provable from the copy with `perathos session verify
+<session> --anchors <mirror>/<session>.jsonl`.
+
+### Readiness report
+
+```bash
+perathos doctor --recorder --out readiness.md
+```
+
+Checks this machine and project: the signer works and whether it is off the
+machine, who can approve, recorder hooks present for every event, guard on and
+fail-closed, hook programs resolvable, hooks locked by managed settings,
+timestamps on and mirrored, and whether the latest session logs verify against
+the recorder key. Each line is PASS, WARN or FAIL; exit code 1 on any FAIL.
+The Markdown copy is meant for an audit binder.
+
 ### Cursor
 
 ```bash

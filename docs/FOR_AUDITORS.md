@@ -46,6 +46,12 @@ everything can be re-checked from the files.
 
 ## Questions worth asking the operator
 
+- Did they run `perathos doctor --recorder --out readiness.md`? The report lists, check by check,
+  how the machine was set up (signer location, approvers, fail-closed hooks, managed lock,
+  timestamp mirror) and whether recent logs verify. Ask for it alongside the pack.
+- Who are the approvers? An `approvers.json` in the pack names them. If it is missing, the
+  recorder key approved destructive actions, and anyone holding that key could have done so.
+
 - Was the key that signed this pack held where the agent could not read it?
 - Is a copy of the anchors file (`~/.perathos/anchors/<session>.jsonl`) kept somewhere the agent and
   the machine's users cannot change? If so, check the pack against that copy with

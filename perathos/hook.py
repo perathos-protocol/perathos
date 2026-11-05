@@ -20,8 +20,28 @@ def _local_verify_key() -> str | None:
     return vk if len(vk) == 64 else None
 
 
-def _signing_key() -> str | None:
-    """Read ~/.perathos/keys/signing.key directly (storage.py pulls in more than a hook needs)."""
+def _trusted_keys() -> set[str] | None:
+    from .approvers import trusted_approver_keys
+    return trusted_approver_keys()
+
+
+def _signing_key():
+    """The recorder's signer: the local key file, or a configured remote signer.
+
+    The common case (no remote signer configured) reads the key file directly;
+    storage.py pulls in more than a hook needs.
+    """
+    import os
+
+    from .approvers import get_config
+    spec = os.environ.get("PERATHOS_SIGNER") or get_config().get("signer") or "local"
+    if spec != "local":
+        try:
+            from .signers import signer_from_spec
+            return signer_from_spec(spec)
+        except Exception as exc:  # noqa: BLE001 -- seal unsigned rather than crash the turn
+            print(f"perathos recorder: signer {spec!r} unavailable: {exc}", file=sys.stderr)
+            return None
     try:
         sk = (Path.home() / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
     except OSError:
@@ -48,7 +68,7 @@ def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO)
         try:
             from .guard import decide
             decision = decide(str(payload.get("tool_name") or ""), payload.get("tool_input"),
-                              payload.get("cwd") or ".", trusted_key=_local_verify_key())
+                              payload.get("cwd") or ".", trusted_key=_trusted_keys())
         except Exception as exc:  # noqa: BLE001 -- a broken guard must not brick the agent
             print(f"perathos guard: {type(exc).__name__}: {exc}", file=err)
 

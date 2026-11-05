@@ -263,7 +263,7 @@ def create_precondition(
     cwd: str | os.PathLike,
     *,
     scope: str,
-    signing_key_hex: str,
+    signing_key_hex,
     check: str | None = None,
     manual_reason: str | None = None,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
@@ -277,9 +277,8 @@ def create_precondition(
     import subprocess  # imported here: the hook path never needs it
     import uuid
 
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    from .signing import sign_hash
+    from .keytrust import coerce_signer
+    from .signing import sign_hash_with_signer
 
     if not scope.strip():
         raise ValueError("scope must not be empty (use '*' to cover every target)")
@@ -295,7 +294,7 @@ def create_precondition(
             return None, result
 
     now = datetime.now(timezone.utc)
-    sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_key_hex))
+    signer = coerce_signer(signing_key_hex)
     pc: dict[str, Any] = {
         "v": PRECONDITION_VERSION,
         "id": str(uuid.uuid4()),
@@ -307,17 +306,23 @@ def create_precondition(
         "manual_reason": manual_reason,
         "created": now.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "expires": (now + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "signer": sk.public_key().public_bytes_raw().hex(),
+        "signer": signer.public_key.hex(),
     }
     pc["precondition_hash"] = precondition_hash(pc)
-    pc["signature"] = sign_hash(pc["precondition_hash"], signing_key_hex)
+    pc["signature"] = sign_hash_with_signer(pc["precondition_hash"], signer)
     d = preconditions_dir(cwd)
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{pc['id']}.json").write_text(json.dumps(pc, indent=2, sort_keys=True), encoding="utf-8")
     return pc, result
 
 
-def check_precondition(pc: dict, *, trusted_key: str, now: datetime | None = None) -> str | None:
+def _key_set(trusted_key) -> set[str]:
+    if trusted_key is None:
+        return set()
+    return {trusted_key} if isinstance(trusted_key, str) else set(trusted_key)
+
+
+def check_precondition(pc: dict, *, trusted_key, now: datetime | None = None) -> str | None:
     """Return None if the precondition is valid now, else a short reason."""
     from .signing import verify_signature
 
@@ -334,8 +339,9 @@ def check_precondition(pc: dict, *, trusted_key: str, now: datetime | None = Non
     ok, _ = verify_signature(str(pc.get("precondition_hash")), sig)
     if not ok:
         return "precondition signature is invalid"
-    if sig.get("verify_key") != trusted_key or pc.get("signer") != trusted_key:
-        return "precondition was signed by an untrusted key"
+    keys = _key_set(trusted_key)
+    if sig.get("verify_key") not in keys or pc.get("signer") != sig.get("verify_key"):
+        return "precondition was signed by a key that is not a trusted approver"
     now = now or datetime.now(timezone.utc)
     try:
         expires = datetime.fromisoformat(str(pc.get("expires")).replace("Z", "+00:00"))
@@ -354,7 +360,7 @@ def _covers(scope: str, subject: str) -> bool:
     return re.search(r"(?<![\w.-])" + re.escape(scope) + r"(?![\w.-])", subject, re.IGNORECASE) is not None
 
 
-def find_precondition(cwd: str | os.PathLike, subject: str, *, trusted_key: str) -> dict | None:
+def find_precondition(cwd: str | os.PathLike, subject: str, *, trusted_key) -> dict | None:
     """The newest valid precondition whose scope covers this command, if any."""
     d = preconditions_dir(cwd)
     if not d.exists():
@@ -384,8 +390,12 @@ class Decision:
         return {"decision": self.decision, "rule": self.rule, "precondition": self.precondition}
 
 
-def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_key: str | None) -> Decision | None:
-    """Guard decision for one tool call; None when no rule matches."""
+def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_key) -> Decision | None:
+    """Guard decision for one tool call; None when no rule matches.
+
+    ``trusted_key`` is one approver public key (hex), a set of them, or None
+    (no approver exists, so every destructive call is denied).
+    """
     m = evaluate(tool_name, tool_input, cwd)
     if m is None:
         return None
@@ -397,10 +407,11 @@ def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_k
             '  perathos precondition add --scope "<target name in the command>" --check "<command that '
             'proves a restorable backup exists>"\n'
             'then retry. The check must exit 0.')
-    if trusted_key is None:
+    if not _key_set(trusted_key):
         return Decision("deny", m.rule_id, None,
-                        f"perathos guard: blocked {m.description}. No signing key exists, so no safety "
-                        f"precondition can be trusted. Run 'perathos keygen', then:\n{hint}")
+                        f"perathos guard: blocked {m.description}. No approver key exists, so no safety "
+                        f"precondition can be trusted. Run 'perathos keygen' or 'perathos approvers add', "
+                        f"then:\n{hint}")
     pc = find_precondition(cwd, m.subject, trusted_key=trusted_key)
     if pc is None:
         return Decision("deny", m.rule_id, None,

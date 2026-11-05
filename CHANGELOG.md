@@ -5,6 +5,36 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-05
+
+### Added
+- Remote signers (`perathos/signers.py`): `vault:<mount>/<key>` (HashiCorp
+  Vault transit), `gcpkms:<key version>` (Google Cloud KMS Ed25519) and
+  `command:<program>` (any HSM/YubiKey/remote signer via a two-verb
+  protocol). Every remote signature is verified against the public key before
+  use. `perathos signer [SPEC]` tests one; `perathos config signer SPEC`
+  makes it the recorder's signer for checkpoints, evidence-pack manifests and
+  the MCP proxy.
+- Approver keys (`perathos/approvers.py`, `perathos approvers add|list|remove`):
+  once any approver is listed, the guard accepts only preconditions signed by
+  a listed key. `perathos precondition add --signer SPEC` signs with an
+  approver key held off the machine. Evidence packs include `approvers.json`.
+- Anchor mirror: `perathos config anchor_mirror DIR` (or
+  `PERATHOS_ANCHOR_MIRROR`) appends a copy of every timestamp to a second
+  folder.
+- Readiness report: `perathos doctor --recorder [--network] [--json]
+  [--out report.md]` with PASS/WARN/FAIL per check; exit 1 on any FAIL.
+- `perathos config` for `signer` and `anchor_mirror`.
+
+### Fixed
+- Hooks are installed in exec form (absolute `perathos-hook` path + args), so
+  they run whether Claude Code uses PowerShell, cmd or bash and regardless of
+  PATH. Found in a live test against Claude Code 2.1.308: with the bare
+  command name, a virtual-environment install was not found from PowerShell,
+  which with fail-closed hooks would block every tool call.
+  `PERATHOS_HOOK_COMMAND_STYLE=shell` keeps the old form.
+- `command:` signer paths with quotes on Windows.
+
 ### Added
 - `docs/CONTROL_MAPPING.md`: artefact-by-artefact mapping to AIUC-1 (D003.x, E015.x,
   E001, E004, E009, B006, B007, A008, E018), SOC 2 TSC, NCSC guidance, ISO/IEC 42001 Annex A,
