@@ -363,6 +363,21 @@ at the `perathos-mcp` command.
 - [docs/research/TRAINING_DATA.md](docs/research/TRAINING_DATA.md) — cited, license-verified datasets for the verifiers.
 - [CHANGELOG.md](CHANGELOG.md) — notable changes.
 
+### Security and procurement
+
+- [docs/SECURITY_ASSESSMENT.md](docs/SECURITY_ASSESSMENT.md) — a pre-filled vendor security questionnaire (SIG Lite / CAIQ Lite layout): data handled, network egress, dependencies, key management, supply chain, disclosure, limits. No compliance claims.
+- [docs/specs/PRECONDITION_V1.md](docs/specs/PRECONDITION_V1.md) — the specification of signed safety preconditions for agent actions, implementation-independent.
+- [docs/CONTROL_MAPPING.md](docs/CONTROL_MAPPING.md) — which controls (AIUC-1, SOC 2, EU AI Act, ...) Perathos artefacts are evidence for, and the gaps.
+- **Verify a release.** Releases after 1.1.0 carry a GitHub build provenance attestation for the wheel, the sdist and the SBOM. With the GitHub CLI:
+
+  ```bash
+  pip download perathos==1.2.0 --no-deps -d .
+  gh attestation verify perathos-1.2.0-py3-none-any.whl -R perathos-protocol/perathos
+  ```
+
+  A pass means the file is byte-for-byte what the `release.yml` workflow built from a tagged commit of this repository.
+- **SBOM.** Each GitHub Release has a CycloneDX JSON SBOM (`perathos-<version>.cdx.json`) of the wheel and its runtime dependencies, taken from a clean virtualenv.
+
 ## CLI Design
 
 The Perathos CLI follows standard Unix conventions for exit codes and output formatting:

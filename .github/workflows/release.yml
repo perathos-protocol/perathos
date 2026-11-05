@@ -7,6 +7,23 @@ name: Release
 # One-time setup on PyPI: project "perathos" -> Settings -> Publishing ->
 # add a GitHub trusted publisher (owner: perathos-protocol, repo: perathos,
 # workflow: release.yml, environment: pypi).
+#
+# Supply-chain evidence produced for every tag:
+#   * a GitHub build provenance attestation (SLSA provenance, signed through
+#     Sigstore with this workflow's OIDC identity) for the sdist, the wheel
+#     and the SBOM;
+#   * a CycloneDX SBOM (JSON) of the wheel and its resolved runtime
+#     dependencies, taken from a clean virtualenv with only the wheel installed;
+#   * a GitHub Release for the tag carrying the sdist, wheel and SBOM.
+#
+# How a buyer verifies a release (GitHub CLI 2.49+; no Perathos tooling needed):
+#   pip download perathos==1.2.0 --no-deps -d .      # or take it from the GitHub Release
+#   gh attestation verify perathos-1.2.0-py3-none-any.whl -R perathos-protocol/perathos
+#   gh attestation verify perathos-1.2.0.tar.gz        -R perathos-protocol/perathos
+# A pass means the file's SHA-256 matches one this workflow built from this
+# repository at a tagged commit; the output names the commit and workflow run.
+# The file published to PyPI is the same byte-for-byte artefact, so the same
+# command works on the copy pip downloads.
 
 on:
   push:
@@ -18,6 +35,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write      # Sigstore signing of the provenance attestation
+      attestations: write  # store the attestation on the repository
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,10 +48,35 @@ jobs:
         run: |
           pip install build
           python -m build
+      - name: CycloneDX SBOM of the wheel (clean venv, wheel only)
+        run: |
+          python -m venv /tmp/sbom-target
+          /tmp/sbom-target/bin/pip install dist/*.whl
+          # Drop the venv's own tooling so the SBOM lists only what the wheel pulls in.
+          /tmp/sbom-target/bin/pip uninstall -y setuptools pip
+          python -m venv /tmp/sbom-tool
+          /tmp/sbom-tool/bin/pip install "cyclonedx-bom>=7.3,<8"
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist-sbom
+          /tmp/sbom-tool/bin/cyclonedx-py environment \
+            --of JSON --output-reproducible \
+            -o "dist-sbom/perathos-${version}.cdx.json" \
+            /tmp/sbom-target/bin/python
+      - name: Attest build provenance (sdist, wheel, SBOM)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist-sbom/*.cdx.json
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: dist-sbom/
 
   smoke:
     needs: build
@@ -63,3 +109,29 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    # After PyPI, so a GitHub Release never advertises a version pip cannot install.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the release and upload its assets (this job only)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: dist-sbom/
+      - name: Create the GitHub Release with sdist, wheel and SBOM
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See CHANGELOG.md. Verify any file: gh attestation verify <file> -R $GITHUB_REPOSITORY" \
+            --verify-tag \
+            dist/*.whl dist/*.tar.gz dist-sbom/*.cdx.json
