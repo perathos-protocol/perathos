@@ -276,6 +276,42 @@ does not depend on the agent's PATH (a hook that cannot be found would, with
 fail-closed on, block every tool call). Set `PERATHOS_HOOK_COMMAND_STYLE=shell`
 for the older one-line form. Tested against Claude Code 2.1.308.
 
+### Perathos Gate: a person approves on their phone
+
+Preconditions are prepared in advance. Gate handles the moment itself: when the guard blocks
+an irreversible action, it asks a named person, who approves or denies **on their own phone
+with a passkey** (Face ID, fingerprint or PIN). Their device signs a hash of the exact action
+and the decision, and the Gate server signs the whole receipt, so the record proves who
+approved *this* action, when, and that it was a real person, not a click on a forged link.
+
+```bash
+perathos gate login --url https://gate.example.com --api-key pgk_...   # pins the Gate's key
+perathos hooks install --guard --force                                  # guard now waits for approvals
+```
+
+- **Claude Code** waits up to `gate_wait` seconds (default 120) for the approval, then runs the
+  command if approved. **Cursor** and the **MCP proxy** deny with the approval link; the agent
+  retries the same command once a person approves.
+- Each approval is single-use, bound to the exact arguments (`args_hash`), and valid for 10
+  minutes after the decision. Denials are recorded too.
+- The approval receipt's hash is written into the action's record (`guard.approval`) and the
+  receipt itself into `.perathos/approvals/` and every evidence pack. `perathos evidence verify`
+  and `perathos gate verify receipt.json` check both signatures offline.
+- **Any script or agent framework**, not just coding agents:
+
+```bash
+perathos gate request --summary "Wire $5,000 to ACME Ltd" --wait 300 && ./transfer.sh
+```
+
+```python
+from perathos.gate import require_approval
+receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
+                           args={"to": "ACME Ltd", "amount": 5000})   # blocks until approved
+```
+
+The protocol and receipt format: [docs/specs/GATE_V1.md](docs/specs/GATE_V1.md). The server
+is a separate service (`perathos-gate`).
+
 ### Keys that never touch the agent's machine
 
 By default one local key seals the log and approves destructive actions. Two

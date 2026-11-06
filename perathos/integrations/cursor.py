@@ -319,6 +319,11 @@ def run_hook(
 
                 decision = decide(target[0], target[1], workspace_root(payload),
                                   trusted_key=verify_key() if verify_key else None)
+                if decision is not None and decision.decision == "deny":
+                    from ..gate import apply_gate
+                    decision = apply_gate(decision, tool=target[0], args=target[1], cwd=workspace_root(payload),
+                                          session_id=str(payload.get("conversation_id") or ""),
+                                          agent_name="cursor", wait_seconds=0)
         except Exception as exc:  # noqa: BLE001
             # Fail closed: a guard that crashes cannot clear the call, so deny it.
             from ..guard import Decision

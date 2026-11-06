@@ -877,7 +877,14 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
                 flags += " --guard"
             if anchor and event in ("Stop", "SessionEnd"):
                 flags += " --anchor"
-            _add_hook(hooks_block, event, _RECORD_CMD + flags, 20 if "--anchor" in flags else 10,
+            timeout = 20 if "--anchor" in flags else 10
+            if "--guard" in flags:
+                from .approvers import get_config
+                cfg = get_config()
+                if cfg.get("gate_url"):
+                    # The guard may wait for a person to approve on their phone.
+                    timeout = int(cfg.get("gate_wait") or 120) + 30
+            _add_hook(hooks_block, event, _RECORD_CMD + flags, timeout,
                       force, settings_path, fail_closed=bool(guard and event == "PreToolUse"))
     try:
         settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
@@ -1575,6 +1582,131 @@ def signer_cmd(spec: str):
         sys.exit(1)
     click.echo(f"OK    {spec}")
     click.echo(f"      public key {s.public_key.hex()}")
+
+
+@cli.group()
+def gate():
+    """Perathos Gate: a person approves irreversible agent actions with a passkey.
+
+    \b
+      perathos gate login --url https://gate.example.com --api-key pgk_...
+      perathos gate request --summary "Wire $5,000 to ACME" --wait 300 && ./transfer.sh
+      perathos gate verify receipt.json
+    """
+
+
+@gate.command(name="login")
+@click.option("--url", required=True, help="Gate server URL.")
+@click.option("--api-key", "api_key", required=True, help="Organisation API key from the Gate admin.")
+@click.option("--wait", "wait_seconds", default=120, show_default=True, type=click.IntRange(0, 900),
+              help="How long the Claude Code guard waits for an approval before denying.")
+def gate_login(url: str, api_key: str, wait_seconds: int):
+    """Connect to a Gate server and pin its signing key."""
+    from .approvers import set_config
+    from .gate import GateClient, GateError
+    client = GateClient(url, api_key)
+    try:
+        info = client.info()
+    except GateError as exc:
+        click.echo(f"[ERROR] cannot reach Gate: {exc}", err=True)
+        sys.exit(1)
+    vk = str(info.get("verify_key", ""))
+    if len(vk) != 64:
+        click.echo("[ERROR] Gate did not publish a valid verify key", err=True)
+        sys.exit(1)
+    for k, v in (("gate_url", url.rstrip("/")), ("gate_api_key", api_key), ("gate_key", vk),
+                 ("gate_wait", str(wait_seconds))):
+        set_config(k, v)
+    click.echo(f"connected to Gate {info.get('gate')} at {info.get('origin')}")
+    click.echo(f"pinned Gate key {vk}")
+    click.echo("Reinstall hooks so the guard waits for approvals: perathos hooks install --guard --force")
+
+
+@gate.command(name="status")
+def gate_status():
+    """Show the Gate configuration and check the server and pinned key."""
+    from .gate import GateClient, GateError
+    client = GateClient.from_config()
+    if client is None:
+        click.echo("Gate not configured. Run: perathos gate login --url ... --api-key ...")
+        sys.exit(1)
+    click.echo(f"url       {client.url}")
+    click.echo(f"key       {client.gate_key or '(not pinned)'}")
+    try:
+        info = client.info()
+    except GateError as exc:
+        click.echo(f"[ERROR] unreachable: {exc}", err=True)
+        sys.exit(1)
+    same = info.get("verify_key") == client.gate_key
+    click.echo(f"server    {info.get('gate')} {info.get('origin')} ({'key matches' if same else 'KEY MISMATCH'})")
+    sys.exit(0 if same else 1)
+
+
+@gate.command(name="request")
+@click.option("--summary", required=True, help="What the approver reads, e.g. the exact command.")
+@click.option("--tool", default="custom", show_default=True)
+@click.option("--target", default=None)
+@click.option("--detail", default=None)
+@click.option("--args-json", "args_json", default=None, help="The exact arguments, as JSON; bound into the approval.")
+@click.option("--wait", "wait_seconds", default=300, show_default=True, type=click.IntRange(1, 3600))
+@click.option("--out", "out_file", type=click.Path(dir_okay=False), default=None, help="Write the receipt here.")
+def gate_request(summary, tool, target, detail, args_json, wait_seconds, out_file):
+    """Ask a person to approve an action; exit 0 only if approved.
+
+    Use it in any script before an irreversible step:
+
+    \b
+      perathos gate request --summary "drop table orders on prod" && psql -c "drop table orders"
+
+    Exit codes: 0 approved (receipt verified), 1 denied, 3 no decision in time, 2 error.
+    """
+    from .gate import ApprovalDenied, ApprovalTimeout, GateError, require_approval
+    try:
+        args = json.loads(args_json) if args_json else None
+    except ValueError as exc:
+        click.echo(f"[ERROR] --args-json is not valid JSON: {exc}", err=True)
+        sys.exit(2)
+    try:
+        receipt = require_approval(summary, tool=tool, args=args, target=target, detail=detail,
+                                   agent="perathos-cli", wait_seconds=wait_seconds)
+    except ApprovalDenied as exc:
+        click.echo(f"DENIED  {exc}", err=True)
+        sys.exit(1)
+    except ApprovalTimeout as exc:
+        click.echo(f"PENDING {exc}", err=True)
+        sys.exit(3)
+    except GateError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(2)
+    if out_file:
+        Path(out_file).write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    click.echo(f"APPROVED by {receipt['approver'].get('name')} at {receipt['decided_at']} "
+               f"(passkey verified; valid until {receipt['valid_until']})", err=True)
+
+
+@gate.command(name="verify")
+@click.argument("receipt_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--gate-key", default=None, metavar="HEX", help="Expected Gate key (default: the pinned one).")
+def gate_verify(receipt_file: str, gate_key: str):
+    """Verify a Gate receipt offline: server signature, approver passkey signature, binding."""
+    from .approvers import get_config
+    from .gate import verify_receipt
+    try:
+        receipt = json.loads(Path(receipt_file).read_text(encoding="utf-8"))
+    except ValueError as exc:
+        click.echo(f"[ERROR] not JSON: {exc}", err=True)
+        sys.exit(2)
+    key = gate_key or get_config().get("gate_key")
+    res = verify_receipt(receipt, gate_key=key)
+    if not res:
+        click.echo(f"INVALID  {res.error}", err=True)
+        sys.exit(1)
+    a = receipt["approver"]
+    click.echo(f"{'VALID' if key else 'VALID_UNCONFIRMED_GATE'}  {receipt['decision'].upper()} by {a.get('name')} "
+               f"at {receipt['decided_at']}")
+    click.echo(f"  action   {receipt['request']['action'].get('summary', '')[:120]}")
+    click.echo(f"  passkey  {a.get('credential_id', '')[:24]}... alg {a.get('alg')}, user verified")
+    click.echo(f"  gate     {receipt['server_signature']['verify_key']}")
 
 
 def main():

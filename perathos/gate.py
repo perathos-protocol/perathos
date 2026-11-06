@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from .canonical import canonical_bytes
@@ -289,3 +290,186 @@ class GateClient:
         while st.get("status") == "pending" and time.monotonic() < deadline:
             st = self.status(approval_id, int(min(60, max(1, deadline - time.monotonic()))))
         return st
+
+
+# --------------------------------------------------------------------------- #
+# Guard integration: ask a person when the guard blocks an action
+# --------------------------------------------------------------------------- #
+
+
+def approvals_dir(cwd) -> Path:
+    return Path(cwd) / ".perathos" / "approvals"
+
+
+def _load_json(path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def find_usable_receipt(cwd, args_hash: str, gate_key: str | None):
+    """An approved, unexpired, unused receipt for exactly these arguments, or None."""
+    d = approvals_dir(cwd)
+    if not d.exists():
+        return None, None
+    for f in sorted(d.glob("apr_*.json")):
+        if f.with_suffix(".used").exists():
+            continue
+        rec = _load_json(f)
+        if rec and check_approval_for(rec, gate_key=gate_key, args_hash=args_hash):
+            return rec, f
+    return None, None
+
+
+def _save_receipt(cwd, receipt: dict, *, used: bool):
+    d = approvals_dir(cwd)
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{receipt['request']['id']}.json"
+    f.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    if used:
+        f.with_suffix(".used").write_text(now_iso(), encoding="utf-8")
+    return f
+
+
+def _pending(cwd) -> dict:
+    return _load_json(approvals_dir(cwd) / "pending.json")
+
+
+def _set_pending(cwd, args_hash: str, entry: dict | None) -> None:
+    d = approvals_dir(cwd)
+    d.mkdir(parents=True, exist_ok=True)
+    data = _pending(cwd)
+    if entry is None:
+        data.pop(args_hash, None)
+    else:
+        data[args_hash] = entry
+    (d / "pending.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def summarise_action(tool: str, args) -> str:
+    """The text an approver reads: the real command or target, not the agent's description."""
+    if isinstance(args, dict):
+        for k in ("command", "query", "sql", "file_path", "path", "url"):
+            if isinstance(args.get(k), str) and args[k].strip():
+                return args[k][:2000]
+        return f"{tool} " + json.dumps(args, sort_keys=True, default=str)[:2000]
+    return f"{tool} {args}"[:2000]
+
+
+def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_name: str = "agent",
+               wait_seconds: int = 0, client: GateClient | None = None):
+    """Turn a guard *deny* into a request for a person's approval.
+
+    Returns the (possibly new) guard Decision. Self-authorization and guard errors are
+    never sent for approval. Without a configured Gate (or a pinned Gate key), the
+    original decision is returned unchanged.
+    """
+    from .guard import Decision
+    from .recorder import content_hash
+
+    if decision is None or decision.decision != "deny" or str(decision.rule or "").startswith("guard."):
+        return decision
+    client = client if client is not None else GateClient.from_config()
+    if client is None:
+        return decision
+    first = (decision.reason or "").splitlines()[0] if decision.reason else "perathos guard: blocked"
+    if not client.gate_key:
+        return Decision("deny", decision.rule, None,
+                        f"{first}. Perathos Gate is configured but its key is not pinned; run 'perathos gate login'.")
+    ah = content_hash(args)
+
+    rec, path = find_usable_receipt(cwd, ah, client.gate_key)
+    if rec is not None:
+        path.with_suffix(".used").write_text(now_iso(), encoding="utf-8")
+        return Decision("allow", decision.rule, None,
+                        f"perathos guard: allowed, approved by {rec['approver'].get('name')} with a passkey at "
+                        f"{rec['decided_at']}", approval=rec["receipt_hash"])
+
+    try:
+        pend = _pending(cwd).get(ah)
+        if pend and parse_iso(pend["expires_at"]) > datetime.now(timezone.utc):
+            approval_id, approve_url = pend["id"], pend["approve_url"]
+        else:
+            import socket
+            created = client.request(
+                action={"tool": tool, "summary": summarise_action(tool, args), "rule": decision.rule,
+                        "detail": first},
+                agent={"name": agent_name, "session_id": session_id, "host": socket.gethostname()},
+                args_hash=ah)
+            approval_id, approve_url = created["id"], created["approve_url"]
+            _set_pending(cwd, ah, {"id": approval_id, "approve_url": approve_url, "expires_at": created["expires_at"]})
+        st = client.wait_for_decision(approval_id, wait_seconds) if wait_seconds > 0 else client.status(approval_id, 0)
+    except GateError as exc:
+        return Decision("deny", decision.rule, None, f"{first}. Perathos Gate unreachable ({exc}).")
+
+    status = st.get("status")
+    receipt = st.get("receipt")
+    if status == "approved" and isinstance(receipt, dict):
+        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah)
+        _set_pending(cwd, ah, None)
+        if not chk:
+            _save_receipt(cwd, receipt, used=True)
+            return Decision("deny", decision.rule, None, f"{first}. Approval receipt rejected: {chk.error}")
+        _save_receipt(cwd, receipt, used=True)
+        return Decision("allow", decision.rule, None,
+                        f"perathos guard: allowed, approved by {receipt['approver'].get('name')} with a passkey",
+                        approval=receipt["receipt_hash"])
+    if status == "denied" and isinstance(receipt, dict):
+        _set_pending(cwd, ah, None)
+        if verify_receipt(receipt, gate_key=client.gate_key):
+            _save_receipt(cwd, receipt, used=True)
+        who = receipt.get("approver", {}).get("name", "the approver")
+        return Decision("deny", decision.rule, None, f"{first}. {who} denied this action.")
+    if status == "expired":
+        _set_pending(cwd, ah, None)
+        return Decision("deny", decision.rule, None, f"{first}. The approval request expired; retry to ask again.")
+    return Decision("deny", decision.rule, None,
+                    f"{first}. Approval requested from a person: {approve_url} . Retry this exact command "
+                    f"after it is approved.")
+
+
+# --------------------------------------------------------------------------- #
+# SDK for any agent or script
+# --------------------------------------------------------------------------- #
+
+
+class ApprovalDenied(GateError):
+    pass
+
+
+class ApprovalTimeout(GateError):
+    pass
+
+
+def require_approval(summary: str, *, tool: str = "custom", args=None, target: str | None = None,
+                     detail: str | None = None, agent: str = "sdk", session_id: str = "",
+                     wait_seconds: int = 300, ttl_seconds: int = 600, client: GateClient | None = None) -> dict:
+    """Block until a person approves this action with a passkey; return the verified receipt.
+
+    Raises ApprovalDenied, ApprovalTimeout, or GateError. Example::
+
+        receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
+                                   args={"to": "ACME Ltd", "amount": 5000})
+        do_transfer()
+    """
+    from .recorder import content_hash
+    client = client if client is not None else GateClient.from_config()
+    if client is None:
+        raise GateError("Perathos Gate is not configured: run 'perathos gate login'")
+    if not client.gate_key:
+        raise GateError("Gate key is not pinned: run 'perathos gate login'")
+    ah = content_hash(args if args is not None else summary)
+    created = client.request(action={"tool": tool, "summary": summary, "target": target, "detail": detail},
+                             agent={"name": agent, "session_id": session_id}, args_hash=ah, ttl_seconds=ttl_seconds)
+    st = client.wait_for_decision(created["id"], wait_seconds)
+    status, receipt = st.get("status"), st.get("receipt")
+    if status == "approved" and isinstance(receipt, dict):
+        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah)
+        if not chk:
+            raise GateError(f"approval receipt rejected: {chk.error}")
+        return receipt
+    if status == "denied":
+        raise ApprovalDenied(f"denied by {(receipt or {}).get('approver', {}).get('name', 'the approver')}")
+    raise ApprovalTimeout(f"no decision within {wait_seconds}s (status {status}); approve at {created['approve_url']}")

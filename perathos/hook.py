@@ -69,6 +69,17 @@ def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO)
             from .guard import decide
             decision = decide(str(payload.get("tool_name") or ""), payload.get("tool_input"),
                               payload.get("cwd") or ".", trusted_key=_trusted_keys())
+            if decision is not None and decision.decision == "deny":
+                from .approvers import get_config
+                from .gate import apply_gate
+                try:
+                    wait = int(get_config().get("gate_wait") or 120)
+                except ValueError:
+                    wait = 120
+                decision = apply_gate(decision, tool=str(payload.get("tool_name") or ""),
+                                      args=payload.get("tool_input"), cwd=payload.get("cwd") or ".",
+                                      session_id=str(payload.get("session_id") or ""), agent_name="claude-code",
+                                      wait_seconds=wait)
         except Exception as exc:  # noqa: BLE001
             # Fail closed: if the guard itself crashes we cannot tell whether the
             # call is destructive, so it is denied (and recorded as denied).

@@ -123,6 +123,20 @@ def export_evidence_pack(
         (out / "approvers.json").write_text(json.dumps({"approvers": approvers}, indent=2), encoding="utf-8")
 
     receipts = _read_receipts(log)
+    approval_hashes = {str(r["guard"]["approval"]) for r in receipts
+                       if r.get("kind") == "pre" and isinstance(r.get("guard"), dict) and r["guard"].get("approval")}
+    approvals: dict[str, dict] = {}
+    ap_dir = _project_root_for(log) / ".perathos" / "approvals"
+    if approval_hashes and ap_dir.exists():
+        (out / "approvals").mkdir()
+        for f in ap_dir.glob("apr_*.json"):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(rec, dict) and rec.get("receipt_hash") in approval_hashes:
+                shutil.copyfile(f, out / "approvals" / f.name)
+                approvals[rec["receipt_hash"]] = rec
     used = {str(r["guard"]["precondition"]) for r in receipts
             if r.get("kind") == "pre" and isinstance(r.get("guard"), dict) and r["guard"].get("precondition")}
     preconditions: dict[str, dict] = {}
@@ -146,6 +160,12 @@ def export_evidence_pack(
         check_head=True,
     )
     summary = _summarise(receipts, preconditions)
+    summary["approved_by_person"] = [
+        {"seq": r.get("seq"), "ts": r.get("ts"), "tool": r.get("tool"), "rule": r["guard"].get("rule"),
+         "approver": approvals.get(r["guard"]["approval"], {}).get("approver", {}).get("name"),
+         "decided_at": approvals.get(r["guard"]["approval"], {}).get("decided_at"),
+         "receipt_in_pack": r["guard"]["approval"] in approvals}
+        for r in receipts if r.get("kind") == "pre" and isinstance(r.get("guard"), dict) and r["guard"].get("approval")]
     missing = [a["precondition"]["hash"] for a in summary["allowed_under_precondition"]
                if a["precondition"].get("missing")]
     verification = {**report.to_dict(), "path": "session.jsonl", **summary,
@@ -237,6 +257,17 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                     errors.append(f"ERR_PRECONDITION_SIGNATURE: {f.name}")
             except (OSError, ValueError, TypeError, AttributeError):
                 errors.append(f"ERR_PRECONDITION_MALFORMED: {f.name}")
+        # Gate approvals: each must verify (server and approver passkey signatures).
+        from .gate import verify_receipt as _verify_gate
+        for f in sorted((pack / "approvals").glob("*.json")) if (pack / "approvals").exists() else []:
+            try:
+                g = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                errors.append(f"ERR_APPROVAL_MALFORMED: {f.name}")
+                continue
+            chk = _verify_gate(g, gate_key=None)
+            if not chk:
+                errors.append(f"{chk.error.split(':')[0]}: {f.name}")
         anchors = pack / "anchors.jsonl"
         rep = verify_session(pack / "session.jsonl", expected_verify_key=expected_verify_key,
                              anchors_path=anchors if anchors.exists() else None, tsa_roots=tsa_roots,

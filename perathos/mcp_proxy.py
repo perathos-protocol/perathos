@@ -81,6 +81,11 @@ class McpRecorder:
                 from .guard import decide
                 decision = decide(tool, args if isinstance(args, dict) else {"arguments": args},
                                   self.project, trusted_key=self.trusted_key)
+                if decision is not None and decision.decision == "deny":
+                    from .gate import apply_gate
+                    decision = apply_gate(decision, tool=tool, args=args if isinstance(args, dict) else {"arguments": args},
+                                          cwd=self.project, session_id=self.session_id, agent_name="mcp-proxy",
+                                          wait_seconds=0)
             except Exception as exc:  # noqa: BLE001
                 self.errors.append(f"guard: {exc}")
         fields = {**self._base(), "kind": "pre", "tool": tool, "tool_use_id": _id_str(msg.get("id")),
