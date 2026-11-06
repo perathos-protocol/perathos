@@ -309,8 +309,10 @@ receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
                            args={"to": "ACME Ltd", "amount": 5000})   # blocks until approved
 ```
 
-The protocol and receipt format: [docs/specs/GATE_V1.md](docs/specs/GATE_V1.md). The server
-is a separate service (`perathos-gate`).
+The protocol and receipt format: [docs/specs/GATE_V1.md](docs/specs/GATE_V1.md). The server is
+open source (AGPL-3.0) at [github.com/perathos-protocol/perathos-gate](https://github.com/perathos-protocol/perathos-gate):
+install from source, then `perathos-gate init`, `create-org`, `invite` and `serve`, or use the
+Dockerfile. Passkeys need HTTPS except on `localhost`.
 
 ### Keys that never touch the agent's machine
 
