@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-CONFIG_KEYS = ("signer", "anchor_mirror")
+CONFIG_KEYS = ("signer", "anchor_mirror", "gate_url", "gate_api_key", "gate_key", "gate_wait")
 
 
 def perathos_home() -> Path:

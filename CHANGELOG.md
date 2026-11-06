@@ -5,6 +5,25 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-06
+
+### Added: Perathos Gate (client side)
+- `docs/specs/GATE_V1.md`: protocol and receipt format for human approval of
+  irreversible agent actions. The WebAuthn challenge is a hash of the exact
+  request and the decision, so the approver's passkey signs *this* action;
+  the Gate server also signs the receipt.
+- `perathos/gate.py`: receipt construction and offline verification (ES256,
+  EdDSA, RS256 passkeys; user verification required; origin, RP id, challenge
+  and args binding checked), `GateClient`, `apply_gate` and the
+  `require_approval()` SDK for any agent or script.
+- The guard asks a person when it blocks an action and Gate is configured:
+  Claude Code waits (`gate_wait`, default 120 s; installer raises the hook
+  timeout to match), Cursor and the MCP proxy deny with the approval link and
+  allow the retry once approved. Approvals are single-use and bound to the
+  arguments; the receipt hash is recorded as `guard.approval`.
+- `perathos gate login | status | request | verify`.
+- Evidence packs include approval receipts; `evidence verify` checks them.
+
 ## [1.2.0] - 2026-11-05
 
 ### Added

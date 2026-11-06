@@ -224,7 +224,7 @@ def test_version_is_current():
     from perathos import __version__
     r = CliRunner().invoke(cli, ["--version"])
     assert __version__ in r.output
-    assert r.output.strip().endswith("1.2.0")
+    assert r.output.strip().endswith("1.3.0")
 
 
 def test_verify_trust_jwks(home):

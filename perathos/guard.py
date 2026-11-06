@@ -385,9 +385,13 @@ class Decision:
     rule: str | None = None
     precondition: str | None = None  # precondition_hash used
     reason: str = ""
+    approval: str | None = None  # Gate receipt_hash, when a person approved with a passkey
 
     def receipt_field(self) -> dict:
-        return {"decision": self.decision, "rule": self.rule, "precondition": self.precondition}
+        out = {"decision": self.decision, "rule": self.rule, "precondition": self.precondition}
+        if self.approval:
+            out["approval"] = self.approval
+        return out
 
 
 def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_key) -> Decision | None:

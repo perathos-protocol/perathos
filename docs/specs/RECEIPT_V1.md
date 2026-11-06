@@ -30,7 +30,7 @@ logs at `<first workspace root>/.perathos/sessions/<conversation_id>.jsonl`.
 | `signer` | hex string | signed checkpoint | Ed25519 public key (32 bytes), bound into the hash |
 | `receipt_hash` | hex string | all | See below |
 | `signature` | object | signed checkpoint | `{algorithm: "ed25519", verify_key, signature}`; not hashed |
-| `guard` | object | pre (optional) | `{decision: "allow"\|"deny", rule, precondition}`: the guard's decision and the `precondition_hash` it relied on. `rule` is a rule id, prefixed `script:` when the match was inside a script the command runs, or `write:` when a script being written contained it |
+| `guard` | object | pre (optional) | `{decision: "allow"\|"deny", rule, precondition, approval?}`; `approval` is the `receipt_hash` of a Perathos Gate receipt (GATE_V1.md) when a person approved the action with a passkey: the guard's decision and the `precondition_hash` it relied on. `rule` is a rule id, prefixed `script:` when the match was inside a script the command runs, or `write:` when a script being written contained it |
 
 ## Hashing
 
