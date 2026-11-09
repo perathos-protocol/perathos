@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sys
 import os
 import secrets
 import urllib.error
@@ -445,10 +446,12 @@ class ApprovalTimeout(GateError):
 
 def require_approval(summary: str, *, tool: str = "custom", args=None, target: str | None = None,
                      detail: str | None = None, agent: str = "sdk", session_id: str = "",
-                     wait_seconds: int = 300, ttl_seconds: int = 600, client: GateClient | None = None) -> dict:
+                     wait_seconds: int = 300, ttl_seconds: int = 600, client: GateClient | None = None,
+                     on_created=None) -> dict:
     """Block until a person approves this action with a passkey; return the verified receipt.
 
-    Raises ApprovalDenied, ApprovalTimeout, or GateError. Example::
+    Prints the approve link to stderr as soon as the request exists (or passes the created
+    request to ``on_created`` instead). Raises ApprovalDenied, ApprovalTimeout, or GateError. Example::
 
         receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
                                    args={"to": "ACME Ltd", "amount": 5000})
@@ -463,6 +466,12 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
     ah = content_hash(args if args is not None else summary)
     created = client.request(action={"tool": tool, "summary": summary, "target": target, "detail": detail},
                              agent={"name": agent, "session_id": session_id}, args_hash=ah, ttl_seconds=ttl_seconds)
+    # Surface the approve link at once: without a notifier the requester is the only one who has it.
+    if on_created is not None:
+        on_created(created)
+    else:
+        print(f"perathos gate: waiting for approval of {created['id']}; approve at {created['approve_url']}",
+              file=sys.stderr, flush=True)
     st = client.wait_for_decision(created["id"], wait_seconds)
     status, receipt = st.get("status"), st.get("receipt")
     if status == "approved" and isinstance(receipt, dict):
