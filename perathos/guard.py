@@ -28,11 +28,13 @@ Honest limits:
     name assembled from pieces, an alias, indirection inside interpreter
     code, a build-tool recipe and variables inside scripts or MCP arguments
     are not caught (``KNOWN_OPEN`` in tests/test_guard_hardening.py).
-  * The signing key lives on the same machine. The guard refuses agent
-    commands that create preconditions or touch ``.perathos/keys``, but an
-    agent with unrestricted shell access could still reach the key some
-    other way. Keep the key somewhere the agent cannot read for real
-    separation (planned: KMS-backed signer).
+  * By default the signing key lives on the same machine. The guard refuses
+    agent commands that create preconditions or touch ``.perathos/keys``, but
+    an agent with unrestricted shell access could still reach the key some
+    other way. For real separation, list approvers whose keys are held
+    elsewhere (``perathos approvers add``; ``perathos precondition add
+    --signer vault:... | gcpkms:... | command:...``, see
+    ``perathos/signers.py``), so the agent's user cannot sign a precondition.
   * A precondition proves the check ran and passed. Whether that check is a
     meaningful test of the backup is the person's judgement.
 """

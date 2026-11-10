@@ -24,8 +24,9 @@
     Drop a Perathos evidence pack (.zip) to check, in this browser, that every file matches the signed manifest,
     that the receipt chain is unbroken and every checkpoint signature is valid, and that the head witness and
     timestamp anchors line up with the log.
-    It does not verify the RFC 3161 timestamp signatures themselves (use <code>perathos evidence verify</code> for that),
-    and it cannot tell you which model ran or whether the signer key really belongs to who you think: confirm the key separately.
+    It does not verify the RFC 3161 timestamp signatures themselves, and it does not check Perathos Gate approval
+    receipts (the files under <code>approvals/</code>) at all, beyond their manifest hash: use
+    <code>perathos evidence verify</code> for both. It cannot tell you which model ran or whether the signer key really belongs to who you think: confirm the key separately.
   </p>
   <p class="small muted">Nothing is uploaded: the pack is read and checked locally, and this page makes no network requests except to load itself, JSZip and (only on browsers without built-in Ed25519) a signature library.</p>
 

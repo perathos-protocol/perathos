@@ -217,6 +217,19 @@ def run_checks(project: Path, *, network: bool = False, max_sessions: int = 5) -
         add(PASS if rep.valid else FAIL, "evidence", f"session {log.stem[:12]}",
             detail if rep.valid else "; ".join(rep.errors[:2]))
 
+    # ---- recording failures (a failed hook leaves no receipt, so only this local log shows it) ----
+    from .errlog import errors_log_path, read_errors
+    logged = read_errors()
+    here = read_errors(project=project)
+    if not logged:
+        add(PASS, "evidence", "recording failures logged", f"none in {errors_log_path()}")
+    else:
+        last = logged[-1]
+        add(WARN, "evidence", "recording failures logged",
+            f"{len(logged)} in {errors_log_path()} ({len(here)} for this project); latest {last.get('ts')} "
+            f"{last.get('component')}: {last.get('error')}. Receipts may be missing or checkpoints unsigned; "
+            f"fix the cause, then delete the file to reset the count")
+
     # ---- preconditions ----
     from .guard import check_precondition, preconditions_dir
     pcd = preconditions_dir(project)

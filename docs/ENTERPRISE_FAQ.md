@@ -1,7 +1,9 @@
 # Perathos Enterprise FAQ
 
-_Last updated: 2026-06-16._ Procurement- and security-review-level answers. For
-the formal model see [THREAT_MODEL.md](THREAT_MODEL.md); for reporting see
+_Last updated: 2026-11-10._ Procurement- and security-review-level answers on
+the proof-bundle layer. For the flight recorder, guard and Gate see
+[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md); for the formal model see
+[THREAT_MODEL.md](THREAT_MODEL.md); for reporting see
 [SECURITY.md](../SECURITY.md).
 
 ## What it is
@@ -48,8 +50,8 @@ Only if you **pin the expected public key** (`verify --verify-key <hex>` or
 key signed the hash; an attacker can re-sign with their own key. Pinning is the
 deployment's responsibility. Mismatch → `ERR_UNEXPECTED_SIGNER`.
 
-**Q: What signature/hash algorithms?** Ed25519 (libsodium, constant-time) and
-SHA-256. A signature claiming any other algorithm is rejected
+**Q: What signature/hash algorithms?** Ed25519 (the pyca `cryptography`
+library) and SHA-256. A signature claiming any other algorithm is rejected
 (`ERR_UNSUPPORTED_ALGORITHM`).
 
 ## The verifiers (detection quality)
@@ -131,11 +133,35 @@ audit (18 findings fixed; the cryptographic core was found sound — no
 critical/high).
 
 **Q: How do we pin a known-good version?**
-Pin a commit SHA (pre-1.0). A CHANGELOG tracks notable changes.
+Pin a released version from PyPI in your lock file (`perathos==<version>`,
+ideally with hashes). Releases are built by GitHub Actions from a version tag
+and published with PyPI trusted publishing; each release since 1.2.0 carries a
+Sigstore-signed build provenance attestation (SLSA provenance) and a CycloneDX
+SBOM. Check a downloaded file with
+`gh attestation verify perathos-<version>-py3-none-any.whl -R perathos-protocol/perathos`.
+The [CHANGELOG](../CHANGELOG.md) tracks notable changes.
+
+**Q: Can the signing key be kept in a KMS or HSM?**
+Yes. A signer can be the local key file, HashiCorp Vault transit (`vault:`),
+Google Cloud KMS Ed25519 (`gcpkms:`), or any HSM, hardware key or signing
+service wrapped by a small program (`command:`); see `perathos/signers.py`.
+Remote signers are used for flight-recorder checkpoints, evidence-pack
+manifests and preconditions. For proof bundles, the Python API can sign a
+bundle's hash with any signer (`signing.sign_hash_with_signer`); the
+`perathos prove --sign` command itself signs with the local key file. A remote signer keeps the key from being copied. It does not
+stop a process that holds the signing credential from asking for signatures.
+AWS KMS has no built-in signer; wrap it with `command:`.
+
+**Q: Is there trusted timestamping?**
+For flight-recorder checkpoints, yes: RFC 3161 timestamps from a Time Stamping
+Authority, verified against a pinned root (`--anchor`, needs the
+`perathos[anchor]` extra and network). Proof bundles are not timestamped:
+a bundle's `issued_at` is self-asserted.
 
 ## Limitations (stated up front)
 
 - Signer pinning is opt-in (out-of-band key trust required).
-- No built-in KMS/HSM, key revocation, trusted timestamping, TEE attestation, or
-  transparency log yet — see the roadmap in [THREAT_MODEL.md](THREAT_MODEL.md).
+- No key revocation service, TEE attestation, or transparency log. Trusted
+  timestamping covers recorder checkpoints, not proof bundles. See
+  [THREAT_MODEL.md](THREAT_MODEL.md), section 7.
 - Bundles are tamper-evident, **not** encrypted (no confidentiality).

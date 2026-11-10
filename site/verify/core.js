@@ -4,7 +4,9 @@
 // runs (perathos/evidence.py, perathos/recorder.py, docs/specs/RECEIPT_V1.md):
 // the signed MANIFEST.json, the hash-chained receipt log, checkpoint signatures,
 // the head witness, and the anchors' link to the log. RFC 3161 timestamp tokens
-// are NOT cryptographically verified here; use the CLI for that.
+// are NOT cryptographically verified here, and Perathos Gate approval receipts
+// (approvals/*.json) are NOT checked at all beyond the manifest hash (no
+// signature check, no cross-check against the log); use the CLI for both.
 //
 // Works in browsers and in Node 18+ (both expose WebCrypto as globalThis.crypto).
 

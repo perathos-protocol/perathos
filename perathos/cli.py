@@ -696,6 +696,21 @@ def _load_signer_or_none(warn: str | None = None):
         return None
 
 
+def _recorder_signer_strict():
+    """The configured recorder signer, for sealing checkpoints.
+
+    Raises FileNotFoundError when the signer is the local key and none exists
+    yet (not a failure: checkpoints are unsigned until 'perathos keygen'), and
+    SignerError when a configured signer cannot be loaded (a failure the
+    recorder marks on the checkpoint as signer_error).
+    """
+    from .signers import configured_spec, load_signer
+    spec = configured_spec()
+    if spec == "local" and not (Path.home() / ".perathos" / "keys" / "signing.key").exists():
+        raise FileNotFoundError("no local signing key (run: perathos keygen)")
+    return load_signer(spec)
+
+
 def _trusted_approvers():
     from .approvers import trusted_approver_keys
     return trusted_approver_keys()
@@ -848,7 +863,10 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
     'perathos session verify'. Run 'perathos keygen' first so checkpoints
     are signed.
 
-    Neither hook ever blocks the agent.
+    Without --guard, neither hook ever blocks the agent. With --guard, the
+    PreToolUse hook denies a tool call that matches a destructive-command
+    rule and has no signed precondition or Gate approval, and it fails
+    closed: if the guard itself crashes, the call is denied.
     """
     if agent == "cursor":
         _install_cursor(scope, force, guard, anchor)
@@ -911,8 +929,9 @@ def hooks_install(scope: str, force: bool, recorder: bool, guard: bool, anchor: 
         except (FileNotFoundError, ValueError):
             click.echo("[WARN] No signing key yet: run 'perathos keygen' or checkpoints will be unsigned.")
     click.echo("")
-    click.echo("This grounds claims against what tools actually returned. It does not")
-    click.echo("catch a well-grounded misrepresentation, and it never blocks the agent.")
+    click.echo("The summary check grounds claims against what tools actually returned. It does")
+    click.echo("not catch a well-grounded misrepresentation, and it never blocks the agent"
+               + (" (the guard does block: see above)." if guard else "."))
 
 
 def _install_cursor(scope: str, force: bool, guard: bool, anchor: bool) -> None:
@@ -960,13 +979,16 @@ def hooks_record(guard: bool, anchor: bool):
 
     Reads the hook payload from stdin. PreToolUse and PostToolUse append a
     chained receipt holding hashes (never content) of the tool's arguments
-    and result. Stop and SessionEnd append a checkpoint signed with the local
-    key from 'perathos keygen'.
+    and result. Stop and SessionEnd append a checkpoint signed with the
+    recorder's key (the local key from 'perathos keygen', or the configured
+    remote signer). If the signer fails, the checkpoint is written unsigned
+    and marked signer_error, with a warning on stderr.
 
     With --guard, a PreToolUse call matching a destructive-command rule is
     denied (via the hook's JSON permissionDecision) unless an unexpired
-    precondition signed by the local key covers it; the decision is bound
-    into the receipt. With --anchor, each signed checkpoint is timestamped
+    precondition signed by a trusted key covers it (a listed approver, or
+    the local key when no approvers are listed) or a person approved it
+    through Perathos Gate; the decision is bound into the receipt. With --anchor, each signed checkpoint is timestamped
     by an outside TSA and the token saved under ~/.perathos/anchors/.
 
     Always exits 0. Without --guard nothing is printed to stdout, so the
@@ -999,7 +1021,7 @@ def hooks_record_cursor(guard: bool, anchor: bool):
         raw = sys.stdin.read()
     except Exception:  # noqa: BLE001 -- unreadable stdin must not crash the hook
         raw = ""
-    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=lambda: _load_signer_or_none(),
+    response = run_hook(raw, guard=guard, anchor=anchor, load_signing_key=_recorder_signer_strict,
                         verify_key=_trusted_approvers, warn=lambda m: click.echo(m, err=True))
     click.echo(json.dumps(response))
 
@@ -1133,6 +1155,11 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
     Detects any edited, deleted, inserted or reordered receipt, a forged or
     re-signed checkpoint, and truncation before the last witnessed
     checkpoint. Receipts after the last checkpoint are reported as unsealed.
+
+    Also reports checkpoints left unsigned because the signer failed, and
+    how many recording failures this machine logged for the session in
+    ~/.perathos/errors.log (a local diagnostic; it does not change the
+    result, and a log checked on another machine has no such count).
     """
     from .recorder import verify_session
 
@@ -1162,8 +1189,12 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
     report = verify_session(log, expected_verify_key=expected_verify_key,
                             trust_store=trust_store, require_signed=not allow_unsigned,
                             anchors_path=anchors_path, tsa_roots=roots, require_anchor=require_anchor)
+    # Recording failures logged on this machine for this session (a local diagnostic, not part
+    # of the log: a failed hook leaves no receipt, so the log alone cannot show the gap).
+    from .errlog import errors_log_path, read_errors
+    rec_errors = read_errors(session_id=report.session_id) if report.session_id else []
     if as_json:
-        click.echo(json.dumps(report.to_dict(), indent=2))
+        click.echo(json.dumps({**report.to_dict(), "recording_errors_logged": len(rec_errors)}, indent=2))
     else:
         pinned = expected_verify_key is not None or trust_store is not None
         status = ("VALID" if pinned else "VALID_UNCONFIRMED_SIGNER") if report.valid else "INVALID"
@@ -1171,6 +1202,13 @@ def session_verify(target: str, expected_verify_key: str, trust_jwks: str, allow
         click.echo(f"  session       {report.session_id}")
         click.echo(f"  receipts      {report.receipts} ({report.tool_calls} tool calls, {report.checkpoints} checkpoints)")
         click.echo(f"  sealed        through seq {report.sealed_through} by {report.signed_checkpoints} signed checkpoint(s)")
+        if report.signer_failures:
+            click.echo(f"  SIGNER FAILED {report.signer_failures} checkpoint(s) are unsigned because the recorder's "
+                       "signer failed when they were sealed")
+        if rec_errors:
+            click.echo(f"  RECORD ERRORS {len(rec_errors)} recording failure(s) logged for this session in "
+                       f"{errors_log_path()} (latest {rec_errors[-1].get('ts')} {rec_errors[-1].get('component')}: "
+                       f"{rec_errors[-1].get('error')}); receipts may be missing")
         if report.signers:
             click.echo(f"  signer        {', '.join(report.signers)}")
             if not pinned:
@@ -1391,12 +1429,28 @@ def evidence():
               help="The signer key you expect (confirm it with the sender separately).")
 @click.option("--tsa-root", "tsa_roots", multiple=True, type=click.Path(exists=True), metavar="PEM",
               help="Extra trusted TSA root certificate(s).")
+@click.option("--gate-key", "gate_key", default=None, metavar="HEX",
+              help="The Perathos Gate server key you expect on approval receipts "
+                   "(default: the one pinned on this machine, if any).")
+@click.option("--approver-key", "approver_keys", multiple=True, metavar="B64URL",
+              help="An approver passkey public key you trust, as 'perathos gate approvers' prints it; "
+                   "repeatable (default: the approvers pinned on this machine, if any).")
 @click.option("--json", "as_json", is_flag=True, help="Print the full result as JSON.")
-def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_json: bool):
+def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, gate_key: str, approver_keys: tuple,
+                    as_json: bool):
     """Re-check an evidence pack (folder or .zip) from its own files.
 
     Checks the signed manifest (no file added, removed or changed), the
-    receipt chain and checkpoint signatures, and every independent timestamp.
+    receipt chain and checkpoint signatures, every independent timestamp,
+    and every Perathos Gate approval: each receipt's signatures, and that
+    every approval the log cites is in the pack, is an approve decision and
+    was given for the same arguments as the call.
+
+    A pack checked without --verify-key prints VALID_UNCONFIRMED_SIGNER. A
+    pack with approvals checked without a Gate key prints
+    VALID_UNCONFIRMED_GATE, and the 'approvals' line says whether the Gate
+    key was confirmed and whether the approvers were pinned. Get all three
+    keys from the pack's owner through a separate channel.
     Exit 0 = valid, 1 = invalid.
     """
     from .evidence import verify_evidence_pack
@@ -1408,7 +1462,8 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_js
     except Exception:  # noqa: BLE001 -- without the [anchor] extra, packs with anchors fail clearly below
         roots = None
     try:
-        res = verify_evidence_pack(pack, expected_verify_key=expected_verify_key, tsa_roots=roots)
+        res = verify_evidence_pack(pack, expected_verify_key=expected_verify_key, tsa_roots=roots,
+                                   gate_key=gate_key, approver_keys=list(approver_keys))
     except (OSError, ValueError, KeyError) as exc:
         click.echo(f"[ERROR] Cannot read evidence pack: {exc}", err=True)
         sys.exit(1)
@@ -1416,8 +1471,18 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_js
         click.echo(json.dumps(res, indent=2))
     else:
         s = res["session"]
+        ap = res["approvals"]
+        has_approvals = bool(ap["cited"] or ap["in_pack"])
         pinned = expected_verify_key is not None
-        click.echo(f"{('VALID' if pinned else 'VALID_UNCONFIRMED_SIGNER') if res['valid'] else 'INVALID'}  {pack}")
+        if not res["valid"]:
+            status = "INVALID"
+        elif not pinned:
+            status = "VALID_UNCONFIRMED_SIGNER"
+        elif has_approvals and not ap["gate_key_confirmed"]:
+            status = "VALID_UNCONFIRMED_GATE"
+        else:
+            status = "VALID"
+        click.echo(f"{status}  {pack}")
         if res["valid"] and not pinned:
             click.echo("  NOTE         confirm the signer key with the pack's owner and pass --verify-key")
         click.echo(f"  session      {s.get('session_id')}")
@@ -1425,6 +1490,21 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, as_js
         click.echo(f"  sealed       through receipt {s.get('sealed_through')}, signer {', '.join(s.get('signers') or []) or 'none'}")
         if s.get("anchors"):
             click.echo(f"  timestamped  through receipt {s.get('anchored_through')} at {s.get('anchored_time')}")
+        if has_approvals:
+            gate_txt = (f"Gate key confirmed ({ap['gate_key_source']})" if ap["gate_key_confirmed"]
+                        else "Gate key UNCONFIRMED")
+            pins_txt = (f"approvers pinned ({ap['approvers_source']})" if ap["approvers_pinned"]
+                        else "approvers NOT PINNED")
+            click.echo(f"  approvals    {ap['cited']} cited, {ap['verified']} verified, {gate_txt}, {pins_txt}")
+            if not ap["gate_key_confirmed"]:
+                click.echo(f"  NOTE         approvals are signed by Gate key {', '.join(ap['gate_keys']) or '(none verified)'}; "
+                           "anyone can run a Gate, so")
+                click.echo("               confirm that key with the pack's owner and pass --gate-key")
+            if not ap["approvers_pinned"]:
+                click.echo("  NOTE         approver passkeys are taken from the receipts themselves: this shows the Gate")
+                click.echo("               vouched for them, not that they are people you know; pass --approver-key")
+        for w in res.get("warnings", []):
+            click.echo(f"[WARN]  {w}")
         for err in res["errors"]:
             click.echo(f"[ERROR] {err}", err=True)
     sys.exit(0 if res["valid"] else 1)
@@ -1455,10 +1535,21 @@ def mcp_proxy_cmd(name, session_id, project_dir, guard, anchor, seal_every, serv
     """
     from .mcp_proxy import McpRecorder, env_project_dir, run_proxy
 
-    sk_hex = _load_signer_or_none("perathos mcp-proxy: no signer, checkpoints will be unsigned")
     project = Path(project_dir) if project_dir else env_project_dir()
+    sk_hex, signer_error = None, None
+    try:
+        sk_hex = _recorder_signer_strict()
+    except FileNotFoundError as exc:
+        click.echo(f"perathos mcp-proxy: no signer, checkpoints will be unsigned: {exc}", err=True)
+    except Exception as exc:  # noqa: BLE001 -- keep recording; the checkpoints say the signer failed
+        from .errlog import log_error
+        signer_error = type(exc).__name__
+        click.echo(f"perathos mcp-proxy: WARNING: signer unavailable ({signer_error}: {exc}); checkpoints will be "
+                   "UNSIGNED and marked signer_error. This session will not verify until the signer works.", err=True)
+        log_error("signer", exc, session_id=session_id, project=project)
     rec = McpRecorder(name=name, project=project, session_id=session_id, guard=guard, signing_key_hex=sk_hex,
-                      trusted_key=_trusted_approvers(), anchor=anchor, seal_every=seal_every)
+                      trusted_key=_trusted_approvers(), anchor=anchor, seal_every=seal_every,
+                      signer_error=signer_error)
     click.echo(f"perathos mcp-proxy: recording session {rec.session_id} to {rec.log}", err=True)
     sys.exit(run_proxy(list(server_cmd), rec))
 

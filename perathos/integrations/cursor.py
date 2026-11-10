@@ -197,8 +197,13 @@ def record_cursor_event(
     *,
     signing_key_hex: str | None = None,
     guard_decision: dict[str, Any] | None = None,
+    signer_error: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Append the receipts for one Cursor hook event; returns them (maybe empty)."""
+    """Append the receipts for one Cursor hook event; returns them (maybe empty).
+
+    ``signer_error`` (an exception class name) marks a checkpoint whose
+    configured signer could not be loaded; it is then written unsigned.
+    """
     event = payload.get("hook_event_name")
     root = workspace_root(payload)
     sid = session_id(payload)
@@ -253,6 +258,8 @@ def record_cursor_event(
         model = payload.get("model")
         fields = {**base, "kind": "checkpoint", "event": event,
                   "model": model if isinstance(model, str) and model else None}
+        if signer_error and signing_key_hex is None:
+            fields["signer_error"] = str(signer_error)
         return [append_receipt(log_path, fields, signing_key_hex=signing_key_hex)]
     return []
 
@@ -298,8 +305,13 @@ def run_hook(
     Malformed stdin yields ``{"permission": "allow"}`` (valid for every
     permission hook, ignored by the others). A guard deny is returned even if
     writing the receipt fails: the guard fails closed. A crash inside the
-    guard itself fails open (allow) and is reported on stderr, as the Claude
-    Code hook does.
+    guard itself also fails closed: the call is denied with rule
+    ``guard.error`` and the error is reported on stderr, as the Claude Code
+    hook does. A recording failure never blocks the call; it is reported on
+    stderr and appended to the local error log (``perathos/errlog.py``). If
+    ``load_signing_key`` raises anything other than "no key yet"
+    (FileNotFoundError, ValueError), the checkpoint is written unsigned and
+    marked ``signer_error``.
     """
     try:
         payload = json.loads(raw or "{}")
@@ -321,7 +333,11 @@ def run_hook(
                                   trusted_key=verify_key() if verify_key else None)
                 if decision is not None and decision.decision == "deny":
                     from ..gate import apply_gate
-                    decision = apply_gate(decision, tool=target[0], args=target[1], cwd=workspace_root(payload),
+                    # Ask for approval of exactly what the receipt hashes (for a shell command,
+                    # the command string), so an approval's args_hash equals the receipt's and
+                    # `perathos evidence verify` can cross-check them.
+                    gate_args = str(payload.get("command") or "") if event == SHELL_BEFORE else target[1]
+                    decision = apply_gate(decision, tool=target[0], args=gate_args, cwd=workspace_root(payload),
                                           session_id=str(payload.get("conversation_id") or ""),
                                           agent_name="cursor", wait_seconds=0)
         except Exception as exc:  # noqa: BLE001
@@ -332,16 +348,26 @@ def run_hook(
 
     receipts: list[dict[str, Any]] = []
     try:
-        sk_hex = None
+        sk_hex, signer_error = None, None
         if event in CHECKPOINT_EVENTS and load_signing_key is not None:
             try:
                 sk_hex = load_signing_key()
             except (FileNotFoundError, ValueError):
-                sk_hex = None
-        receipts = record_cursor_event(payload, signing_key_hex=sk_hex,
+                sk_hex = None  # no local key yet: unsigned until 'perathos keygen'
+            except Exception as exc:  # noqa: BLE001 -- a configured signer failed: seal unsigned, visibly
+                from ..errlog import log_error
+                signer_error = type(exc).__name__
+                warn(f"perathos recorder: WARNING: signer unavailable ({signer_error}: {exc}); checkpoint "
+                     f"sealed UNSIGNED and marked signer_error. This session will not verify until the "
+                     f"signer works.")
+                log_error("signer", exc, session_id=session_id(payload), project=workspace_root(payload))
+        receipts = record_cursor_event(payload, signing_key_hex=sk_hex, signer_error=signer_error,
                                        guard_decision=decision.receipt_field() if decision else None)
     except Exception as exc:  # noqa: BLE001 -- a recorder must never break the session
+        # The receipt is missing from the log; leave a trace where the operator will see it.
+        from ..errlog import log_error
         warn(f"perathos recorder: {type(exc).__name__}: {exc}")
+        log_error("cursor.record", exc, session_id=session_id(payload), project=workspace_root(payload))
 
     if anchor:
         for rec in receipts:
