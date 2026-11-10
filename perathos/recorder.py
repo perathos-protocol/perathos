@@ -8,7 +8,10 @@ Each Claude Code tool call produces two receipts in an append-only JSONL log
 * ``post`` -- written by the PostToolUse hook: a hash of what it returned.
 
 At the end of every turn (Stop) and at SessionEnd a ``checkpoint`` receipt is
-appended and signed with the local Ed25519 key. Every receipt carries the hash
+appended and signed with the recorder's Ed25519 key (the local key file, or a
+remote signer: ``perathos/signers.py``). If the signer fails, the checkpoint is
+still written, unsigned and marked ``signer_error``, so recording never stops
+and the verifier can say why the seal is missing. Every receipt carries the hash
 of the one before it, so editing, reordering or deleting any receipt breaks
 the chain, and each signed checkpoint commits to everything before it.
 
@@ -20,8 +23,9 @@ hashing guesses.
 Honest limits (v1):
   * Truncation after the last checkpoint is not detectable from the log alone.
     A ``<session_id>.head.json`` witness records the latest checkpoint, but an
-    attacker with write access can delete it too. External timestamping of the
-    checkpoint (planned) closes this gap.
+    attacker with write access can delete it too. An RFC 3161 timestamp of the
+    checkpoint (``perathos/anchor.py``, ``--anchor``) closes this gap when a
+    copy of the anchors is kept where the attacker cannot reach it.
   * Timestamps come from the local clock.
   * The signer proves which key sealed the log, not which model ran. The
     ``model`` field is read from the transcript and is self-reported.
@@ -47,6 +51,8 @@ from .canonical import canonical_bytes
 RECEIPT_VERSION = "perathos.receipt/v1"
 GENESIS_HASH = "0" * 64
 AGENT_CLAUDE_CODE = "claude-code"
+# Optional checkpoint field: the configured signer failed, so the checkpoint is unsigned.
+SIGNER_ERROR_FIELD = "signer_error"
 
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
 _LOCK_TIMEOUT_S = 5.0
@@ -197,6 +203,11 @@ def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex=No
     key or any ``keytrust.Signer``, e.g. a remote KMS/Vault signer), the
     receipt is signed over its ``receipt_hash`` and the signer's public key is
     bound into the hashed body as ``signer``.
+
+    A checkpoint whose signer fails is not dropped: it is appended unsigned
+    with ``signer_error`` (the exception class name) in its hashed body, and a
+    warning goes to stderr. Verification then fails with ERR_UNSIGNED (unless
+    unsigned logs are allowed) and names the signer failure as the cause.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with _FileLock(log_path):
@@ -212,10 +223,20 @@ def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex=No
             from .keytrust import coerce_signer
             from .signing import sign_hash_with_signer
 
-            signer = coerce_signer(signing_key_hex)
-            receipt["signer"] = signer.public_key.hex()
-            receipt["receipt_hash"] = receipt_hash(receipt)
-            receipt["signature"] = sign_hash_with_signer(receipt["receipt_hash"], signer)
+            try:
+                signer = coerce_signer(signing_key_hex)
+                receipt["signer"] = signer.public_key.hex()
+                receipt["receipt_hash"] = receipt_hash(receipt)
+                receipt["signature"] = sign_hash_with_signer(receipt["receipt_hash"], signer)
+            except Exception as exc:  # noqa: BLE001 -- a remote signer can fail in any way
+                if fields.get("kind") != "checkpoint":
+                    raise
+                # Keep recording: seal unsigned, and say so inside the hashed body.
+                receipt.pop("signer", None)
+                receipt.pop("signature", None)
+                receipt[SIGNER_ERROR_FIELD] = type(exc).__name__
+                receipt["receipt_hash"] = receipt_hash(receipt)
+                _report_signer_failure(exc, fields.get("session_id"), log_path)
         else:
             receipt["receipt_hash"] = receipt_hash(receipt)
         line = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -226,6 +247,17 @@ def append_receipt(log_path: Path, fields: dict[str, Any], *, signing_key_hex=No
         if fields.get("kind") == "checkpoint":
             _write_head(log_path, receipt)
     return receipt
+
+
+def _report_signer_failure(exc: BaseException, session_id: Any, log_path: Path) -> None:
+    import sys
+
+    from .errlog import log_error
+
+    print(f"perathos recorder: WARNING: signer failed ({type(exc).__name__}: {exc}); checkpoint sealed "
+          f"UNSIGNED and marked signer_error. This session will not verify until the signer works.",
+          file=sys.stderr)
+    log_error("signer", exc, session_id=session_id, project=log_path.parent.parent.parent)
 
 
 def _write_head(log_path: Path, checkpoint: dict[str, Any]) -> None:
@@ -267,6 +299,7 @@ def record_hook_event(
     *,
     signing_key_hex: str | None = None,
     guard_decision: dict[str, Any] | None = None,
+    signer_error: str | None = None,
 ) -> dict[str, Any] | None:
     """Turn one Claude Code hook payload into a receipt. Returns it, or None.
 
@@ -278,6 +311,9 @@ def record_hook_event(
 
     ``guard_decision`` (from ``perathos.guard.decide``) is bound into a
     ``pre`` receipt as ``guard``: {decision, rule, precondition}.
+
+    ``signer_error`` (an exception class name) says the configured signer
+    could not be loaded: the checkpoint is then unsigned and carries it.
     """
     event = payload.get("hook_event_name")
     session_id = safe_session_id(payload.get("session_id"))
@@ -318,6 +354,8 @@ def record_hook_event(
             "event": event,
             "model": _model_from_transcript(payload.get("transcript_path")),
         }
+        if signer_error and signing_key_hex is None:
+            fields[SIGNER_ERROR_FIELD] = str(signer_error)
         return append_receipt(log_path, fields, signing_key_hex=signing_key_hex)
 
     return None
@@ -338,6 +376,7 @@ class SessionReport:
     tool_calls: int = 0
     checkpoints: int = 0
     signed_checkpoints: int = 0
+    signer_failures: int = 0  # unsigned checkpoints marked signer_error
     sealed_through: int = 0
     unsealed_tail: int = 0
     signers: list[str] = field(default_factory=list)
@@ -363,7 +402,16 @@ def _check_checkpoint_signature(rec, where, report, *, require_signed, expected_
 
     sig = rec.get("signature")
     if sig is None:
-        if require_signed:
+        cause = rec.get(SIGNER_ERROR_FIELD)
+        if cause:
+            # The recorder's own note (untrusted text): its signer failed at this checkpoint.
+            report.signer_failures += 1
+            why = f"the recorder's signer failed when it was sealed ({str(cause)[:80]!r})"
+            if require_signed:
+                report.fail(f"ERR_UNSIGNED at {where}: checkpoint has no signature: {why}")
+            else:
+                report.warnings.append(f"unsigned checkpoint at {where}: {why}")
+        elif require_signed:
             report.fail(f"ERR_UNSIGNED at {where}: checkpoint has no signature")
         return
     if not isinstance(sig, dict):

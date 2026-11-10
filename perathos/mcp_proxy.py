@@ -13,6 +13,10 @@ both directions, and for each ``tools/call``:
   tool name *and* to every string argument (so ``execute_sql`` carrying
   ``DROP TABLE`` is caught). A denied call never reaches the server: the
   client gets a normal tool result with ``isError: true`` explaining why.
+  The guard fails closed: if it raises, the call is denied the same way (rule
+  ``guard.error``) and is not forwarded. Calls inside a JSON-RPC batch are
+  guarded one by one, and with ``--guard`` so is a ``tools/call`` sent as a
+  notification (no ``id``), which is dropped when denied.
 * writes a ``post`` receipt when the server answers (hash of the result;
   status ``error`` for JSON-RPC errors or ``isError`` results).
 
@@ -46,7 +50,7 @@ AGENT_MCP_PROXY = "mcp-proxy"
 class McpRecorder:
     def __init__(self, *, name: str, project: Path, session_id: str | None = None,
                  guard: bool = False, signing_key_hex: str | None = None, trusted_key: str | None = None,
-                 anchor: bool = False, seal_every: int = 20):
+                 anchor: bool = False, seal_every: int = 20, signer_error: str | None = None):
         self.name = safe_session_id(name)
         self.project = project
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -54,6 +58,7 @@ class McpRecorder:
         self.log = session_log_path(project, self.session_id)
         self.guard = guard
         self.sk = signing_key_hex
+        self.signer_error = signer_error  # why the configured signer could not be loaded, if it failed
         self.trusted_key = trusted_key
         self.anchor = anchor
         self.seal_every = max(1, seal_every)
@@ -75,7 +80,8 @@ class McpRecorder:
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         tool = self.tool_name(str(params.get("name") or ""))
         args = params.get("arguments")
-        decision = None
+        guard_field: dict | None = None
+        deny_reason: str | None = None
         if self.guard:
             try:
                 from .guard import decide
@@ -83,26 +89,41 @@ class McpRecorder:
                                   self.project, trusted_key=self.trusted_key)
                 if decision is not None and decision.decision == "deny":
                     from .gate import apply_gate
-                    decision = apply_gate(decision, tool=tool, args=args if isinstance(args, dict) else {"arguments": args},
-                                          cwd=self.project, session_id=self.session_id, agent_name="mcp-proxy",
+                    # The approval is bound to the same value the receipt hashes (args_hash).
+                    decision = apply_gate(decision, tool=tool, args=args, cwd=self.project, session_id=self.session_id, agent_name="mcp-proxy",
                                           wait_seconds=0)
+                if decision is not None:
+                    guard_field = decision.receipt_field()
+                    if decision.decision == "deny":
+                        deny_reason = decision.reason
             except Exception as exc:  # noqa: BLE001
-                self.errors.append(f"guard: {exc}")
+                # Fail closed: a guard that crashes cannot clear the call, so it is denied and
+                # never forwarded (and recorded as denied, like the Claude Code and Cursor hooks).
+                self.errors.append(f"guard: {type(exc).__name__}: {exc}")
+                guard_field = {"decision": "deny", "rule": "guard.error", "precondition": None}
+                deny_reason = (f"perathos guard: blocked because the guard itself failed ({type(exc).__name__}: "
+                               f"{exc}). The guard fails closed; fix the error or remove --guard.")
         fields = {**self._base(), "kind": "pre", "tool": tool, "tool_use_id": _id_str(msg.get("id")),
                   "args_hash": content_hash(args)}
-        if decision is not None:
-            fields["guard"] = decision.receipt_field()
+        if guard_field is not None:
+            fields["guard"] = guard_field
         try:
             with self.lock:
                 append_receipt(self.log, fields)
-                if not (decision and decision.decision == "deny"):
+                if deny_reason is None and "id" in msg:
                     self.pending[_id_key(msg.get("id"))] = (tool, args)
         except Exception as exc:  # noqa: BLE001
-            self.errors.append(f"record: {exc}")
-        if decision is not None and decision.decision == "deny":
+            self._record_failed(exc)
+        if deny_reason is not None:
             return {"jsonrpc": "2.0", "id": msg.get("id"), "result": {
-                "content": [{"type": "text", "text": decision.reason}], "isError": True}}
+                "content": [{"type": "text", "text": deny_reason}], "isError": True}}
         return None
+
+    def _record_failed(self, exc: Exception) -> None:
+        """A receipt is missing from the log: say so on stderr (at exit) and in the error log."""
+        from .errlog import log_error
+        self.errors.append(f"record: {type(exc).__name__}: {exc}")
+        log_error("mcp-proxy.record", exc, session_id=self.session_id, project=self.project)
 
     # server -> client
     def on_response(self, msg: dict) -> None:
@@ -127,15 +148,21 @@ class McpRecorder:
             if due:
                 self.seal("periodic")
         except Exception as exc:  # noqa: BLE001
-            self.errors.append(f"record: {exc}")
+            self._record_failed(exc)
 
     def seal(self, event: str) -> dict | None:
-        """Append a signed checkpoint (and anchor it if asked)."""
+        """Append a signed checkpoint (and anchor it if asked).
+
+        If the configured signer could not be loaded (``signer_error``) or fails
+        now, the checkpoint is still written, unsigned and marked ``signer_error``.
+        """
         if not self.log.exists():
             return None
+        fields = {**self._base(), "kind": "checkpoint", "event": f"mcp-{event}", "model": None}
+        if self.signer_error and self.sk is None:
+            fields["signer_error"] = self.signer_error
         with self.lock:
-            cp = append_receipt(self.log, {**self._base(), "kind": "checkpoint", "event": f"mcp-{event}",
-                                           "model": None}, signing_key_hex=self.sk)
+            cp = append_receipt(self.log, fields, signing_key_hex=self.sk)
             self.calls_since_seal = 0
         if self.anchor and cp.get("signature"):
             try:
@@ -204,8 +231,12 @@ def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None
             forward: list[dict] = []
             for msg in msgs:
                 reply = None
-                if msg.get("method") == "tools/call" and "id" in msg:
+                # With the guard on, a tools/call sent as a notification (no id) is guarded too:
+                # a lenient server might run it, and nobody could be told it was denied.
+                if msg.get("method") == "tools/call" and ("id" in msg or rec.guard):
                     reply = rec.on_tools_call(msg)
+                    if reply is not None and "id" not in msg:
+                        continue  # denied notification: dropped, there is no request to answer
                 (denied if reply is not None else forward).append(reply if reply is not None else msg)
             if isinstance(parsed, list):
                 # Batch: answer denied calls ourselves, forward the rest as a batch.
@@ -217,6 +248,8 @@ def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None
             elif denied:
                 to_client((json.dumps(denied[0]) + "\n").encode("utf-8"))
                 continue
+            elif msgs and not forward:
+                continue  # a single denied notification
             try:
                 proc.stdin.write(line if line.endswith(b"\n") else line + b"\n")
                 proc.stdin.flush()
@@ -237,7 +270,7 @@ def run_proxy(server_cmd: list[str], rec: McpRecorder, *, stdin: BinaryIO | None
         try:
             rec.seal("end")
         except Exception as exc:  # noqa: BLE001
-            rec.errors.append(f"seal: {exc}")
+            rec._record_failed(exc)
         for e in rec.errors:
             print(f"perathos mcp-proxy: {e}", file=sys.stderr)
     return proc.returncode or 0

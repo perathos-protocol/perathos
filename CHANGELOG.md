@@ -1,9 +1,75 @@
 # Changelog
 
-All notable changes to Perathos. Pre-1.0: pin a commit SHA for reproducibility.
+All notable changes to Perathos. Pin a released version from PyPI for reproducibility.
 This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+
+Fixes for the gaps found by the threat-model review (docs/THREAT_MODEL.md).
+
+### Security
+- **`perathos evidence verify` checks Gate approvals against keys, and says when it
+  could not.** New `--gate-key HEX` and `--approver-key B64URL` (repeatable); when not
+  given, the Gate key and approver passkeys pinned on the verifying machine are used if
+  there are any. Until now approvals in a pack were verified with no Gate key and no
+  approver pins. A reviewer's machine usually has neither, so the output now states
+  it: an `approvals` line such as `2 cited, 2 verified, Gate key UNCONFIRMED, approvers
+  NOT PINNED`, a first word of `VALID_UNCONFIRMED_GATE` when the signer is pinned but
+  the Gate key is not, and an `approvals` block in `--json`. Unconfirmed results still
+  exit 0, like `VALID_UNCONFIRMED_SIGNER`.
+- **`evidence verify` cross-checks approvals against the log.** Every approval a `pre`
+  receipt cites must be in the pack (`ERR_APPROVAL_MISSING`), be an approve decision
+  (`ERR_APPROVAL_NOT_APPROVED`) and carry the same `args_hash` as the call
+  (`ERR_APPROVAL_ARGS_MISMATCH`). An approval cited by more than one call is a warning.
+  Not checked: the approval's validity window against the call's local-clock time.
+- **The MCP proxy guard fails closed.** If the guard raised an exception,
+  `perathos mcp-proxy --guard` used to log it and forward the call. It now answers the
+  client with an error result explaining that the guard failed, records the call as
+  denied (`guard.error`) and never forwards it, as the Claude Code and Cursor hooks do.
+  JSON-RPC batches were already guarded call by call (now tested). With `--guard`, a
+  `tools/call` sent as a notification (no `id`) is now guarded too and dropped when
+  denied; before, it was relayed unguarded. Unchanged without `--guard`. Still open: a
+  line the proxy cannot parse as JSON is relayed untouched.
+
+### Fixed
+- **A signer failure no longer passes quietly.** When the configured signer cannot be
+  loaded or fails while signing, the checkpoint is still written (recording never
+  blocks), unsigned, with a new optional `signer_error` field in its hashed body and a
+  warning on stderr. `session verify` fails with `ERR_UNSIGNED` naming the cause, and
+  reports `signer_failures`. Previously the Cursor hook gave no warning, and a signer
+  that failed during signing (rather than loading) lost the checkpoint altogether.
+  Unsigned checkpoints already failed verification; what is new is the stated cause.
+- **Recording failures leave a trace.** A hook or proxy that cannot write a receipt
+  still lets the call proceed, but now appends a line to `~/.perathos/errors.log`
+  (`PERATHOS_ERROR_LOG` overrides the path). `perathos doctor --recorder` warns with the
+  count, and `perathos session verify` shows the count for that session. The file is
+  local and unsigned: an operator's diagnostic, not evidence, and not in evidence packs.
+- Cursor and the MCP proxy now ask the Gate to approve the same arguments hash their
+  receipts record. A Cursor shell approval used to be bound to the hash of
+  `{"command": ...}` while the receipt hashed the command string, so the two could not
+  be compared; such older approvals report `ERR_APPROVAL_ARGS_MISMATCH` in
+  `evidence verify`. The approver now sees `Bash <command>` for Cursor shell requests.
+
+### Docs
+- RECEIPT_V1.md: documents `signer_error`, the `mcp-proxy` agent value and the
+  `mcp-periodic` / `mcp-end` checkpoint events; rewrites the `guard` field description;
+  preconditions are trusted by approver keys, not "the local key", once approvers are
+  listed.
+- ENTERPRISE_FAQ.md no longer says there is no KMS/HSM signing or trusted timestamping,
+  or to pin a commit SHA: remote signers and RFC 3161 anchoring exist, and releases are
+  on PyPI with build provenance. It also named libsodium; the library is `cryptography`.
+- SECURITY_ASSESSMENT.md: section C lists every network call (the TSA, the Gate client,
+  the Vault and Google Cloud KMS signers), not only the TSA; section K says a remote
+  signer stops the key being copied but not being used by a process holding the signing
+  credential; section D states the MCP proxy's failure behaviour.
+- THREAT_MODEL.md and FOR_AUDITORS.md updated for the changes above. FOR_AUDITORS.md
+  and the browser verifier page now say the browser verifier does not check Gate
+  approval receipts.
+- README (Cursor): the installer already sets `failClosed: true` on guarded hooks; the
+  text no longer tells you to add it by hand. `perathos hooks install --help` no longer
+  says neither hook ever blocks the agent. Stale "planned" notes removed from the
+  `guard.py` and `recorder.py` docstrings; the `cursor.py` docstring said a guard crash
+  fails open, and the code fails closed.
 
 ## [1.4.1] - 2026-11-10
 

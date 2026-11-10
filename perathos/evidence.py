@@ -13,6 +13,10 @@
 ``verify_evidence_pack`` re-checks the manifest (every file present and
 unmodified, signature valid) and then re-runs session verification from the
 pack's own copies, so a recipient never has to trust the exporter's report.
+It also verifies each Gate approval receipt in ``approvals/`` and checks that
+every approval the log cites is in the pack, approved, and for the same
+arguments. Whether the Gate key and the approver passkeys were ones the
+verifier already held is reported, not assumed.
 
 What a pack does not contain: tool arguments or outputs (only their hashes).
 Whoever holds the originals can show they match.
@@ -199,8 +203,46 @@ def export_evidence_pack(
     return {"dir": out, "zip": zip_path, "valid": report.valid, "report": verification}
 
 
-def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = None, tsa_roots=None) -> dict[str, Any]:
-    """Re-check a pack from its own files. Accepts a directory or a .zip."""
+def _gate_pins(gate_key, approver_keys, use_local_pins: bool):
+    """(gate key, where from, approver passkey pins, where from) for checking approvals.
+
+    Explicit values win. Otherwise, with ``use_local_pins``, the Gate key and
+    approver passkeys pinned in this machine's config are used (the same
+    sources as ``perathos gate verify``). A reviewer's machine usually has
+    neither, so both can come back None: the caller must report that.
+    """
+    gate_key = str(gate_key).strip().lower() if gate_key else None
+    key_src = "argument" if gate_key else None
+    pins = frozenset(str(k).strip() for k in approver_keys if str(k).strip()) if approver_keys else None
+    pins_src = "argument" if pins else None
+    if use_local_pins:
+        from .approvers import get_config
+        from .gate import trusted_approver_keys
+        if gate_key is None:
+            gate_key = get_config().get("gate_key") or None
+            key_src = "local pin" if gate_key else None
+        if not pins:
+            pins = trusted_approver_keys()
+            pins_src = "local pin" if pins else None
+    return gate_key, key_src, pins or None, pins_src
+
+
+def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = None, tsa_roots=None,
+                         gate_key: str | None = None, approver_keys=None,
+                         use_local_pins: bool = True) -> dict[str, Any]:
+    """Re-check a pack from its own files. Accepts a directory or a .zip.
+
+    Gate approval receipts are verified against ``gate_key`` (the Gate server's
+    Ed25519 public key, hex) and ``approver_keys`` (approver passkey public
+    keys, base64url, as shown by ``perathos gate approvers``). When either is
+    not given, the one pinned in this machine's config is used if there is one
+    (``use_local_pins=False`` turns that off). The result's ``approvals`` block
+    says whether the Gate key was confirmed and whether approvers were pinned:
+    without them a receipt shows only that *some* key pair signed it.
+
+    Every approval a ``pre`` receipt cites must be in the pack, be an approve
+    decision, and be for the same ``args_hash`` as the call that cites it.
+    """
     import tempfile
 
     from .recorder import verify_session
@@ -257,17 +299,70 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                     errors.append(f"ERR_PRECONDITION_SIGNATURE: {f.name}")
             except (OSError, ValueError, TypeError, AttributeError):
                 errors.append(f"ERR_PRECONDITION_MALFORMED: {f.name}")
-        # Gate approvals: each must verify (server and approver passkey signatures).
+        # Gate approvals: each must verify (server and approver passkey signatures), against
+        # the Gate key and the approver passkeys the verifier holds, if it holds any.
         from .gate import verify_receipt as _verify_gate
-        for f in sorted((pack / "approvals").glob("*.json")) if (pack / "approvals").exists() else []:
+        gate_key, gate_key_src, pins, pins_src = _gate_pins(gate_key, approver_keys, use_local_pins)
+        warnings: list[str] = []
+        in_pack: dict[str, dict | None] = {}  # declared receipt_hash -> receipt, or None if it failed
+        gate_keys_seen: list[str] = []
+        approvers_seen: list[dict] = []
+        ap_files = sorted((pack / "approvals").glob("*.json")) if (pack / "approvals").exists() else []
+        for f in ap_files:
             try:
                 g = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError):
+                g = None
+            if not isinstance(g, dict):
                 errors.append(f"ERR_APPROVAL_MALFORMED: {f.name}")
                 continue
-            chk = _verify_gate(g, gate_key=None)
+            chk = _verify_gate(g, gate_key=gate_key, trusted_approvers=pins)
             if not chk:
                 errors.append(f"{chk.error.split(':')[0]}: {f.name}")
+                in_pack.setdefault(str(g.get("receipt_hash")), None)
+                continue
+            in_pack[str(g["receipt_hash"])] = g
+            vk = g["server_signature"].get("verify_key")
+            if vk not in gate_keys_seen:
+                gate_keys_seen.append(vk)
+            who = {"name": g["approver"].get("name"), "public_key": g["approver"].get("public_key")}
+            if who not in approvers_seen:
+                approvers_seen.append(who)
+        # Cross-check the log against the approvals: a receipt that says "a person approved
+        # this" must point at an approve decision for exactly these arguments.
+        cited: dict[str, list] = {}
+        verified = 0
+        for r in _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []:
+            g_field = r.get("guard")
+            if r.get("kind") != "pre" or not isinstance(g_field, dict) or not g_field.get("approval"):
+                continue
+            h, seq = str(g_field["approval"]), r.get("seq")
+            cited.setdefault(h, []).append(seq)
+            if h not in in_pack:
+                errors.append(f"ERR_APPROVAL_MISSING: receipt {seq} cites approval {h[:16]}..., "
+                              f"which is not in the pack")
+                continue
+            g = in_pack[h]
+            if g is None:
+                continue  # that file's own failure is already reported above
+            if g.get("decision") != "approve":
+                errors.append(f"ERR_APPROVAL_NOT_APPROVED: receipt {seq} cites approval {h[:16]}..., "
+                              f"whose decision is {str(g.get('decision'))[:16]!r}")
+            elif g["request"].get("args_hash") != r.get("args_hash"):
+                errors.append(f"ERR_APPROVAL_ARGS_MISMATCH: receipt {seq} cites approval {h[:16]}..., "
+                              f"which was given for different arguments")
+            else:
+                verified += 1
+        for h, seqs in cited.items():
+            if len(seqs) > 1:
+                warnings.append(f"approval {h[:16]}... is cited by {len(seqs)} calls (receipts "
+                                f"{', '.join(map(str, seqs))}); an approval is meant to be used once")
+        approvals_report = {
+            "cited": sum(len(s) for s in cited.values()), "in_pack": len(ap_files), "verified": verified,
+            "gate_key_confirmed": gate_key is not None, "gate_key_source": gate_key_src,
+            "approvers_pinned": pins is not None, "approvers_source": pins_src,
+            "gate_keys": gate_keys_seen, "approvers": approvers_seen,
+        }
         anchors = pack / "anchors.jsonl"
         rep = verify_session(pack / "session.jsonl", expected_verify_key=expected_verify_key,
                              anchors_path=anchors if anchors.exists() else None, tsa_roots=tsa_roots,
@@ -278,7 +373,8 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
             if h.get("seq") is not None and int(h["seq"]) > rep.sealed_through:
                 rep.fail(f"ERR_TRUNCATED: head witness records seq {h['seq']}, log sealed through {rep.sealed_through}")
         errors.extend(rep.errors)
-        return {"valid": not errors, "errors": errors, "session": rep.to_dict()}
+        return {"valid": not errors, "errors": errors, "warnings": warnings, "session": rep.to_dict(),
+                "approvals": approvals_report}
     finally:
         if tmp is not None:
             tmp.cleanup()
@@ -399,6 +495,12 @@ This checks that every file matches the signed MANIFEST.json, re-verifies the
 receipt chain and every checkpoint signature, and re-verifies each RFC 3161
 timestamp in `anchors.jsonl` against the timestamp authority's root.
 
-Confirm the signer key with the session's owner through a separate channel
-before relying on it. Receipt format: https://github.com/perathos-protocol/perathos/blob/main/docs/specs/RECEIPT_V1.md
+If the pack has an `approvals/` folder (a person approved an action through
+Perathos Gate), also pass `--gate-key <Gate server key>` and
+`--approver-key <approver passkey public key>` (repeatable). Without them the
+output says `Gate key UNCONFIRMED` or `approvers NOT PINNED`: the approvals are
+then internally consistent, but could have been signed by any key pair.
+
+Confirm the signer key (and the Gate and approver keys) with the session's
+owner through a separate channel before relying on them. Receipt format: https://github.com/perathos-protocol/perathos/blob/main/docs/specs/RECEIPT_V1.md
 """

@@ -316,7 +316,10 @@ perathos gate trust first-receipt.json                                  # option
   decision, and used once (the client marks a used receipt on disk). Denials are recorded too.
 - The approval receipt's hash is written into the action's record (`guard.approval`) and the
   receipt itself into `.perathos/approvals/` and every evidence pack. `perathos evidence verify`
-  and `perathos gate verify receipt.json` check both signatures offline.
+  and `perathos gate verify receipt.json` check both signatures offline. `evidence verify` also
+  checks that every approval the log cites is in the pack, approved, and for the same
+  arguments, and prints whether the Gate key was confirmed and the approvers pinned
+  (`--gate-key`, `--approver-key`); a reviewer's machine has neither unless they pass them.
 - **Any script or agent framework**, not just coding agents:
 
 ```bash
@@ -425,10 +428,11 @@ Differences from Claude Code:
   `post` are written together and the guard cannot stop an edit.
 * The `model` in a checkpoint is the `model` field Cursor sends (self-reported).
 * The Stop-hook summary check (`hooks stop-check`) is Claude Code only.
-* If `perathos` is not on the PATH Cursor runs hooks with, the hook fails
-  and Cursor lets the action through. Add `"failClosed": true` to the
-  `beforeShellExecution`/`beforeMCPExecution` entries if a broken guard
-  should block instead.
+* With `--guard`, the installer sets `"failClosed": true` on the guarded
+  entries (`beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`),
+  so if `perathos` is not on the PATH Cursor runs hooks with, or the hook
+  crashes, Cursor blocks the action. The recording-only entries are not
+  fail-closed: there a broken hook means the action runs unrecorded.
 
 ### Any MCP client: the recording proxy
 
@@ -457,8 +461,8 @@ every `--seal-every` calls (default 20) and when the session ends. Verify them w
 
 [https://perathos-protocol.github.io/perathos/verify/](https://perathos-protocol.github.io/perathos/verify/) checks an evidence pack entirely in the browser: the signed manifest,
 every file, the receipt chain, checkpoint and precondition signatures, and that each timestamp
-matches its checkpoint. RFC 3161 token signatures are checked by the CLI
-(`perathos evidence verify`); the page says so.
+matches its checkpoint. RFC 3161 token signatures and Perathos Gate approval receipts are
+checked only by the CLI (`perathos evidence verify`); the page says so.
 
 ## MCP server
 

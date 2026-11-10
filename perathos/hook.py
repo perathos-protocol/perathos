@@ -25,28 +25,41 @@ def _trusted_keys() -> set[str] | None:
     return trusted_approver_keys()
 
 
-def _signing_key():
-    """The recorder's signer: the local key file, or a configured remote signer.
+def _signing_key(err: TextIO | None = None, *, session_id=None, project=None):
+    """The recorder's signer and, if it failed, why: ``(signer or None, error name or None)``.
 
-    The common case (no remote signer configured) reads the key file directly;
-    storage.py pulls in more than a hook needs.
+    The signer is the local key file or a configured remote signer. The common
+    case (no remote signer configured) reads the key file directly; storage.py
+    pulls in more than a hook needs. A local key that does not exist yet is not
+    a failure (checkpoints are unsigned until 'perathos keygen'). A remote
+    signer that cannot be reached, or a malformed local key, is: the checkpoint
+    is still written, unsigned and marked ``signer_error``, with a warning.
     """
     import os
 
     from .approvers import get_config
     spec = os.environ.get("PERATHOS_SIGNER") or get_config().get("signer") or "local"
+    failure: Exception
     if spec != "local":
         try:
             from .signers import signer_from_spec
-            return signer_from_spec(spec)
+            return signer_from_spec(spec), None
         except Exception as exc:  # noqa: BLE001 -- seal unsigned rather than crash the turn
-            print(f"perathos recorder: signer {spec!r} unavailable: {exc}", file=sys.stderr)
-            return None
-    try:
-        sk = (Path.home() / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return sk if len(sk) == 64 and all(c in "0123456789abcdef" for c in sk) else None
+            failure = exc
+    else:
+        try:
+            sk = (Path.home() / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
+        except OSError:
+            return None, None
+        if len(sk) == 64 and all(c in "0123456789abcdef" for c in sk):
+            return sk, None
+        failure = ValueError("local signing key is malformed")
+    from .errlog import log_error
+    print(f"perathos recorder: WARNING: signer {spec.split(':')[0]!r} unavailable ({type(failure).__name__}: "
+          f"{failure}); checkpoint sealed UNSIGNED and marked signer_error. This session will not verify "
+          f"until the signer works.", file=err or sys.stderr)
+    log_error("signer", failure, session_id=session_id, project=project)
+    return None, type(failure).__name__
 
 
 def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO) -> None:
@@ -54,6 +67,8 @@ def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO)
 
     Prints a PreToolUse deny decision when the guard blocks a call (emitted even
     if recording fails: the guard fails closed); otherwise prints nothing.
+    A recording failure is reported on stderr and appended to the local error
+    log (``perathos/errlog.py``); the tool call still proceeds.
     """
     try:
         payload = json.loads(raw or "{}")
@@ -90,11 +105,18 @@ def run_record(raw: str, *, guard: bool, anchor: bool, out: TextIO, err: TextIO)
     receipt = None
     try:
         from .recorder import record_hook_event
-        sk_hex = _signing_key() if event in ("Stop", "SubagentStop", "SessionEnd") else None
-        receipt = record_hook_event(payload, signing_key_hex=sk_hex,
+        sk_hex, signer_error = None, None
+        if event in ("Stop", "SubagentStop", "SessionEnd"):
+            sk_hex, signer_error = _signing_key(err, session_id=payload.get("session_id"),
+                                                project=payload.get("cwd") or ".")
+        receipt = record_hook_event(payload, signing_key_hex=sk_hex, signer_error=signer_error,
                                     guard_decision=decision.receipt_field() if decision else None)
     except Exception as exc:  # noqa: BLE001 -- a recorder must never break the session
+        # The receipt is missing from the log; leave a trace where the operator will see it.
         print(f"perathos recorder: {type(exc).__name__}: {exc}", file=err)
+        from .errlog import log_error
+        log_error("claude-code.record", exc, session_id=payload.get("session_id"),
+                  project=payload.get("cwd") or ".")
 
     if decision is not None and decision.decision == "deny":
         print(json.dumps({"hookSpecificOutput": {

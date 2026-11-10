@@ -1,6 +1,6 @@
 # Perathos Threat Model
 
-_Last updated: 2026-11-10. Covers `perathos` on `main` after 1.3.1 and the
+_Last updated: 2026-11-10. Covers `perathos` on `main` after 1.4.1 and the
 Perathos Gate server (`perathos-protocol/perathos-gate`) as read on that date._
 
 This document says what Perathos protects, what it does not, and what a
@@ -140,16 +140,22 @@ part is.
 | Cutting off the end of a log, back to an earlier checkpoint | Partly | Detected if the head witness file survives, or if an anchor for a later checkpoint is presented. The head witness sits beside the log and can be deleted with it. Reliable detection needs an anchor copy the attacker cannot reach. |
 | Deleting a whole session log | No | Nothing in Perathos lists the sessions that should exist. An off-machine anchor copy shows that a session with that id once had checkpoints. |
 | A period with hooks switched off | No | A session with no hooks produces no receipts. Hooks removed between sessions leave no trace in any log. See 5.4. |
-| A hook that fails while recording | No | Recording errors are printed to stderr and the tool call proceeds, so that the recorder never breaks a session. The receipt is simply missing. |
+| A hook that fails while recording | Partly | The tool call proceeds, so that the recorder never breaks a session, and the receipt is missing from the log: the log itself does not show the gap. The error is printed to stderr and one line is appended to `~/.perathos/errors.log`; `perathos doctor --recorder` and `perathos session verify` report the count on that machine. That file is local, unsigned, writable by the agent's user and not part of an evidence pack, so it helps an operator notice a fault and proves nothing to a third party. A failure that also stops the error log being written is visible on stderr only. |
 | Backdated or wrong event times | Partly | `ts` is the local clock. The verifier rejects timestamps that go backwards and nothing else. An anchored checkpoint has an independent upper bound on its time (5.2). |
 | Learning tool arguments or output from the log | Partly | Only SHA-256 hashes are stored. A short or guessable value can be confirmed by hashing guesses. |
 | Proving which model produced the calls | No | `model` is read from the agent tool's transcript (Claude Code) or hook payload (Cursor). It is self-reported and the MCP proxy records none. |
 | Malformed or hostile log crashing the verifier | Yes | `verify_session` returns an error report for unreadable, malformed or non-object lines. Not fuzzed beyond the test suite. |
 
-If the configured signer is unavailable when a checkpoint is due, the hook
-writes the checkpoint **unsigned** and reports the error on stderr. A default
-verification then fails with `ERR_UNSIGNED`. The gap is visible, but the turn
-is not sealed.
+If the configured signer cannot be loaded, or fails while signing, when a
+checkpoint is due, the recorder still writes the checkpoint, **unsigned**, with
+`signer_error` (the error's class name) inside its hashed body. It prints a
+warning on stderr and adds a line to `~/.perathos/errors.log`. A default
+verification then fails with `ERR_UNSIGNED` and names the signer failure as
+the cause, even if later checkpoints are signed; `session verify` shows the
+count. The gap is visible, but the turn is not sealed, and `signer_error` is
+only the recorder's own explanation. (Before this change a signer that failed
+during signing, as opposed to loading, lost the checkpoint altogether, and the
+Cursor hook gave no warning.)
 
 ### 5.2 Anchors (RFC 3161 timestamps)
 
@@ -190,7 +196,7 @@ here; see the [README](../README.md#destructive-command-guard) and
 | A check that proves little | No | A precondition shows that a named command ran and exited 0. Whether that command tests the safeguard is the signer's judgement. A `manual_reason` precondition shows only the signer's word. |
 | A check influenced by the agent | No | The check runs in the project directory. If the agent could alter the files or tools the check uses, the result can be arranged. Not addressed by Perathos. |
 | The decision being altered after the fact | Yes | The `guard` field (decision, rule, precondition hash, Gate approval hash) is inside the `pre` receipt's hash, written before the call runs. Subject to 5.1. |
-| The guard crashing | Partly | In the Claude Code and Cursor hooks, an exception in the guard denies the call (`guard.error`). In the MCP proxy an exception is logged and the call is **forwarded**. |
+| The guard crashing | Yes | In the Claude Code and Cursor hooks and in the MCP proxy, an exception in the guard denies the call and records it as denied (`guard.error`). The MCP proxy answers the client with an error result and does not forward the call. (Through 1.4.1 the proxy logged the exception and forwarded the call.) This covers an exception inside the guard; a hook process that never starts is 5.4. |
 
 ### 5.4 Hooks and the MCP proxy
 
@@ -202,7 +208,8 @@ here; see the [README](../README.md#destructive-command-guard) and
 | Work done outside the hooked tool | No | Another terminal, another agent, a different MCP client, or a tool the integration does not hook is not recorded. |
 | Cursor tools other than shell, MCP and file edits | No | Cursor's other built-in tools are not recorded. File edits are reported after they happen, so the guard cannot stop one. |
 | MCP calls that do not go through the proxy | No | The proxy sees only the traffic of the server it wraps, and only if the client is configured to start it. |
-| MCP messages the proxy cannot parse | No | They are relayed untouched and not recorded. Only `tools/call` requests and their responses become receipts. |
+| MCP messages the proxy cannot parse | No | They are relayed untouched and not recorded. Only `tools/call` requests and their responses become receipts. A line is forwarded as the client sent it, so a server whose JSON parser reads a message differently from Python's (for example on duplicate keys) could see a call the proxy did not. Not tested. |
+| A destructive `tools/call` inside a JSON-RPC batch, or sent as a notification (no `id`) | Yes, with `--guard` | Each call in a batch is guarded and recorded on its own; denied ones are answered by the proxy and the rest forwarded. With `--guard`, a `tools/call` notification is guarded too and dropped when denied. Without `--guard`, notifications are relayed and not recorded. |
 | The Stop-hook summary check being read as a lie detector | No | `hooks stop-check` flags a specific claim with no support in the session's tool output. It does not catch a grounded but misleading summary, it never blocks, and its receipt is unsigned if no local key exists. |
 
 ### 5.5 Remote signers and approver keys
@@ -227,10 +234,12 @@ here; see the [README](../README.md#destructive-command-guard) and
 | A hostile zip | Partly | Paths that escape the extraction directory are rejected. No limit on decompressed size was found in the code. |
 | An altered precondition in the pack | Yes | Each precondition's hash and signature are re-checked. |
 | A precondition signed by someone who was not an approver | No | `evidence verify` checks that each precondition is signed by its own stated `signer`. It does not compare that signer with `approvers.json` or any pin. The reviewer must. `approvers.json` in the pack is the exporter's list, covered only by the manifest signature. |
-| A forged Gate approval in the pack | Partly | Each receipt in `approvals/` is verified for internal consistency, **without a pinned Gate key**. Run `perathos gate verify <receipt> --gate-key <hex>` with a key obtained separately. `evidence verify` does not check that an approval hash named in a receipt has a matching file in the pack, nor that its `args_hash` equals the call's. The exporter's report lists `receipt_in_pack`; the comparison is manual. |
+| A forged Gate approval in the pack | Partly | Each receipt in `approvals/` is verified (Gate signature, passkey signature, challenge binding). It is checked against a Gate key and approver passkeys only if the verifier supplies them (`evidence verify --gate-key <hex> --approver-key <b64url>`) or has them pinned locally. A reviewer's machine normally has neither, so the output states which applied: `Gate key UNCONFIRMED` (and a first word of `VALID_UNCONFIRMED_GATE`) or `approvers NOT PINNED`. Without the Gate key, a receipt signed by any Gate passes as internally consistent. Without approver keys, whoever holds the Gate signing key could have named a passkey of their own (5.7). Both keys must come from outside the pack. |
+| A call recorded as approved with no matching approval | Yes | Every `guard.approval` hash cited by a `pre` receipt must match a receipt in the pack (`ERR_APPROVAL_MISSING`) whose decision is approve (`ERR_APPROVAL_NOT_APPROVED`) and whose `args_hash` equals the citing receipt's (`ERR_APPROVAL_ARGS_MISMATCH`). One approval cited by several calls is a warning. Not checked: that the call's local-clock time fell inside the approval's validity window. Approvals of Cursor shell commands made by 1.4.1 or earlier were bound to a different form of the arguments hash and fail the last check. |
 | A pack built from an incomplete or rewritten log | No | A pack is as complete and as honest as the log it was built from. See 5.1. |
 
-The browser verifier does not check Gate receipts.
+The browser verifier does not check Gate receipts at all: not their
+signatures, and not the cross-check against the log. Its page says so.
 
 ### 5.7 Perathos Gate
 
@@ -253,16 +262,20 @@ the receipt's own `rp.id` and has the user-present and user-verified flags;
 and that the public key **named in the receipt** verifies the passkey
 signature.
 
-What it does not check: that the approver's public key belongs to anyone in
-particular. The verifier has no independent list of approvers. The only thing
-tying a public key to a name is the Gate server's signature.
+What it checks only when asked: that the approver's public key is one the
+verifier already knows. Since 1.4.0 a verifier can pin approver passkeys
+(`perathos gate trust <receipt>`, the `PERATHOS_GATE_APPROVERS` variable, or
+`evidence verify --approver-key`); once any is pinned, a receipt naming any
+other passkey is rejected (`ERR_GATE_UNTRUSTED_APPROVER`). With nothing
+pinned, which is the default, the only thing tying a public key to a name is
+the Gate server's signature. The pin list is a local, unsigned file.
 
 | Threat | Protected? | Mechanism, or why not |
 |---|---|---|
 | An approval replayed for different arguments | Yes | The guard compares the receipt's `args_hash` with the hash of the arguments about to run. |
 | An approval replayed as a denial, or for another request | Yes | The challenge binds the decision and the request hash. |
 | A receipt altered after signing | Yes | The receipt hash covers every field and is signed by the server. |
-| A receipt signed by a different Gate | Yes, when the key is pinned | The guard refuses to use the Gate at all without a pinned key. `gate verify` and `evidence verify` accept an unpinned receipt as internally consistent (`VALID_UNCONFIRMED_GATE` in `gate verify`). |
+| A receipt signed by a different Gate | Yes, when the key is pinned | The guard refuses to use the Gate at all without a pinned key. `gate verify` and `evidence verify` accept an unpinned receipt as internally consistent, and say so: `VALID_UNCONFIRMED_GATE` in both, plus `Gate key UNCONFIRMED` on the approvals line of `evidence verify`. |
 | An expired approval | Yes | Rejected at or after `valid_until` (default 10 minutes after the decision), judged by the local clock against a time set by the server. |
 | An approval used twice | Partly | The guard marks a used receipt with a local `.used` file in `<project>/.perathos/approvals/`. Anyone who can delete that file can reuse the receipt for the same arguments until it expires. |
 | A click without the approver's authenticator | Yes | The server requires a passkey assertion with user verification from a credential enrolled for that organisation, and the verifier re-checks the flags and the signature. |
@@ -289,11 +302,13 @@ It can:
 - **Forge an approval that passes verification.** It holds the server signing
   key, and the verifier takes the approver's public key from the receipt. A
   server can generate a key pair, write a receipt naming any approver, sign the
-  WebAuthn part with its own key and sign the receipt. Nothing in `perathos`
-  detects this. The forged receipt carries a public key and credential id that
-  differ from the real approver's, so an organisation that keeps its own record
-  of its approvers' credential ids and public keys can spot it by comparison.
-  That comparison is manual.
+  WebAuthn part with its own key and sign the receipt. With no approver
+  passkeys pinned (the default), nothing in `perathos` detects this. The forged
+  receipt carries a public key that differs from the real approver's, so a
+  client or reviewer that has pinned the real approvers' passkeys (1.4.0:
+  `perathos gate trust`, `PERATHOS_GATE_APPROVERS`, `evidence verify
+  --approver-key`) rejects it. The pins must have been taken from receipts or
+  an enrolment record that the forger did not also control.
 - Enrol a new passkey under any name, with the same effect.
 - Show an approver one action while asking their passkey to sign the challenge
   for another. The approver's device signs a hash; the person sees whatever
@@ -373,9 +388,9 @@ an anchor or, once the Gate key is pinned, an approval. Recording with a local
 key, the guard's pattern matching and offline verification make no network
 calls. A remote signer, anchoring and the Gate do.
 
-**A5, a malicious Gate.** See 5.7. In short: it can approve, on its own
-authority, any blocked action that an agent attempts, and the receipt will
-verify.
+**A5, a malicious Gate.** See 5.7. In short: unless the client has pinned its
+approvers' passkeys, it can approve, on its own authority, any blocked action
+that an agent attempts, and the receipt will verify.
 
 **A6, a phished or pressured approver.** The passkey proves that an enrolled
 credential approved a request. It does not prove the approver read it,
@@ -393,15 +408,19 @@ Stated plainly, in rough order of weight:
 1. The guard is a pattern matcher and not a sandbox.
 2. With the default local key, an agent that can read the key can forge both
    records and approvals.
-3. A period with hooks switched off, or a recording failure, leaves an
-   invisible gap.
+3. A period with hooks switched off leaves an invisible gap. A recording
+   failure leaves a gap in the log that only a local, unsigned error log
+   (`~/.perathos/errors.log`) notes; a third party cannot see it.
 4. Completeness is never proven: only what the hooks saw is recorded.
-5. Signer identity rests on a pin the verifier must obtain out of band.
-   Unpinned results say so (`VALID_UNCONFIRMED_SIGNER`,
-   `VALID_UNCONFIRMED_GATE`), but `evidence verify` checks Gate receipts
-   without any Gate pin.
-6. Whoever controls the Gate server key can forge approvals. Verifiers do not
-   pin approver keys.
+5. Signer identity rests on a pin the verifier must obtain out of band, and
+   so do the Gate key and the approver passkeys. Unpinned results say so
+   (`VALID_UNCONFIRMED_SIGNER`, `VALID_UNCONFIRMED_GATE`, `Gate key
+   UNCONFIRMED`, `approvers NOT PINNED`), and they still exit 0: a reviewer
+   who does not read the output, or does not obtain the keys, learns only
+   that the pack is internally consistent.
+6. Whoever controls the Gate server key can forge approvals for any client or
+   reviewer that has not pinned approver passkeys. Pinning is optional and off
+   by default.
 7. The approver list, the Gate pin and the signer setting are unsigned local
    files.
 8. A remote recorder signer keeps the key from being copied. It does not keep
@@ -411,13 +430,21 @@ Stated plainly, in rough order of weight:
 11. Preconditions are reusable until expiry and are not bound to a session.
 12. Synced passkeys do not prove a specific hardware device, and the Gate does
     not claim device binding. An approver can be socially engineered.
-13. The MCP proxy forwards a call if the guard raises an exception.
+13. The MCP proxy relays, unguarded and unrecorded, any line it cannot parse
+    as JSON. (It no longer forwards a call when the guard raises: that now
+    fails closed.) The browser verifier does not check Gate approvals.
 14. The hosted Gate is a single small deployment.
 15. One maintainer. No penetration test by an accredited firm
     ([SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md), section L).
 
-Not built yet (none of these is a commitment): verifier-side pinning of
-approver credentials for Gate receipts; a Gate pin in `evidence verify`;
+Built since this list was first written: verifier-side pinning of approver
+passkeys (1.4.0); a Gate key and approver pins in `evidence verify`, with the
+cross-check of cited approvals; a fail-closed guard in the MCP proxy; a marker
+on checkpoints the signer failed to sign; a local log of recording failures.
+
+Not built yet (none of these is a commitment): Gate receipt checks in the
+browser verifier; a check of an approval's validity window against the call's
+time in `evidence verify`; a tamper-evident record of recording failures;
 single-use or session-bound preconditions; a transparency log for checkpoints
 or receipts; attestation of the execution environment; binding key id and
 expiry into signed payloads for rotation. See
@@ -438,8 +465,9 @@ and `perathos doctor --recorder` reports on several of them.
 | Detection of a cut-off or rewritten log | Keep **off-machine anchor copies**: set `perathos config anchor_mirror <path>` to a location the agent and the machine's users cannot change, and verify with `--anchors <copy>` and `--require-anchor`. | Truncation after the last surviving checkpoint is undetectable to someone who also deletes the head witness and the local anchors. |
 | Independent time | Turn anchoring on (`--anchor`, needs `perathos[anchor]` and network). | All times are the local clock. |
 | Signer identity on verification | **Pin the signer on verify**: `--verify-key <hex>` or `--trust-jwks`, with the key obtained through a separate channel. Treat `VALID_UNCONFIRMED_SIGNER` as "consistent, origin unknown". | Anyone can produce a self-consistent log or pack. |
-| Gate receipts from the right server | **Pin the Gate key**, and confirm the key that `perathos gate login` pinned against one obtained separately. Check pack approvals with `perathos gate verify --gate-key`. | A receipt signed by any key passes as internally consistent. |
-| A check on the Gate itself | Keep your own record of each approver's credential id and public key from enrolment, and compare receipts against it. Prefer a Gate you run for anything that matters. | Whoever holds the Gate key can name any approver. |
+| Gate receipts from the right server | **Pin the Gate key**, and confirm the key that `perathos gate login` pinned against one obtained separately. Check pack approvals with `perathos evidence verify --gate-key` (or one receipt with `perathos gate verify --gate-key`). | A receipt signed by any key passes as internally consistent. |
+| A check on the Gate itself | **Pin your approvers' passkeys** (`perathos gate trust <receipt>` after each enrolment, or `PERATHOS_GATE_APPROVERS` in CI), keep your own record of each approver's public key from enrolment, and give reviewers those keys for `evidence verify --approver-key`. Prefer a Gate you run for anything that matters. | Whoever holds the Gate key can name any approver. |
+| Notice of recording faults | Run `perathos doctor --recorder` regularly and look at `~/.perathos/errors.log`; treat a `signer_error` checkpoint or a logged recording failure as an incident for that session. | A failed hook or signer leaves a gap nobody looks at. |
 | Approvals that mean something | Keep the approver group small. Tell approvers to read the command text and to deny anything they did not expect. Keep request volume low enough that each one is read. | Approval fatigue makes the passkey a formality. |
 | Narrow preconditions | Name the specific resource in `--scope`, keep `--ttl` short, avoid `*`, and use checks that test the safeguard. Review `check` text in audits. | One precondition covers many commands for its whole lifetime. |
 | Containment of a hostile agent | Operating-system isolation: a separate user, a container or VM, scoped credentials, no production secrets in the agent's environment. | Nothing in Perathos confines the agent. |
