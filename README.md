@@ -255,11 +255,28 @@ signing key.
 
 It is a seatbelt against accidents like an agent deleting a production
 database and its backups, not a sandbox against a deliberately hostile
-agent: a command can be disguised past any pattern (environment-variable
-indirection, downloaded scripts), and the signing key lives on the same
-machine. An independent red-team of 1.0.0 found about thirty accident-class
-commands that passed; 1.1.0 blocks all of them, and the list it used is now
-a test (`tests/test_guard_hardening.py`).
+agent, and the signing key lives on the same machine. An independent
+red-team of 1.0.0 found about thirty accident-class commands that passed;
+1.1.0 blocks all of them, and the list it used is now a test
+(`tests/test_guard_hardening.py`). That corpus has since grown to 148
+commands, all blocked.
+
+Commands whose text does not say what will run are flagged as
+"unresolvable" and need a precondition or approval like a destructive
+command: a variable or substitution where the program name should be
+(`$CMD -rf build`, `eval "$X"`, `bash -c "$PAYLOAD"`, PowerShell `iex $x`
+and `& $cmd`, `cmd /c %X%`), and a download handed to an interpreter
+(`curl ... | sh`, `iwr ... | iex`, `bash <(curl ...)`). Ordinary use stays
+allowed: `echo $HOME`, `git commit -m "$MSG"`, `FOO=bar make`,
+`curl -o file url`. This narrows the two bypass classes we used to list as
+open; it does not close them. A deliberately hostile agent can still
+disguise a command, for example by assembling the program name
+(`r${Z}m -rf build`), using an alias or symlink, putting the indirection
+inside interpreter code (`python -c "os.system(os.environ['X'])"`), going
+through a build tool (`make clean`), or generating a script and running it
+in the same call. Variable indirection is judged only on a shell command
+line, not inside script files or MCP tool arguments. These forms are kept
+as a test too (`KNOWN_OPEN`), so the list stays true.
 
 **Fail closed and lock the hooks.** The installer sets `onFailure: "block"`
 on the Claude Code guard hook (Claude Code 2.1.295+) and `failClosed` on

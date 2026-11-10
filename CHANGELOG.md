@@ -28,6 +28,33 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
   terminal with the `qr` extra installed (`pip install "perathos[qr]"`), so the
   approver scans it instead of retyping a link that carries a token. `--qr` /
   `--no-qr` force it on or off; `--qr-file PATH` saves it as `.png` or `.svg`.
+- Guard: an "unresolvable" rule class for commands whose text does not say
+  what will run. `unresolvable.indirect` covers a variable or substitution in
+  command position (`$CMD -rf build`, `$(echo rm) -rf x`), `eval "$X"`,
+  `bash -c "$PAYLOAD"`, text piped into a shell, PowerShell `iex $x`, `& $cmd`
+  and `-EncodedCommand`, and `cmd /c %X%`. `unresolvable.remote-script` covers
+  a download handed to an interpreter (`curl ... | sh`, `iwr ... | iex`,
+  `bash <(curl ...)`, `python -c "$(curl ...)"`, download then run). They are
+  denied unless a precondition or approval covers them, like any destructive
+  command. Variables and substitutions as arguments, `FOO=bar make`,
+  `$HOME/bin/tool`, `eval "$(ssh-agent -s)"` and `curl -o file url` stay
+  allowed. Variable indirection is judged only on a shell command line, not
+  inside script files or MCP arguments; the forms that still pass are listed
+  in the README and kept as a test (`KNOWN_OPEN`).
+- Guard rules for accident-class commands that passed before:
+  `git push origin +main` / `--delete main` / `:main`, `git checkout -f`,
+  `gh repo delete`, `docker compose down -v`, `mkfs`, `rsync --delete`,
+  `helm uninstall`, `az group delete`, `gcloud projects delete`,
+  `aws s3api delete-bucket`, `aws cloudformation delete-stack`.
+- `tests/test_guard_hardening.py`: the bypass corpus grows from 43 commands
+  (41 from the red-team) to 148, all blocked, with 68 new commands that must
+  stay allowed.
+
+### Changed
+- Commands that used to run unremarked may now be denied by the guard: the
+  forms above, plus `if $FLAG; then`, `psql -c "$SQL"`, `source $FILE` and a
+  downloaded binary run in the same command. Write the command out literally,
+  or add a precondition.
 
 ### Docs
 - `docs/THREAT_MODEL.md` rewritten to cover the whole product, not only proof
