@@ -1687,7 +1687,11 @@ def _show_approve_qr(url: str, qr, qr_file) -> None:
                    "(default: when run in a terminal and the 'qr' extra is installed).")
 @click.option("--qr-file", "qr_file", type=click.Path(dir_okay=False), default=None,
               help="Also save the QR code as an image (.png or .svg).")
-def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_seconds, out_file, qr, qr_file):
+@click.option("--no-link", "no_link", is_flag=True,
+              help="Do not print the approve link or a QR code. For CI logs other people can read: "
+                   "approvers get the link by notification instead.")
+def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_seconds, out_file, qr, qr_file,
+                 no_link):
     """Ask a person to approve an action; exit 0 only if approved.
 
     Use it in any script before an irreversible step:
@@ -1704,6 +1708,10 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_sec
         click.echo(f"[ERROR] --args-json is not valid JSON: {exc}", err=True)
         sys.exit(2)
     def announce(created):
+        if no_link:
+            click.echo(f"perathos gate: waiting for approval of {created['id']} "
+                       f"(link not shown; approvers are notified by the Gate)", err=True)
+            return
         click.echo(f"perathos gate: waiting for approval of {created['id']}; approve at {created['approve_url']}",
                    err=True)
         _show_approve_qr(created["approve_url"], qr, qr_file)
@@ -1798,8 +1806,14 @@ def gate_trust(receipt_file: str):
 
 @gate.command(name="approvers")
 @click.option("--remove", "remove", default=None, metavar="NAME", help="Unpin every passkey with this approver name.")
-def gate_approvers(remove: str):
-    """List (or unpin) the approver passkeys this machine trusts."""
+@click.option("--keys", "show_keys", is_flag=True,
+              help="Print only the public keys, comma-separated, for PERATHOS_GATE_APPROVERS on another machine.")
+def gate_approvers(remove: str, show_keys: bool):
+    """List (or unpin) the approver passkeys this machine trusts.
+
+    Public keys are not secret. To pin the same approvers in CI, set the output of
+    `perathos gate approvers --keys` as PERATHOS_GATE_APPROVERS there.
+    """
     from .approvers import get_config, set_config
     pinned = [p for p in get_config().get("gate_approvers") or [] if isinstance(p, dict)]
     if remove is not None:
@@ -1811,6 +1825,9 @@ def gate_approvers(remove: str):
         pinned = kept
     if not pinned:
         click.echo("No approvers pinned: any passkey the Gate server names is accepted.")
+        return
+    if show_keys:
+        click.echo(",".join(str(p.get("public_key")) for p in pinned if p.get("public_key")))
         return
     for p in pinned:
         click.echo(f"{p.get('name')}  passkey {str(p.get('credential_id', ''))[:24]}...  alg {p.get('alg')}")

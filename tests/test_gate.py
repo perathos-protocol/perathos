@@ -334,6 +334,36 @@ def test_pinned_approver_rejects_a_passkey_the_server_invents(gate, tmp_path):
     assert require_approval("fifth", wait_seconds=10)["decision"] == "approve"
 
 
+def test_ci_pins_approvers_by_environment_and_hides_the_link(gate, tmp_path, monkeypatch):
+    _login(gate)
+    runner = CliRunner()
+
+    def approve_soon():
+        for _ in range(100):
+            if any(a["status"] == "pending" for a in gate.approvals.values()):
+                gate.decide(gate.only_pending(), "approve")
+                return
+            time.sleep(0.05)
+    threading.Thread(target=approve_soon, daemon=True).start()
+    out = tmp_path / "r.json"
+    r = runner.invoke(cli, ["gate", "request", "--summary", "deploy", "--wait", "10", "--no-link", "--out", str(out)])
+    assert r.exit_code == 0 and "link not shown" in r.output and "/a/apr_" not in r.output and "?t=" not in r.output
+    assert runner.invoke(cli, ["gate", "trust", str(out)]).exit_code == 0
+    keys = runner.invoke(cli, ["gate", "approvers", "--keys"]).output.strip()
+    assert keys == json.loads(out.read_text(encoding="utf-8"))["approver"]["public_key"]
+    runner.invoke(cli, ["gate", "approvers", "--remove", "Alice Moyo"])
+
+    # No config pins; the environment pins this approver: accepted.
+    monkeypatch.setenv("PERATHOS_GATE_APPROVERS", f"someone-else, {keys}")
+    threading.Thread(target=approve_soon, daemon=True).start()
+    assert require_approval("deploy 2", wait_seconds=10)["decision"] == "approve"
+    # The environment pins only someone else: rejected.
+    monkeypatch.setenv("PERATHOS_GATE_APPROVERS", "someone-else")
+    threading.Thread(target=approve_soon, daemon=True).start()
+    with pytest.raises(Exception, match="ERR_GATE_UNTRUSTED_APPROVER"):
+        require_approval("deploy 3", wait_seconds=10)
+
+
 def test_guard_rejects_an_unpinned_approver(gate, tmp_path):
     from perathos.approvers import set_config
     _login(gate)
