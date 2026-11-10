@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-10
+
 ### Added
 - For CI: `PERATHOS_GATE_APPROVERS` pins approver passkeys by environment variable
   (`perathos gate approvers --keys` prints the value), and `perathos gate request --no-link`
