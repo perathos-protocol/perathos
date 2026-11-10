@@ -5,6 +5,22 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-10
+
+### Fixed
+- `require_approval()` / `perathos gate request` print the approve link to
+  stderr as soon as the request exists, instead of only after a timeout. Without
+  a webhook the requester is the only one who has the link (#69).
+
+### Added
+- `perathos gate request --ttl SECONDS` (60-3600, default 600) sets how long
+  the request stays approvable on the server. Ten minutes proved too short when
+  the link has to be carried to a phone by hand.
+
+### Notes
+- First hosted approval at gate.perathos.com verified end to end on a real
+  phone passkey (2026-11-10).
+
 ## [1.3.0] - 2026-11-06
 
 ### Added: Perathos Gate (client side)

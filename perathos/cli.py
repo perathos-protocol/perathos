@@ -1649,8 +1649,10 @@ def gate_status():
 @click.option("--detail", default=None)
 @click.option("--args-json", "args_json", default=None, help="The exact arguments, as JSON; bound into the approval.")
 @click.option("--wait", "wait_seconds", default=300, show_default=True, type=click.IntRange(1, 3600))
+@click.option("--ttl", "ttl_seconds", default=600, show_default=True, type=click.IntRange(60, 3600),
+              help="Seconds the request stays approvable on the server.")
 @click.option("--out", "out_file", type=click.Path(dir_okay=False), default=None, help="Write the receipt here.")
-def gate_request(summary, tool, target, detail, args_json, wait_seconds, out_file):
+def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_seconds, out_file):
     """Ask a person to approve an action; exit 0 only if approved.
 
     Use it in any script before an irreversible step:
@@ -1668,7 +1670,8 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, out_fil
         sys.exit(2)
     try:
         receipt = require_approval(summary, tool=tool, args=args, target=target, detail=detail,
-                                   agent="perathos-cli", wait_seconds=wait_seconds)
+                                   agent="perathos-cli", wait_seconds=wait_seconds,
+                                   ttl_seconds=ttl_seconds)
     except ApprovalDenied as exc:
         click.echo(f"DENIED  {exc}", err=True)
         sys.exit(1)
