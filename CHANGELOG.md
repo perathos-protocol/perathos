@@ -5,6 +5,12 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `perathos gate request` shows the approve link as a QR code when run in a
+  terminal with the `qr` extra installed (`pip install "perathos[qr]"`), so the
+  approver scans it instead of retyping a link that carries a token. `--qr` /
+  `--no-qr` force it on or off; `--qr-file PATH` saves it as `.png` or `.svg`.
+
 ## [1.3.1] - 2026-11-10
 
 ### Fixed

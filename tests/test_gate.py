@@ -265,6 +265,26 @@ def test_cli_request_and_verify(gate, tmp_path):
     assert runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "1"]).exit_code == 3
 
 
+QR_BLOCKS = [chr(0x2580), chr(0x2584), chr(0x2588)]
+
+
+def test_cli_request_qr(gate, tmp_path):
+    pytest.importorskip("segno")
+    _login(gate)
+    runner = CliRunner()
+    png = tmp_path / "approve.png"
+    # Not a terminal: no QR unless asked for; the link is always printed.
+    r = runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "1"])
+    assert r.exit_code == 3 and "approve at http" in r.output and not any(ch in r.output for ch in QR_BLOCKS)
+    r = runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "1", "--qr", "--qr-file", str(png)])
+    assert r.exit_code == 3, r.output
+    assert png.read_bytes().startswith(bytes([0x89]) + b"PNG")
+    assert f"QR code saved to {png}" in r.output
+    assert any(ch in r.output for ch in QR_BLOCKS)
+    r = runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "1", "--no-qr"])
+    assert r.exit_code == 3 and not any(ch in r.output for ch in QR_BLOCKS)
+
+
 def test_evidence_pack_carries_and_checks_approvals(gate, tmp_path):
     from perathos.evidence import export_evidence_pack, verify_evidence_pack
     from perathos.hook import run_record

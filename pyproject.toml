@@ -12,7 +12,7 @@ dependencies = ["click>=8.0", "cryptography>=42.0"]
 
 [project.optional-dependencies]
 # jsonschema is in dev so CI exercises the SchemaValidator engine.
-dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21", "rfc3161-client>=1.0.9,<2"]
+dev = ["pytest>=8.0", "ruff>=0.4,<0.16", "jsonschema>=4.21", "rfc3161-client>=1.0.9,<2", "segno>=1.6,<2"]
 # SchemaValidator engine (real JSON Schema validation; SSRF-safe).
 schema = ["jsonschema>=4.21"]
 # Autonomous-agent harness deps — version-bounded (away from yanked/compromised
@@ -34,6 +34,8 @@ mcp = ["mcp>=1.0,<2"]
 # Independent RFC 3161 timestamps on flight-recorder checkpoints
 # (`perathos session anchor`, `perathos hooks install --anchor`).
 anchor = ["rfc3161-client>=1.0.9,<2"]
+# QR code for the approve link in `perathos gate request` (pure Python, no dependencies).
+qr = ["segno>=1.6,<2"]
 
 [project.scripts]
 perathos = "perathos.cli:main"
