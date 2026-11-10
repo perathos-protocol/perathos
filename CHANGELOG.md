@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-10
+
 Fixes for the gaps found by the threat-model review (docs/THREAT_MODEL.md).
 
 ### Security
