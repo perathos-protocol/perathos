@@ -285,6 +285,66 @@ def test_cli_request_qr(gate, tmp_path):
     assert r.exit_code == 3 and not any(ch in r.output for ch in QR_BLOCKS)
 
 
+def test_pinned_approver_rejects_a_passkey_the_server_invents(gate, tmp_path):
+    """Whoever holds the Gate signing key can name any approver key; pinning closes that."""
+    from perathos.gate import GateError
+    _login(gate)
+    runner = CliRunner()
+
+    def approve_soon():
+        for _ in range(100):
+            if any(a["status"] == "pending" for a in gate.approvals.values()):
+                gate.decide(gate.only_pending(), "approve")
+                return
+            time.sleep(0.05)
+    threading.Thread(target=approve_soon, daemon=True).start()
+    out = tmp_path / "first.json"
+    assert runner.invoke(cli, ["gate", "request", "--summary", "first", "--wait", "10", "--out", str(out)]).exit_code == 0
+    v = runner.invoke(cli, ["gate", "verify", str(out)])
+    assert v.exit_code == 0 and "approver NOT PINNED" in v.output
+    assert "No approvers pinned" in runner.invoke(cli, ["gate", "approvers"]).output
+
+    t = runner.invoke(cli, ["gate", "trust", str(out)])
+    assert t.exit_code == 0 and "pinned approver Alice Moyo" in t.output
+    assert "already pinned" in runner.invoke(cli, ["gate", "trust", str(out)]).output
+    v = runner.invoke(cli, ["gate", "verify", str(out)])
+    assert v.exit_code == 0 and "approver pinned" in v.output
+    assert "Alice Moyo" in runner.invoke(cli, ["gate", "approvers"]).output
+
+    # The same pinned passkey still approves.
+    threading.Thread(target=approve_soon, daemon=True).start()
+    assert require_approval("second", wait_seconds=10)["decision"] == "approve"
+
+    # The server now signs a receipt naming a passkey nobody pinned: valid signatures, rejected.
+    gate.passkey = ec.generate_private_key(ec.SECP256R1())
+    gate.pub = gate.passkey.public_key().public_bytes(serialization.Encoding.DER,
+                                                      serialization.PublicFormat.SubjectPublicKeyInfo)
+    threading.Thread(target=approve_soon, daemon=True).start()
+    with pytest.raises(GateError, match="ERR_GATE_UNTRUSTED_APPROVER"):
+        require_approval("third", wait_seconds=10)
+    forged = tmp_path / "forged.json"
+    threading.Thread(target=approve_soon, daemon=True).start()
+    r = runner.invoke(cli, ["gate", "request", "--summary", "fourth", "--wait", "10", "--out", str(forged)])
+    assert r.exit_code == 2 and "ERR_GATE_UNTRUSTED_APPROVER" in r.output
+
+    # Unpinning restores the old behaviour.
+    assert runner.invoke(cli, ["gate", "approvers", "--remove", "nobody"]).exit_code == 1
+    assert "No approvers pinned" in runner.invoke(cli, ["gate", "approvers", "--remove", "Alice Moyo"]).output
+    threading.Thread(target=approve_soon, daemon=True).start()
+    assert require_approval("fifth", wait_seconds=10)["decision"] == "approve"
+
+
+def test_guard_rejects_an_unpinned_approver(gate, tmp_path):
+    from perathos.approvers import set_config
+    _login(gate)
+    set_config("gate_approvers", [{"name": "Someone Else", "public_key": "bm90LXRoZS1rZXk"}])
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny"
+    gate.decide(gate.only_pending(), "approve")
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "ERR_GATE_UNTRUSTED_APPROVER" in d.reason
+
+
 def test_evidence_pack_carries_and_checks_approvals(gate, tmp_path):
     from perathos.evidence import export_evidence_pack, verify_evidence_pack
     from perathos.hook import run_record

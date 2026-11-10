@@ -27,7 +27,7 @@ of *your* controls the artefacts Perathos produces can serve as evidence for.
 | Question | Answer |
 |---|---|
 | What is the product? | A Python package and CLI that runs on the developer's or CI machine. It records every coding-agent tool call (Claude Code, Cursor, any MCP client) as a hash-chained, signed receipt, blocks destructive commands unless a person has signed a safety precondition, and exports evidence packs that a third party can verify offline. |
-| Is it SaaS / vendor-hosted? | No. There is no Perathos server, account, API or cloud component. All processing happens in the customer's environment. |
+| Is it SaaS / vendor-hosted? | The recorder, guard, preconditions and evidence packs are not: they run entirely in the customer's environment with no Perathos server or account. Perathos Gate (optional passkey approvals) is a server component: open source and self-hostable, or the vendor-hosted instance at `gate.perathos.com`, which then receives the text of each action sent for approval. |
 | Does the vendor have access to customer systems or data? | No. Nothing is sent to the vendor (see section C). Optional professional services (installation and configuration) would be performed under a separate engagement, on the customer's terms. |
 | Deployment model | `pip install perathos` (optionally `perathos[anchor]`), `perathos keygen`, `perathos hooks install --guard --anchor`. Hooks can be installed per project, per user, or into Claude Code's managed policy file (`--scope managed`). |
 | Supported platforms | Python 3.11+ on Linux, macOS and Windows. CI tests Python 3.11, 3.12 and 3.13 on all three (`.github/workflows/ci.yml`). |

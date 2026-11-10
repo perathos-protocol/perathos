@@ -11,13 +11,14 @@ lets that person approve or deny **on their own device with a passkey**, and ret
 receipt that anyone can verify offline. The receipt proves three things:
 
 1. **What** was approved: the exact action, bound by hash into the WebAuthn challenge.
-2. **Who** approved: a person's passkey (a hardware-backed key on their phone or security key)
-   signed it, with user verification (biometric or PIN), not just a click.
+2. **Who** approved: a passkey enrolled under that person's name signed it, with user
+   verification (biometric or PIN), not just a click. The server requests no attestation, so
+   the receipt does not show which device holds the key; synced passkeys are accepted.
 3. **When**, and that the Gate server recorded it: the server signs the whole receipt.
 
 This is the evidence AIUC-1 control D003.4 asks for ("requiring human approval for sensitive
 tool operations ... deleting or irreversibly modifying records"), produced at the moment of
-the decision, by the approver's own hardware.
+the decision, by the approver's own passkey.
 
 ## Roles
 
@@ -116,9 +117,14 @@ A verifier MUST check, in order:
 5. The approver public key verifies `signature` over
    `authenticator_data || SHA-256(client_data_json bytes)`, using ES256 (`alg -7`, ECDSA P-256
    with SHA-256, DER signature), EdDSA (`alg -8`, Ed25519) or RS256 (`alg -257`).
-6. For use by a guard: `decision == "approve"`, now is before `valid_until`, the request's
+6. If the verifier has pinned approver keys (`perathos gate trust`), `approver.public_key` is
+   one of them (`ERR_GATE_UNTRUSTED_APPROVER` otherwise). Without pinned approver keys the
+   receipt shows only that the Gate server vouched for this approver, because the public key
+   used in step 5 comes from the receipt itself.
+7. For use by a guard: `decision == "approve"`, now is before `valid_until`, the request's
    `args_hash` equals the hash of the arguments about to run, and the receipt has not been used
-   before (the guard records the receipt hash in its action receipt).
+   before. Single use is enforced by the client, with a marker file beside the receipt in
+   `.perathos/approvals/`; the guard also records the receipt hash in its action receipt.
 
 ## HTTP API (server)
 
@@ -143,12 +149,15 @@ The fuller analysis, including exactly what a compromised Gate server can and ca
 [THREAT_MODEL.md](../THREAT_MODEL.md), section 5.7. Where it differs from the notes below, the
 threat model is the more recent statement.
 
-- The server never holds approvers' private keys. A compromised server can refuse, delay or
-  forge *server* signatures, but cannot produce an approver's WebAuthn signature; verifiers check
-  both.
+- The server never holds approvers' private keys, so a compromised server cannot produce a
+  signature from an existing approver's passkey. It can, however, enrol or invent a new approver
+  key and issue a receipt that passes steps 1 to 5. A verifier that has pinned approver keys
+  (step 6) rejects such a receipt; one that has not, accepts it. Pin approver keys wherever the
+  Gate server is not fully trusted. A compromised server can also refuse or delay, and could
+  show the approver text that differs from what the passkey signs.
 - The approval page shows the action text the agent supplied. The agent could describe an action
   misleadingly; the guard binds `args_hash` to the real arguments, and the approver sees the
   command text the guard extracted, not the agent's own description.
-- Command text is sent to the Gate server so the approver can read it. Organisations that cannot
-  send it can set the client to send only the rule and target.
+- Command text is sent to the Gate server so the approver can read it. There is no option yet
+  to withhold it.
 - Enrolment links are single-use, expire in 24 hours, and should be delivered out of band.

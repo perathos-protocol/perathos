@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-CONFIG_KEYS = ("signer", "anchor_mirror", "gate_url", "gate_api_key", "gate_key", "gate_wait")
+CONFIG_KEYS = ("signer", "anchor_mirror", "gate_url", "gate_api_key", "gate_key", "gate_wait", "gate_approvers")
 
 
 def perathos_home() -> Path:
@@ -49,7 +49,7 @@ def get_config() -> dict:
     return _read_json(config_path())
 
 
-def set_config(key: str, value: str | None) -> dict:
+def set_config(key: str, value) -> dict:
     if key not in CONFIG_KEYS:
         raise ValueError(f"unknown setting {key!r}; known: {', '.join(CONFIG_KEYS)}")
     cfg = get_config()

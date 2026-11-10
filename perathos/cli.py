@@ -1732,14 +1732,15 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_sec
 def gate_verify(receipt_file: str, gate_key: str):
     """Verify a Gate receipt offline: server signature, approver passkey signature, binding."""
     from .approvers import get_config
-    from .gate import verify_receipt
+    from .gate import trusted_approver_keys, verify_receipt
     try:
         receipt = json.loads(Path(receipt_file).read_text(encoding="utf-8"))
     except ValueError as exc:
         click.echo(f"[ERROR] not JSON: {exc}", err=True)
         sys.exit(2)
     key = gate_key or get_config().get("gate_key")
-    res = verify_receipt(receipt, gate_key=key)
+    pins = trusted_approver_keys()
+    res = verify_receipt(receipt, gate_key=key, trusted_approvers=pins)
     if not res:
         click.echo(f"INVALID  {res.error}", err=True)
         sys.exit(1)
@@ -1749,6 +1750,69 @@ def gate_verify(receipt_file: str, gate_key: str):
     click.echo(f"  action   {receipt['request']['action'].get('summary', '')[:120]}")
     click.echo(f"  passkey  {a.get('credential_id', '')[:24]}... alg {a.get('alg')}, user verified")
     click.echo(f"  gate     {receipt['server_signature']['verify_key']}")
+    if pins is None:
+        click.echo("  approver NOT PINNED: this shows the Gate server vouched for this passkey, not that the "
+                   "key is one you know. Pin it with: perathos gate trust RECEIPT_FILE")
+    else:
+        click.echo("  approver pinned")
+
+
+@gate.command(name="trust")
+@click.argument("receipt_file", type=click.Path(exists=True, dir_okay=False))
+def gate_trust(receipt_file: str):
+    """Pin the approver's passkey from a receipt you know to be genuine.
+
+    Once any approver is pinned, approvals from every other passkey are rejected, so a
+    Gate server (or whoever holds its signing key) cannot invent an approver. Pin from a
+    receipt whose approval you witnessed, for example the first one a person made in
+    front of you.
+    """
+    from .approvers import get_config, set_config
+    from .gate import verify_receipt
+    try:
+        receipt = json.loads(Path(receipt_file).read_text(encoding="utf-8"))
+    except ValueError as exc:
+        click.echo(f"[ERROR] not JSON: {exc}", err=True)
+        sys.exit(2)
+    cfg = get_config()
+    key = cfg.get("gate_key")
+    if not key:
+        click.echo("[ERROR] the Gate key is not pinned; run 'perathos gate login' first", err=True)
+        sys.exit(2)
+    res = verify_receipt(receipt, gate_key=key)
+    if not res:
+        click.echo(f"INVALID  {res.error}", err=True)
+        sys.exit(1)
+    a = receipt["approver"]
+    pinned = [p for p in cfg.get("gate_approvers") or [] if isinstance(p, dict)]
+    if any(p.get("public_key") == a["public_key"] for p in pinned):
+        click.echo(f"already pinned: {a.get('name')}")
+        return
+    pinned.append({"name": a.get("name"), "public_key": a["public_key"], "alg": a.get("alg"),
+                   "credential_id": a.get("credential_id")})
+    set_config("gate_approvers", pinned)
+    click.echo(f"pinned approver {a.get('name')} (passkey {str(a.get('credential_id', ''))[:24]}...). "
+               f"{len(pinned)} pinned; approvals from any other passkey are now rejected.")
+
+
+@gate.command(name="approvers")
+@click.option("--remove", "remove", default=None, metavar="NAME", help="Unpin every passkey with this approver name.")
+def gate_approvers(remove: str):
+    """List (or unpin) the approver passkeys this machine trusts."""
+    from .approvers import get_config, set_config
+    pinned = [p for p in get_config().get("gate_approvers") or [] if isinstance(p, dict)]
+    if remove is not None:
+        kept = [p for p in pinned if p.get("name") != remove]
+        if len(kept) == len(pinned):
+            click.echo(f"[ERROR] no pinned approver named {remove!r}", err=True)
+            sys.exit(1)
+        set_config("gate_approvers", kept or None)
+        pinned = kept
+    if not pinned:
+        click.echo("No approvers pinned: any passkey the Gate server names is accepted.")
+        return
+    for p in pinned:
+        click.echo(f"{p.get('name')}  passkey {str(p.get('credential_id', ''))[:24]}...  alg {p.get('alg')}")
 
 
 def main():
