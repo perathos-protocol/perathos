@@ -139,6 +139,10 @@ Notification: if the organisation has a webhook URL, the server POSTs
 
 ## Security considerations
 
+The fuller analysis, including exactly what a compromised Gate server can and cannot do, is in
+[THREAT_MODEL.md](../THREAT_MODEL.md), section 5.7. Where it differs from the notes below, the
+threat model is the more recent statement.
+
 - The server never holds approvers' private keys. A compromised server can refuse, delay or
   forge *server* signatures, but cannot produce an approver's WebAuthn signature; verifiers check
   both.

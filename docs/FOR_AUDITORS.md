@@ -68,6 +68,13 @@ everything can be re-checked from the files.
 (notably D003.4 human-approval workflows and E015.4 log integrity protection), SOC 2, NCSC guidance,
 ISO/IEC 42001, the EU AI Act and NIST AI RMF, and what it does not.
 
+## The full threat model
+
+[THREAT_MODEL.md](THREAT_MODEL.md) sets out, component by component, what is protected and what is
+not. Section 5.6 lists what `evidence verify` does not check for you: precondition signers against
+the approver list, and Gate approval receipts against a pinned Gate key. To report a flaw, see
+[SECURITY.md](../SECURITY.md).
+
 ## Formats
 
 Receipts, anchors and preconditions: [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md). Evidence pack

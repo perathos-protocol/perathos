@@ -456,8 +456,8 @@ at the `perathos-mcp` command.
 
 ## Enterprise & security
 
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — what is and isn't protected, and the deployment assumptions (notably: **pin the signer's public key out of band**).
-- [SECURITY.md](SECURITY.md) — security policy and reporting.
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — the threat model for the whole product (recorder, guard, hooks, signers, evidence packs, Gate, proof bundles): what is and isn't protected, the residual risks, and what a deployment must do (notably: **pin the signer's public key out of band**, and keep signing keys away from the agent).
+- [SECURITY.md](SECURITY.md) — vulnerability disclosure policy: how to report, scope (both repositories and the hosted Gate), safe harbour, response targets.
 - [docs/ENTERPRISE_FAQ.md](docs/ENTERPRISE_FAQ.md) — procurement-grade Q&A.
 - [docs/research/TRAINING_DATA.md](docs/research/TRAINING_DATA.md) — cited, license-verified datasets for the verifiers.
 - [CHANGELOG.md](CHANGELOG.md) — notable changes.

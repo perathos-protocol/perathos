@@ -11,6 +11,23 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
   approver scans it instead of retyping a link that carries a token. `--qr` /
   `--no-qr` force it on or off; `--qr-file PATH` saves it as `.png` or `.svg`.
 
+### Docs
+- `docs/THREAT_MODEL.md` rewritten to cover the whole product, not only proof
+  bundles: flight recorder, anchors, guard and preconditions, hooks and the MCP
+  proxy, remote signers and approver keys, evidence packs, and Perathos Gate
+  (client and server). Adds trust boundaries, six adversaries, a "threat /
+  protected? / mechanism" table per component, residual risks, and the
+  deployment steps needed for the stronger properties. It states what a
+  compromised Gate server can and cannot do: verifiers do not pin approver
+  keys, so whoever holds the Gate signing key can issue an approval receipt
+  that verifies (roadmap item 1.6).
+- `SECURITY.md` is now a full vulnerability disclosure policy: email or GitHub
+  private vulnerability reporting, scope (this repository, `perathos-gate` and
+  the hosted Gate), what is out of scope, rules for testing the hosted Gate,
+  safe-harbour wording for good-faith research, and response targets
+  (acknowledgement within 5 working days, previously 3). No bug bounty
+  payments.
+
 ## [1.3.1] - 2026-11-10
 
 ### Fixed
