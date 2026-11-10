@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-10
+
 ### Security
 - **Approver pinning for Gate receipts.** A receipt carries the approver's public
   key, and until now nothing checked that key against one the verifier knew, so
