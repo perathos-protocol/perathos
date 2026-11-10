@@ -1642,6 +1642,35 @@ def gate_status():
     sys.exit(0 if same else 1)
 
 
+def _show_approve_qr(url: str, qr, qr_file) -> None:
+    """Show the approve link as a QR code: the link carries a token and does not survive retyping."""
+    wanted = qr is True or qr_file is not None
+    if qr is False and qr_file is None:
+        return
+    if qr is None and qr_file is None and not sys.stderr.isatty():
+        return
+    try:
+        import segno
+    except ImportError:
+        if wanted:
+            click.echo('[WARN] QR output needs the extra: pip install "perathos[qr]"', err=True)
+        return
+    code = segno.make(url, error="m")
+    if qr_file is not None:
+        try:
+            code.save(qr_file, scale=8, border=4)
+            click.echo(f"perathos gate: QR code saved to {qr_file}", err=True)
+        except (OSError, ValueError) as exc:
+            click.echo(f"[WARN] could not save the QR code: {exc}", err=True)
+    if qr is False or (qr is None and not sys.stderr.isatty()):
+        return
+    try:
+        code.terminal(out=sys.stderr, border=2, compact=True)
+    except (UnicodeError, OSError):
+        # A legacy console code page cannot draw the blocks; the link above still works.
+        click.echo("[WARN] this console cannot draw a QR code; use --qr-file or open the link", err=True)
+
+
 @gate.command(name="request")
 @click.option("--summary", required=True, help="What the approver reads, e.g. the exact command.")
 @click.option("--tool", default="custom", show_default=True)
@@ -1652,7 +1681,12 @@ def gate_status():
 @click.option("--ttl", "ttl_seconds", default=600, show_default=True, type=click.IntRange(60, 3600),
               help="Seconds the request stays approvable on the server.")
 @click.option("--out", "out_file", type=click.Path(dir_okay=False), default=None, help="Write the receipt here.")
-def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_seconds, out_file):
+@click.option("--qr/--no-qr", "qr", default=None,
+              help="Print the approve link as a QR code to scan with a phone "
+                   "(default: when run in a terminal and the 'qr' extra is installed).")
+@click.option("--qr-file", "qr_file", type=click.Path(dir_okay=False), default=None,
+              help="Also save the QR code as an image (.png or .svg).")
+def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_seconds, out_file, qr, qr_file):
     """Ask a person to approve an action; exit 0 only if approved.
 
     Use it in any script before an irreversible step:
@@ -1668,10 +1702,15 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_sec
     except ValueError as exc:
         click.echo(f"[ERROR] --args-json is not valid JSON: {exc}", err=True)
         sys.exit(2)
+    def announce(created):
+        click.echo(f"perathos gate: waiting for approval of {created['id']}; approve at {created['approve_url']}",
+                   err=True)
+        _show_approve_qr(created["approve_url"], qr, qr_file)
+
     try:
         receipt = require_approval(summary, tool=tool, args=args, target=target, detail=detail,
                                    agent="perathos-cli", wait_seconds=wait_seconds,
-                                   ttl_seconds=ttl_seconds)
+                                   ttl_seconds=ttl_seconds, on_created=announce)
     except ApprovalDenied as exc:
         click.echo(f"DENIED  {exc}", err=True)
         sys.exit(1)

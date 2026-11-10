@@ -303,6 +303,9 @@ perathos hooks install --guard --force                                  # guard 
 perathos gate request --summary "Wire $5,000 to ACME Ltd" --wait 300 && ./transfer.sh
 ```
 
+  With `pip install "perathos[qr]"` the approve link is also drawn as a QR code in the
+  terminal (or saved with `--qr-file approve.png`), so the approver scans it with a phone.
+
 ```python
 from perathos.gate import require_approval
 receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
