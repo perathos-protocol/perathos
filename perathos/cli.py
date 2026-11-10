@@ -1655,7 +1655,8 @@ def _show_approve_qr(url: str, qr, qr_file) -> None:
         if wanted:
             click.echo('[WARN] QR output needs the extra: pip install "perathos[qr]"', err=True)
         return
-    code = segno.make(url, error="m")
+    # Tell the Gate server the QR code was the route used (a usage hint, not part of the receipt).
+    code = segno.make(url + ("&via=qr" if "?" in url else ""), error="m")
     if qr_file is not None:
         try:
             code.save(qr_file, scale=8, border=4)
