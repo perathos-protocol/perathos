@@ -364,6 +364,51 @@ def test_ci_pins_approvers_by_environment_and_hides_the_link(gate, tmp_path, mon
         require_approval("deploy 3", wait_seconds=10)
 
 
+def test_cli_verify_pins_approvers_on_the_command_line(gate, tmp_path, monkeypatch):
+    """An auditor with no local pins passes the approver key; it replaces machine and env pins."""
+    monkeypatch.delenv("PERATHOS_GATE_APPROVERS", raising=False)
+    _login(gate)
+    runner = CliRunner()
+
+    def approve_soon():
+        for _ in range(100):
+            if any(a["status"] == "pending" for a in gate.approvals.values()):
+                gate.decide(gate.only_pending(), "approve")
+                return
+            time.sleep(0.05)
+    threading.Thread(target=approve_soon, daemon=True).start()
+    out = tmp_path / "r.json"
+    assert runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "10", "--out", str(out)]).exit_code == 0
+    key = json.loads(out.read_text(encoding="utf-8"))["approver"]["public_key"]
+
+    def verify(*extra):
+        return runner.invoke(cli, ["gate", "verify", str(out), "--gate-key", gate.server_vk, *extra])
+
+    # No flag: unchanged, not pinned.
+    v = verify()
+    assert v.exit_code == 0 and "approver NOT PINNED" in v.output and "(--approver-key)" not in v.output
+    # The matching key: valid and says where the pin came from.
+    v = verify("--approver-key", key)
+    assert v.exit_code == 0 and v.output.startswith("VALID  APPROVE") and "approver pinned (--approver-key)" in v.output
+    # Comma-separated (the `gate approvers --keys` format) and repeated forms.
+    assert verify("--approver-key", f"someone-else,{key}").exit_code == 0
+    assert verify("--approver-key", "someone-else", "--approver-key", key).exit_code == 0
+    # A key that is not the receipt's approver: invalid.
+    v = verify("--approver-key", "someone-else")
+    assert v.exit_code == 1 and "INVALID" in v.output and "ERR_GATE_UNTRUSTED_APPROVER" in v.output
+    assert verify("--approver-key", " , ").exit_code == 2
+    # The flag beats a non-matching environment pin, and the environment still applies without it.
+    monkeypatch.setenv("PERATHOS_GATE_APPROVERS", "someone-else")
+    assert verify().exit_code == 1
+    v = verify("--approver-key", key)
+    assert v.exit_code == 0 and "approver pinned (--approver-key)" in v.output
+    # ...and beats an environment pin of the right key with a wrong one.
+    monkeypatch.setenv("PERATHOS_GATE_APPROVERS", key)
+    v = verify()
+    assert v.exit_code == 0 and "  approver pinned\n" in v.output
+    assert verify("--approver-key", "someone-else").exit_code == 1
+
+
 def test_guard_rejects_an_unpinned_approver(gate, tmp_path):
     from perathos.approvers import set_config
     _login(gate)

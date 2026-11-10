@@ -316,9 +316,9 @@ perathos gate trust first-receipt.json                                  # option
   decision, and used once (the client marks a used receipt on disk). Denials are recorded too.
 - The approval receipt's hash is written into the action's record (`guard.approval`) and the
   receipt itself into `.perathos/approvals/` and every evidence pack. `perathos evidence verify`
-  and `perathos gate verify receipt.json` check both signatures offline. `evidence verify` also
-  checks that every approval the log cites is in the pack, approved, and for the same
-  arguments, and prints whether the Gate key was confirmed and the approvers pinned
+  and `perathos gate verify receipt.json --gate-key <hex> --approver-key <key>` check both
+  signatures offline. `evidence verify` also checks that every approval the log cites is in
+  the pack, approved, and for the same arguments, and prints whether the Gate key was confirmed and the approvers pinned
   (`--gate-key`, `--approver-key`); a reviewer's machine has neither unless they pass them.
 - **Any script or agent framework**, not just coding agents:
 

@@ -35,6 +35,12 @@ everything can be re-checked from the files.
    If your own machine has a Gate key or approvers pinned (`perathos gate login`,
    `perathos gate trust`), those are used when you pass nothing; the line says so
    (`local pin`).
+   To check a single approval receipt you were sent on its own, run
+   `perathos gate verify receipt.json --gate-key <gate key> --approver-key <passkey key>`
+   (`--approver-key` can be repeated or comma-separated, as `perathos gate approvers --keys`
+   prints it). It replaces any approvers pinned on your machine or in `PERATHOS_GATE_APPROVERS`,
+   prints `approver pinned (--approver-key)` when the receipt's approver is one of them, and
+   `INVALID ERR_GATE_UNTRUSTED_APPROVER` (exit 1) when it is not.
 4. Read `REPORT.html` (one page) for the summary, and `verification.json` for the details.
 
 ## What a VALID pack establishes
