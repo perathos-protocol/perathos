@@ -14,7 +14,7 @@ says what to build next, in what order, and how we will know it worked.
 |---|---|---|
 | Client release | `perathos` 1.3.1 on PyPI | release v1.3.1 |
 | Hook latency | about 0.35 s per call on Windows (Python start-up) | earlier measurement, to be re-measured per OS |
-| Guard bypass corpus | 41 cases, 41 blocked | test suite |
+| Guard bypass corpus | 41 cases, 41 blocked (148 of 148 since item 1.5 landed) | test suite |
 | Independent verifiers | 2 (Python CLI, browser JavaScript) for receipt v1 | repo |
 | Gate server tests | 29 | `perathos-gate` |
 | Hosted Gate | 1 organisation, 1 approver, 1 real phone approval verified | `gate verify` on the live receipt |
@@ -23,7 +23,10 @@ says what to build next, in what order, and how we will know it worked.
 | Design partners | 0 written | outreach log |
 
 Known limits we already publish: the guard matches patterns and is not a sandbox
-(environment-variable indirection and downloaded scripts get past it); with the
+(environment-variable indirection and downloaded scripts got past it when this
+was measured; since item 1.5 their common forms are flagged as "unresolvable"
+and need a precondition or approval, and a deliberately hostile agent can still
+disguise a command in other ways, listed in the README); with the
 default local key the agent could read the signing key; a period with hooks
 switched off is invisible in the log. In addition, `docs/THREAT_MODEL.md` still
 describes the older proof-bundle layer, not the recorder, guard or Gate.
@@ -245,7 +248,7 @@ Goal: fast, auditable, sellable.
 | Measure | Today | Day 30 | Day 60 | Day 90 |
 |---|---|---|---|---|
 | Hook latency p95, slowest OS | about 350 ms | measured per OS | measured | 20 ms |
-| Bypass corpus (all blocked) | 41 | 60 | 80 | 100 |
+| Bypass corpus (all blocked) | 41 (148 once item 1.5 landed) | 60 | 80 | 100 |
 | Verifiers passing one suite | 2 (v1) | 2 (v1 vectors) | 2 (v2) | 3 (v2) |
 | Integrations tested against the real tool | 0 run live | 3 | 5 | 7 |
 | Clean-machine onboarding | untimed | under 60 min | under 30 min | under 15 min |

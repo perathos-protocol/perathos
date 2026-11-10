@@ -21,6 +21,13 @@ Honest limits:
   * Pattern matching is a seatbelt for accidents (the PocketOS-class "agent
     deletes prod and the backups" incident), not a sandbox against a
     deliberately hostile agent: a command can be obfuscated past any regex.
+  * Commands whose text does not say what will run (``$CMD -rf build``,
+    ``eval "$X"``, ``iex $x``, ``cmd /c %X%``, ``curl ... | sh``) are flagged
+    as "unresolvable" and need a precondition like a destructive command.
+    That covers the common forms on a shell command line only; a program
+    name assembled from pieces, an alias, indirection inside interpreter
+    code, a build-tool recipe and variables inside scripts or MCP arguments
+    are not caught (``KNOWN_OPEN`` in tests/test_guard_hardening.py).
   * The signing key lives on the same machine. The guard refuses agent
     commands that create preconditions or touch ``.perathos/keys``, but an
     agent with unrestricted shell access could still reach the key some
@@ -78,10 +85,17 @@ SHELL_RULES: tuple[Rule, ...] = (
        r"shutil\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(.*recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\(.*\*",
        "delete through an interpreter one-liner"),
     _r("git.destructive",
-       r"\bgit\s+(reset\s+--hard|clean\s+-\S*[fd]|checkout\s+(--\s|\.\s*$|\.\s)|restore\s+(--staged\s+)?(\.|--\s)|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
+       r"\bgit\s+(reset\s+--hard|clean\s+-\S*[fd]|checkout\s+(-f\b|--force\b|--\s|\.\s*$|\.\s)|restore\s+(--staged\s+)?(\.|--\s)|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
        "git command that discards work"),
     _r("git.force-push-main", r"\bgit\s+push\b.*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b|\bgit\s+push\s+--mirror\b",
        "force push to a main branch"),
+    _r("git.push-main-rewrite",
+       r"\bgit\s+push\b.*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)"
+       r"|\bgit\s+push\b.*(--delete\b|\s-d\b).*\b(main|master|prod|production)\b",
+       "forced overwrite or delete of a main branch on the remote"),
+    _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
+    _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
+    _r("fs.rsync-delete", r"\brsync\b.*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
     _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
     _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.\"`]+", "SQL TRUNCATE"),
     _r("sql.delete-all", r"\bdelete\s+from\s+[\w.\"`]+\s*(;|$|\"|')", "SQL DELETE without WHERE"),
@@ -94,17 +108,103 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("iac.pulumi-destroy", r"\bpulumi\s+destroy\b", "pulumi destroy"),
     _r("k8s.delete", r"\bkubectl\s+delete\s+(ns|namespace|pv|pvc|persistentvolume\w*|statefulset|deployment|all)\b",
        "kubectl delete of stateful resources"),
+    _r("k8s.helm-uninstall", r"\bhelm\s+(uninstall|delete)\b", "helm uninstall"),
     _r("cloud.aws-delete",
-       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-)",
+       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
        "AWS delete of storage or backups"),
-    _r("cloud.gcloud-delete", r"\bgcloud\s+.*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b|\bgcloud\s+storage\s+rm\b",
+    _r("cloud.gcloud-delete", r"\bgcloud\s+.*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b|\bgcloud\s+storage\s+rm\b|\bgcloud\s+projects\s+delete\b",
        "Google Cloud delete of storage or backups"),
-    _r("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb)\b.*\bdelete\b", "Azure delete of storage or backups"),
+    _r("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b.*\bdelete\b", "Azure delete of storage or backups"),
     _r("paas.railway", r"\brailway\s+(down|volume\s+delete|delete)\b", "Railway delete"),
     _r("paas.vercel", r"\bvercel\s+(remove|rm)\b", "Vercel remove"),
     _r("paas.fly", r"\bfly(ctl)?\s+(volumes?\s+(destroy|delete)|apps?\s+destroy|postgres\s+destroy)\b", "Fly destroy"),
     _r("paas.neon", r"\bneon(ctl)?\s+(branches?|projects?|databases?)\s+delete\b", "Neon delete"),
-    _r("docker.volume", r"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes)", "Docker volume delete"),
+    _r("docker.volume",
+       r"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes)|\bdocker([ -])compose\b.*\sdown\b.*\s(-v\b|--volumes\b)",
+       "Docker volume delete"),
+)
+
+# "Unresolvable" commands: the text does not say what will run, so no pattern
+# above can judge it. They are treated like a destructive command (denied
+# unless a precondition or approval covers them). Matched against the
+# structure view (see ``_structure_view``), not the quote-stripped text, so a
+# `|`, `;` or `$` inside an ordinary quoted argument does not count.
+_SH = r"(?:ba|z|da|k|a|fi)?sh"
+_INTERP = rf"(?:{_SH}|python[\d.]*|node|perl|ruby|php|pwsh|powershell|cmd)(?:\.exe)?"
+_VAR = r"(?:\$\{[^}\n]*\}|\$[a-z_]\w*(?!\w))"
+_WORD_END = r"(?:\s|$|[;&|)])"
+# `$HOME/bin/tool`, `$(npm bin)/eslint`: the directory is variable but the
+# program name is written out, so the other rules can still read it.
+_NOT_LITERAL_PATH = r"(?![/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))"
+# Where a command starts: line start, after a separator, inside `$(`, after a
+# shell keyword or `sh -c`; then any wrappers and `NAME=value` prefixes.
+_CP = (rf"(?:^|[;&|\n]|\$\(|\b(?:if|then|else|elif|do|while|until)\s|\b{_SH}\s+(?:-\w+\s+)*?-\w*c\s)\s*(?:!\s+)?"
+       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout\s+[\d.]+\w?)\s+)*(?:[a-z_]\w*=\S*\s+)*")
+# An interpreter reading its program from the pipe: `| sh`, `| bash -s -- -y`,
+# `| python -`, `| iex`. `| python -m json.tool` and `| node x.js` are not.
+_STDIN_SINK = (rf"(?<!\|)\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:(?:{_INTERP}|iex|invoke-expression)"
+               r"(?:\s+-s\b[^;&|\n]*|(?:\s+-(?!c\b|e\b|m\b|r\b|command\b|file\b)\S*)*)|(?:source|\.)\s+/dev/stdin)"
+               r"\s*(?:$|[;&|\n)])")
+_DL = (r"(?:curl|wget|aria2c|iwr|irm|invoke-webrequest|invoke-restmethod|start-bitstransfer|bitsadmin|certutil"
+       r"|downloadstring|downloadfile|downloaddata)")
+_PREFILTER_REMOTE = re.compile(rf"\b{_DL}\b", re.IGNORECASE)
+# The usual shell-setup idioms: `eval "$(ssh-agent -s)"`, `eval "$(pyenv init -)"`.
+_EVAL_OK = (r"\$\((?:ssh-agent(?:\s+-s)?|(?:\S*/)?brew\s+shellenv|(?:pyenv|rbenv|nodenv|direnv|starship|zoxide|fnm|mise|opam)"
+            r"\s+[\w .=-]*|minikube\s+(?:-p\s+\S+\s+)?docker-env|conda\s+shell\.\w+\s+hook|docker-machine\s+env[\w -]*)\)"
+            r"\s*(?:$|[;&|\n])")
+
+REMOTE_SCRIPT_RULES: tuple[Rule, ...] = (
+    _r("unresolvable.remote-script", rf"\b{_DL}\b[^;&\n]*{_STDIN_SINK}",
+       "download piped into an interpreter (the guard cannot see what it would run)"),
+    _r("unresolvable.remote-script",
+       rf"(?:\b(?:{_INTERP}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(\s*(?:sudo\s+)?{_DL}\b",
+       "download substituted into an interpreter (the guard cannot see what it would run)"),
+    _r("unresolvable.remote-script",
+       rf"\b(?:eval|iex|invoke-expression)\b[^;|\n]*\b{_DL}\b|\s(?:-\w*c|-e|-r|-command|/c)\s+\$\(\s*{_DL}\b"
+       rf"|{_CP}\$\(\s*{_DL}\b|\[scriptblock\]::create\([^\n]*\b{_DL}\b",
+       "download evaluated as a command (the guard cannot see what it would run)"),
+    _r("unresolvable.remote-script",
+       rf"\b{_DL}\b[^\n;&|]*?[/\s=]([\w-][\w.-]*)(?=[\s;&])[^\n;&|]*(?:&&|;|\n)(?:[\s\S]*?(?:&&|;|\n))??\s*"
+       rf"(?:sudo\s+)?(?:(?:{_INTERP}|source)\s+(?:-\S+\s+)*|&\s*)?(?:[\w.~/\\-]*[/\\])?\1{_WORD_END}",
+       "download saved and then run (the guard cannot see what it would run)"),
+)
+
+INDIRECT_RULES: tuple[Rule, ...] = (
+    _r("unresolvable.indirect", rf"{_CP}\$\((?![^()\n]*\)[/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))",
+       "command produced by a command substitution (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect", rf"{_CP}eval\s+(?!{_EVAL_OK})[^;&|\n]*\$",
+       "eval of a variable or substitution (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect",
+       rf"\b(?:{_INTERP}|psql|mysql|su|wsl)\s+(?:[^\s;&|]+\s+)*?(?:-\w*c|-e|-r|-command|--command|/c|/k)\s+"
+       r"(?:\$[\w{(]|[%!]\w+[%!])|\s-exec(?:dir)?\s+\$[\w{(]|\btrap\s+\$[\w{(]",
+       "command string held in a variable (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect",
+       rf"{_CP}(?:{_INTERP}|source|\.)\s+(?:-(?!c\b|e\b|r\b|command\b)\S+\s+)*{_VAR}{_WORD_END}",
+       "script whose path is held in a variable (the guard cannot read it)"),
+    _r("unresolvable.indirect", _STDIN_SINK,
+       "text piped into an interpreter (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect",
+       rf"\b{_SH}\b[^;&|\n]*<<<[^;&|\n]*\$|(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
+       "substitution fed to a shell as its script (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect",
+       r"(?<![>\d&])&\s*\$[\w{(]|\b(?:iex|invoke-expression)\s+(?:-command\s+)?[$(@]"
+       r"|\[scriptblock\]::create\([^)\n]*\$|\b(?:start-process|saps)\s+(?:-filepath\s+)?\$"
+       r"|\b(?:invoke-command|icm)\b[^;|\n]*-scriptblock\s+\$",
+       "PowerShell call of a variable or expression (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect", r"\b(?:powershell|pwsh)(?:\.exe)?\b[^;|&\n]*\s-(?:e|ec|en\w*)\s+[a-z0-9+/=]{8,}",
+       "PowerShell encoded command (the guard cannot tell what would run)"),
+    _r("unresolvable.indirect",
+       r"(?:^|[&|(\n])\s*@?(?:call\s+|start\s+(?:/\w+\s+)*)?[%!]\w+[%!](?:\s|$|[&|)])"
+       r"|\bdo\s+@?(?:call\s+)?%%?~?\w+%?(?:\s|$)",
+       "cmd variable in command position (the guard cannot tell what would run)"),
+)
+# `$CMD -rf build`: a variable where the program name should be. Skipped for
+# the PowerShell tool, where `$x = 1`-style statements start with a variable
+# and `$x args` does not run anything.
+POSIX_INDIRECT_RULES: tuple[Rule, ...] = (
+    _r("unresolvable.indirect",
+       rf"{_CP}{_VAR}{_NOT_LITERAL_PATH}(?!\+\+|--|[.\[:]|\s*[+\-*/]?=(?!=))",
+       "variable in command position (the guard cannot tell what would run)"),
 )
 
 # Self-authorization and self-disabling: the agent must not create its own
@@ -155,7 +255,71 @@ class Match:
     self_auth: bool = False
 
 
-def _first_match(text: str, *, include_self_auth: bool = True) -> Match | None:
+_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$|\))", re.S)
+_HEREDOC_TO_SHELL = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b[^|;&]*$", re.I)
+# Programs whose quoted argument is itself a shell command line.
+_SHELL_STRING_RUNNER = re.compile(
+    rf"(?:^|[\s(])(?:{_SH}|su|sudo|ssh|eval|iex|invoke-expression|pwsh|powershell|cmd|wsl|watch|xargs|env|exec"
+    r"|(?:docker|podman|kubectl)\s+exec)(?:\.exe)?(?:\s|$)", re.I)
+_QUOTED_SEPARATORS = str.maketrans(dict.fromkeys(";|&<>\r\n", " "))
+_BACKTICKS = re.compile(r"`([^`\n]*)`")
+
+
+def _drop_heredoc_body(m: re.Match) -> str:
+    line_start = m.string.rfind("\n", 0, m.start()) + 1
+    if _HEREDOC_TO_SHELL.search(m.string[line_start:m.start()]):
+        return m.group(0)  # `bash <<EOF`: the body is the script
+    return m.string[m.start():m.start(3)] + m.string[m.end(3):m.end()]
+
+
+def _structure_view(command: str) -> str:
+    """The text the "unresolvable" rules are matched against.
+
+    Like ``normalize_command`` it removes quote characters, but it keeps the
+    command's structure honest: separators inside an ordinary quoted argument
+    (``sed "s|$A|$B|"``, ``git commit -m "x; $Y"``) are blanked, ``$`` inside
+    single quotes is blanked, and heredoc bodies that are data are dropped.
+    A quoted argument of a program that runs it as a shell command line
+    (``bash -c "..."``, ``eval "..."``, ``ssh host "..."``) is kept as written.
+    """
+    command = re.sub(r"\\\r?\n", " ", command)
+    command = _HEREDOC.sub(_drop_heredoc_body, command)
+    out: list[str] = []
+    segment: list[str] = []  # the simple command being read, to spot a runner
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch in "'\"":
+            j = i + 1
+            while j < n and command[j] != ch:
+                if ch == '"' and command[j] == "\\" and j + 1 < n:
+                    j += 1
+                j += 1
+            if j < n:
+                body = command[i + 1:j]
+                if not _SHELL_STRING_RUNNER.search("".join(segment)):
+                    body = body.translate(_QUOTED_SEPARATORS)
+                    if ch == "'":
+                        body = body.replace("$", " ").replace("`", " ")
+                out.append(body)
+                segment.append(body)
+                i = j + 1
+                continue
+            i += 1  # unbalanced quote: drop the character
+            continue
+        if ch in ";|&\n(":
+            segment.clear()
+        else:
+            segment.append(ch)
+        out.append(ch)
+        i += 1
+    view = _BACKTICKS.sub(r"$(\1)", "".join(out))
+    return re.sub(r"[ \t]+", " ", re.sub(r"['\"]", "", view))
+
+
+def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None) -> Match | None:
+    """``shell`` is the shell tool's name when ``text`` is a command line typed
+    into a shell; only then are the variable-indirection rules applied."""
     norm = normalize_command(text)
     if include_self_auth:
         for rule in SELF_AUTH_RULES:
@@ -165,6 +329,15 @@ def _first_match(text: str, *, include_self_auth: bool = True) -> Match | None:
                 return Match(rule.rule_id, rule.description, text, self_auth=True)
     for rule in SHELL_RULES:
         if rule.pattern.search(norm):
+            return Match(rule.rule_id, rule.description, text)
+    if shell is None and not _PREFILTER_REMOTE.search(text):
+        return None
+    view = _structure_view(text)
+    rules = REMOTE_SCRIPT_RULES
+    if shell is not None:
+        rules += INDIRECT_RULES + (() if shell == "PowerShell" else POSIX_INDIRECT_RULES)
+    for rule in rules:
+        if rule.pattern.search(view):
             return Match(rule.rule_id, rule.description, text)
     return None
 
@@ -198,7 +371,7 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name in _SHELL_TOOLS:
         command = str(tool_input.get("command") or "")
-        return _first_match(command) or _scan_script_files(command, cwd)
+        return _first_match(command, shell=tool_name) or _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         norm_target = normalize_command(target)
@@ -411,6 +584,9 @@ def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_k
             '  perathos precondition add --scope "<target name in the command>" --check "<command that '
             'proves a restorable backup exists>"\n'
             'then retry. The check must exit 0.')
+    if "unresolvable." in m.rule_id:
+        hint = ("If you know what this runs, write the command out literally and retry; the guard can then "
+                "judge it.\nOtherwise: " + hint)
     if not _key_set(trusted_key):
         return Decision("deny", m.rule_id, None,
                         f"perathos guard: blocked {m.description}. No approver key exists, so no safety "
