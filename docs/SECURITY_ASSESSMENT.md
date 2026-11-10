@@ -101,8 +101,8 @@ network call in `perathos/` is `anchor.request_timestamp`.
 
 | Question | Answer |
 |---|---|
-| How are vulnerabilities reported? | Email hello@perathos.com with a subject starting `SECURITY:`; see [SECURITY.md](../SECURITY.md). |
-| Response targets | Acknowledge within 3 business days; initial assessment within 10 business days. These are targets of a single-maintainer project, not a contractual SLA. |
+| How are vulnerabilities reported? | Email hello@perathos.com with a subject starting `SECURITY:`, or use GitHub private vulnerability reporting on the repository; see [SECURITY.md](../SECURITY.md), which also covers scope and safe harbour. There are no bug bounty payments. |
+| Response targets | Acknowledge within 5 working days; initial assessment within 10 working days of the acknowledgement. These are targets of a single-maintainer project, not a contractual SLA. |
 | Disclosure policy | Coordinated disclosure; by default 90 days after the report or when a fix is released, whichever is first. Reporters are credited unless they ask not to be. |
 | Supported versions | The latest 1.x release. Fixes ship as new 1.x versions; older minors are not patched. |
 | How are customers notified? | Through the CHANGELOG, GitHub Releases and PyPI. There is no customer list or mailing list. |
@@ -133,7 +133,7 @@ network call in `perathos/` is `anchor.request_timestamp`.
 
 ## K. Threat model summary and honest limits
 
-Full model: [THREAT_MODEL.md](THREAT_MODEL.md), [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md) ("What a valid log proves, and what it does not") and [FOR_AUDITORS.md](FOR_AUDITORS.md).
+Full model: [THREAT_MODEL.md](THREAT_MODEL.md) (rewritten 2026-11-10 to cover the recorder, guard, hooks, signers, evidence packs and the Gate; where it differs from this document it is the more recent and more detailed statement), [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md) ("What a valid log proves, and what it does not") and [FOR_AUDITORS.md](FOR_AUDITORS.md).
 
 | Question | Answer |
 |---|---|

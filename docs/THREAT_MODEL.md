@@ -1,106 +1,474 @@
 # Perathos Threat Model
 
-_Last updated: 2026-06-16 (covers the proof layer at this commit)._
+_Last updated: 2026-11-10. Covers `perathos` on `main` after 1.3.1 and the
+Perathos Gate server (`perathos-protocol/perathos-gate`) as read on that date._
 
-This document states precisely what Perathos protects, what it does **not**,
-and the assumptions a deployment must satisfy. It is written so a security
-reviewer can decide what to trust without reading the source.
+This document says what Perathos protects, what it does not, and what a
+deployment must do to get the stronger properties. It is written so that a
+security reviewer can decide what to trust without reading the source. Every
+"Yes" below was checked against the code or a specification in this
+repository. Where something was not checked, it says so.
 
-## 1. What Perathos is (and is not)
+The short version: Perathos produces **evidence, not guarantees**. A valid
+record shows that a key holder sealed a particular sequence of events and that
+nobody changed it afterwards. It does not show that the record is complete,
+that the agent was well behaved, or that an approver understood what they
+approved.
 
-Perathos is a **cryptographic attestation layer**. It binds an AI output to:
-its digest, the verifier verdicts about it, a deterministic model identifier,
-and a signature — into a tamper-evident **proof bundle** that anyone can verify
-offline.
+Contents:
 
-Perathos is **not** a hallucination detector, a guarantee of truth, or an
-oracle. It makes verifier findings **verifiable, reproducible, and bound to the
-output**. The findings themselves are *evidence*, produced by the verifier
-modules (which are pluggable), and carry calibrated — not absolute — confidence.
+1. [Scope and non-goals](#1-scope-and-non-goals)
+2. [Assets](#2-assets)
+3. [Trust boundaries](#3-trust-boundaries)
+4. [Adversaries](#4-adversaries)
+5. [Threats by component](#5-threats-by-component)
+6. [What each adversary can still do](#6-what-each-adversary-can-still-do)
+7. [Residual risks and roadmap](#7-residual-risks-and-roadmap)
+8. [Deployment requirements for the stronger properties](#8-deployment-requirements-for-the-stronger-properties)
+9. [Cryptographic choices](#9-cryptographic-choices)
 
-> Two independent properties, never to be conflated:
-> - **Attestation integrity** (this document's subject): the bundle cannot be
->   altered undetected. Cryptographic.
-> - **Detection quality**: how good the verifiers are at catching bad outputs.
->   Statistical, model-dependent, and explicitly *not* a guarantee.
+## 1. Scope and non-goals
+
+In scope:
+
+| Component | Code | Specification |
+|---|---|---|
+| Flight recorder: hash-chained receipts, signed checkpoints | `perathos/recorder.py` | [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md) |
+| RFC 3161 anchors | `perathos/anchor.py` | [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md), "Anchors" |
+| Destructive-command guard and signed preconditions | `perathos/guard.py` | [specs/PRECONDITION_V1.md](specs/PRECONDITION_V1.md) |
+| Hooks for Claude Code and Cursor, and the MCP proxy | `perathos/hook.py`, `perathos/hooks.py`, `perathos/integrations/cursor.py`, `perathos/mcp_proxy.py` | |
+| Remote signers and approver keys | `perathos/signers.py`, `perathos/approvers.py` | |
+| Evidence packs | `perathos/evidence.py` | [FOR_AUDITORS.md](FOR_AUDITORS.md) |
+| Perathos Gate client and receipt verifier | `perathos/gate.py` | [specs/GATE_V1.md](specs/GATE_V1.md) |
+| Perathos Gate server (separate repository, AGPL-3.0) and the hosted instance at `gate.perathos.com` | `perathos-protocol/perathos-gate` | [specs/GATE_V1.md](specs/GATE_V1.md) |
+| Proof bundles (the original layer) | `perathos/bundle.py`, `perathos/signing.py`, `perathos/keytrust.py` | [specs/BUNDLE_V2.md](specs/BUNDLE_V2.md) |
+
+Non-goals. Perathos does not try to do any of these, and nothing in it should
+be read as doing them:
+
+- **It is not a sandbox.** The guard matches patterns in commands. It does not
+  confine a process, and it cannot stop a command it does not recognise.
+- **It does not prove completeness.** It records the tool calls its hooks see.
+  It cannot show that the hooks were on for the whole of the work.
+- **It does not prove which model ran.** The `model` field is self-reported.
+- **It does not provide confidentiality.** Logs, preconditions, bundles and
+  packs are tamper-evident, not encrypted.
+- **It does not judge the agent's intent or the truth of its output.**
+  Verifier verdicts in proof bundles are evidence with false negatives.
+- **It does not replace least privilege.** Run agents with the narrowest
+  credentials and file access you can, whatever Perathos is doing.
 
 ## 2. Assets
 
 | Asset | Why it matters |
 |---|---|
-| Proof bundle integrity | A consumer's decision rests on the bound verdicts/digests |
-| Signer private key (`signing.key`) | Whoever holds it can issue authentic-looking bundles |
-| The mapping `verify_key → real-world signer` | Provenance: "who attested this" |
-| Audit/verdict records | The evidence trail a consumer audits |
+| Session logs (`<project>/.perathos/sessions/*.jsonl`) and head witness files | The record of what the agent did |
+| Recorder signing key (default `~/.perathos/keys/signing.key`, or a remote signer) | Whoever can use it can seal a log that verifies as the operator's |
+| Approver keys, and the list of trusted ones (`~/.perathos/approvers.json`) | Whoever can sign as an approver, or edit the list, can authorise destructive commands |
+| Anchors (`~/.perathos/anchors/*.jsonl`) and any off-machine copy | Independent time, and the means to detect a cut-off log |
+| Hook configuration (`.claude/settings.json`, `.cursor/hooks.json`, the managed settings file, MCP client configuration) | If hooks are removed, nothing is recorded or blocked |
+| Perathos configuration (`~/.perathos/config.json`) | Names the signer, the anchor mirror, the Gate URL, the Gate API key and the pinned Gate key |
+| Gate server signing key | Whoever holds it can issue receipts that verify against the pinned Gate key |
+| Approvers' passkeys | Whoever can use one can approve through the Gate |
+| Gate organisation API key | Lets the holder create approval requests and read their status |
+| The mapping from a public key to a real person or organisation | Provenance. It exists only outside Perathos |
 
-## 3. Adversary capabilities considered
+## 3. Trust boundaries
 
-We assume an adversary who can **read and modify bundles in transit or at rest**,
-craft arbitrary bundles, and submit hostile/malformed bundles to a verifier. We
-consider whether they can: forge a valid bundle, silently alter a verdict, strip
-or swap a signature, impersonate a signer, or crash a verifier (DoS).
+**The agent process.** Not trusted. It may be careless or hostile. Perathos
+sees its tool calls only through hooks that the agent tool (Claude Code,
+Cursor, an MCP client) chooses to run.
 
-## 4. What is protected (and how)
+**The machine.** By default the hooks, the logs, the signing key, the approver
+list, the configuration and the agent all sit under one operating-system user.
+There is no boundary between them except what the guard's patterns deny. An
+agent with unrestricted shell access as that user is inside the boundary.
 
-| Threat | Protected? | Mechanism |
+**The signing key location.** With the default `local` signer the key is a
+cleartext hex file under `~/.perathos/keys/`, with owner-only permissions
+(POSIX `0o600`; on Windows an owner-only ACL via `icacls`, best effort with a
+warning on failure). With a remote signer (`vault:`, `gcpkms:`, `command:`)
+the private key stays in the remote service. The hook still has to be able to
+ask for a signature without a person present, so the credential that
+authorises signing is usually reachable from the same user account. See
+section 5.5.
+
+**The Gate server.** A separate service. It stores requests, shows them to
+approvers, checks passkey assertions and signs receipts with its own Ed25519
+key. The client trusts it for exactly one thing: receipts signed by the pinned
+Gate key. That is a large trust, set out in section 5.7.
+
+**The approver's device.** Holds the passkey. Perathos trusts the device's
+browser and authenticator to show the right origin and to require user
+verification. It learns nothing about the device itself: the server asks for
+no attestation.
+
+**The Time Stamping Authority (TSA).** Trusted for time only. A token is
+accepted only if it chains to a root pinned in the package (default: the
+freetsa.org root) or supplied by the verifier. The TSA sees a hash, a nonce
+and the caller's IP address.
+
+**The verifier.** Whoever checks a log, pack or receipt. They must obtain the
+signer's public key, and the Gate key, through a channel other than the thing
+being verified. Without that, verification shows internal consistency only.
+
+## 4. Adversaries
+
+| # | Adversary | Capability assumed |
 |---|---|---|
-| Editing output digest, verdicts, AI-ID, timestamps | ✅ | All fields are folded into `integrity_hash`; `bundle_id` is `uuid5(integrity_hash)`; verify recomputes |
-| Editing/adding/removing the verification block | ✅ | `verification_hash` is in the integrity payload **iff** verification is present; any change flips recomputation → `ERR_INTEGRITY_HASH_MISMATCH` |
-| Forging a signature on an intact chain | ✅ | `verify()` validates the Ed25519 signature when present → `ERR_BAD_SIGNATURE` |
-| Algorithm-confusion (claiming non-Ed25519) | ✅ | Signature with `algorithm != "ed25519"` is rejected → `ERR_UNSUPPORTED_ALGORITHM` |
-| Signature/serialization malleability | ✅ | Strict lowercase-hex; deterministic JCS-style canonical serialization (sorted keys, no whitespace, `allow_nan=False`, string keys only) |
-| Hostile/malformed bundle crashing the verifier | ✅ | `verify_bundle` returns `ERR_MALFORMED_BUNDLE`; `inspect` is fully type-guarded; verifiers degrade to `INCONCLUSIVE` |
-| Torn/empty bundle file on crash or concurrent write | ✅ | Atomic writes (tempfile + fsync + `os.replace`) |
+| A1 | A careless agent | Runs a destructive command by mistake, in the plain form a person would type. Does not try to evade anything. |
+| A2 | A hostile agent with shell access on the same machine | Runs arbitrary commands as the operator's user. Will obfuscate commands, read files, edit configuration and call network services. |
+| A3 | A tamperer with the log after the fact | Has write access to the log files later (the operator, a colleague, an intruder). May or may not have the signing key. |
+| A4 | A network attacker | Can read, block or alter traffic between the machine and the TSA, the Gate, or a remote signer. Cannot break TLS without a mis-issued certificate. |
+| A5 | A malicious or compromised Gate server | Controls the Gate's code, database and signing key. |
+| A6 | A phished or pressured approver | An honest approver who is deceived, hurried or tired, or whose passkey account or unlocked device is taken over. |
 
-## 5. What is NOT protected — explicit assumptions
+## 5. Threats by component
 
-1. **Signer identity must be pinned/anchored out of band.** A bare signature
-   only proves *some* key signed the hash. An attacker can strip a signature and
-   re-sign the same hash with **their own** key; `verify()` will report it valid
-   **under the attacker's key** unless the consumer establishes trust. Two
-   supported ways: pin a single key (`verify_bundle(..., expected_verify_key=...)`
-   / `verify --verify-key`), or anchor against a trusted key set
-   (`verify_bundle(..., trust_store=...)` / `verify --trust-jwks`, with the
-   issuer publishing its keys as JWKS). Without one of these, provenance is not
-   established.
-2. **Private key custody is the deployer's responsibility.** Perathos stores a
-   local `signing.key` with owner-only permissions (POSIX `0o600`; Windows ACL
-   via icacls, best-effort with a warning on failure). For production, use
-   `KmsSigner` so the private key never leaves a KMS/HSM (the cloud signing call
-   is injected), and distribute trust via JWKS.
-3. **Verifier verdicts are evidence, not truth.** A `PASS` means the configured
-   verifiers did not find a problem with the available evidence — not that the
-   output is correct. Detection has false negatives; confidence is calibrated,
-   not certain. `INCONCLUSIVE` ("not enough evidence") is a first-class outcome
-   and must not be read as PASS.
-4. **Evidence quality bounds verifier quality.** The Claim-Entailment verifier
-   is only as good as the retrieved evidence and the NLI model; the
-   Cross-Examiner only as good as the resamples provided.
-5. **The model identifier (AI-ID) is as trustworthy as its inputs.** It binds an
-   output to a *claimed* model descriptor; it does not by itself prove which
-   weights ran (that needs TEE attestation, out of scope here).
-6. **No confidentiality.** Bundles are tamper-evident, not encrypted. Do not put
-   secrets in an output you expect to remain private; store sensitive inputs
-   separately.
-7. **No revocation/timestamping authority.** There is no built-in key-revocation
-   or trusted-time service; `issued_at` is self-asserted.
+"Protected?" is **Yes**, **Partly** or **No**. "Partly" always says what the
+part is.
 
-## 6. Cryptographic choices
+### 5.1 Flight recorder
 
-- **Hash:** SHA-256 (collision-resistant; the binding primitive).
-- **Signature:** Ed25519 (the `cryptography` library / pyca; constant-time).
-- **Serialization:** deterministic canonical JSON (sorted keys, compact
-  separators, UTF-8, `allow_nan=False`, string keys only) so identical logical
-  data produces identical bytes across languages/platforms — the basis for
-  reproducible signatures and offline verification.
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| Editing, deleting, inserting or reordering a receipt before the last signed checkpoint (A3 without the key) | Yes | Each receipt carries the previous receipt's hash and its own hash over every field. `seq` must run 1, 2, 3. A signed checkpoint commits to everything before it. `session verify` reports the break. |
+| Stripping or forging a checkpoint signature | Yes | Unsigned checkpoints fail verification by default (`ERR_UNSIGNED`). The signature is Ed25519 over the receipt hash, and the signer's key is bound into the hashed body. |
+| Re-signing a rewritten log with a different key | Partly | Detected only when the verifier pins the expected key (`--verify-key`) or a trust set (`--trust-jwks`). Without a pin the result is `VALID_UNCONFIRMED_SIGNER`, not `VALID`. |
+| Rewriting a log and sealing it with the real key (A2 or A3 with the key) | No | Anyone who can use the signing key can produce a different, fully valid log. With the default local key, an agent that can read the key file can do this. Off-machine anchor copies limit it: a rewritten checkpoint no longer matches the anchor already held elsewhere. |
+| Changing receipts after the last checkpoint (the unsealed tail) | No | Tail receipts are chained but not yet signed. They can be rewritten consistently or removed. The verifier reports the tail as unsealed, as a warning. |
+| Cutting off the end of a log, back to an earlier checkpoint | Partly | Detected if the head witness file survives, or if an anchor for a later checkpoint is presented. The head witness sits beside the log and can be deleted with it. Reliable detection needs an anchor copy the attacker cannot reach. |
+| Deleting a whole session log | No | Nothing in Perathos lists the sessions that should exist. An off-machine anchor copy shows that a session with that id once had checkpoints. |
+| A period with hooks switched off | No | A session with no hooks produces no receipts. Hooks removed between sessions leave no trace in any log. See 5.4. |
+| A hook that fails while recording | No | Recording errors are printed to stderr and the tool call proceeds, so that the recorder never breaks a session. The receipt is simply missing. |
+| Backdated or wrong event times | Partly | `ts` is the local clock. The verifier rejects timestamps that go backwards and nothing else. An anchored checkpoint has an independent upper bound on its time (5.2). |
+| Learning tool arguments or output from the log | Partly | Only SHA-256 hashes are stored. A short or guessable value can be confirmed by hashing guesses. |
+| Proving which model produced the calls | No | `model` is read from the agent tool's transcript (Claude Code) or hook payload (Cursor). It is self-reported and the MCP proxy records none. |
+| Malformed or hostile log crashing the verifier | Yes | `verify_session` returns an error report for unreadable, malformed or non-object lines. Not fuzzed beyond the test suite. |
 
-## 7. Residual risks / roadmap
+If the configured signer is unavailable when a checkpoint is due, the hook
+writes the checkpoint **unsigned** and reports the error on stderr. A default
+verification then fails with `ERR_UNSIGNED`. The gap is visible, but the turn
+is not sealed.
 
-- Trust anchoring (key pinning or a JWKS TrustStore) is opt-in by the consumer;
-  a future bundle version may also bind `kid`/expiry into the signed payload for
-  rotation semantics carried inside the proof itself.
-- No TEE/remote-attestation binding of the execution environment yet.
-- No transparency log (e.g. Merkle inclusion proofs) for issued bundles yet.
+### 5.2 Anchors (RFC 3161 timestamps)
 
-See [SECURITY.md](../SECURITY.md) for reporting and [ENTERPRISE_FAQ.md](ENTERPRISE_FAQ.md)
-for procurement-level Q&A.
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| A forged timestamp token | Yes | A token is accepted only if it verifies over the checkpoint hash and chains to a pinned root. Certificates carried inside the token are never used as trust anchors. |
+| A token for a different checkpoint | Yes | The message imprint is SHA-256 over the raw checkpoint hash. A mismatch is `ERR_ANCHOR_MISMATCH`. |
+| Claiming a checkpoint existed earlier than it did | Yes, to the TSA's honesty | The TSA asserts "this hash existed at time T". The verifier also warns when a checkpoint's local time is more than five minutes after its TSA time. |
+| Claiming events happened later than they did | No | An anchor is an upper bound. It does not show when the events before the checkpoint took place, only that they were sealed by time T. |
+| Truncation after an anchored checkpoint | Partly | An anchor for a checkpoint missing from the log yields `ERR_TRUNCATED`. This works only if the verifier is given an anchors file the attacker could not edit. The default file is on the same machine, under `~/.perathos/anchors/`. |
+| A network attacker blocking the TSA (A4) | No | Anchoring fails quietly: the checkpoint stays signed but unanchored, and the hook reports the error on stderr. `session verify --require-anchor` makes the gap a failure. |
+| A dishonest or compromised TSA | No | The TSA is trusted for time. Whoever holds its key can assert any time. The default TSA is a third party this project does not control. |
+
+The browser verifier checks that each anchor matches its checkpoint. It does
+not check TSA token signatures; the CLI does.
+
+### 5.3 Guard and signed preconditions
+
+The guard is a **pattern matcher**. It compares the command text, some script
+files the command runs, and MCP tool names and arguments against a list of
+regular expressions. The list changes between releases and is not described
+here; see the [README](../README.md#destructive-command-guard) and
+`perathos/guard.py`.
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| A destructive command typed in a plain, recognisable form (A1) | Partly | Denied if it matches a rule and no valid precondition or Gate approval covers it. A destructive command that no rule describes is not seen. Coverage is tested against a corpus (`tests/test_guard_hardening.py`), not proven. |
+| A deliberately disguised command (A2) | No | Environment-variable indirection, downloaded scripts, encodings, a compiled helper, or a tool the guard does not inspect all get past a pattern. This is inherent. |
+| The agent creating its own precondition or new key through the CLI | Partly | Commands that match `perathos precondition` or `perathos keygen` are denied. The denial is a pattern, with the limits above. The real control is that the agent cannot use an approver key. |
+| The agent reading the signing key, or changing hook files or `.perathos/` | Partly | Commands and file-tool calls that name those paths are denied (read-only commands on the hook files are allowed). An agent with shell access can reach a file by a route the patterns do not name. Operating-system permissions are the real control. |
+| A forged or altered precondition | Yes | The precondition hash covers every field. The signature must verify under a key in the trusted set, and the key must equal `signer`. |
+| A precondition signed by an untrusted key | Yes | Once any approver is listed, only listed keys are trusted. With none listed, the local recorder key is the only trusted key. With no key at all, every matched call is denied. |
+| An agent that can use a trusted key | No | With the default local key the recorder key is also the approver key. An agent that reads it can sign its own precondition without the CLI. |
+| An agent that edits the approver list | No | `~/.perathos/approvers.json` is a local, unsigned file. An agent that can write it can add its own key. Guard patterns deny the obvious routes only. |
+| An expired precondition | Yes | Rejected at or after `expires`, judged by the local clock. |
+| Reuse of a precondition | No | A v1 precondition is not consumed. It covers any number of matching commands until it expires, in any session or project that holds the file. |
+| A precondition that covers more than intended | Partly | Scope must appear in the command as a whole token. Scope `*` covers everything. A scope that names a common word covers every command containing it. |
+| A check that proves little | No | A precondition shows that a named command ran and exited 0. Whether that command tests the safeguard is the signer's judgement. A `manual_reason` precondition shows only the signer's word. |
+| A check influenced by the agent | No | The check runs in the project directory. If the agent could alter the files or tools the check uses, the result can be arranged. Not addressed by Perathos. |
+| The decision being altered after the fact | Yes | The `guard` field (decision, rule, precondition hash, Gate approval hash) is inside the `pre` receipt's hash, written before the call runs. Subject to 5.1. |
+| The guard crashing | Partly | In the Claude Code and Cursor hooks, an exception in the guard denies the call (`guard.error`). In the MCP proxy an exception is logged and the call is **forwarded**. |
+
+### 5.4 Hooks and the MCP proxy
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| The guard hook process missing or crashing | Partly | The installer sets `onFailure: "block"` on the Claude Code guard hook and `failClosed: true` on Cursor's guarded hooks. Enforcement is by the agent tool. The code notes that Claude Code versions before 2.1.295 ignore the setting. |
+| The agent removing or editing project or user hooks (A2) | Partly | The guard denies commands and file writes that name the hook files. A pattern, as above. |
+| The agent removing managed hooks | Yes, to the agent tool's enforcement | `perathos hooks install --scope managed` writes Claude Code's managed policy file and sets `allowManagedHooksOnly`. The file needs administrator rights to change. Perathos relies on Claude Code honouring the setting and on the agent not having administrator rights. There is no equivalent for Cursor in this repository. |
+| Work done outside the hooked tool | No | Another terminal, another agent, a different MCP client, or a tool the integration does not hook is not recorded. |
+| Cursor tools other than shell, MCP and file edits | No | Cursor's other built-in tools are not recorded. File edits are reported after they happen, so the guard cannot stop one. |
+| MCP calls that do not go through the proxy | No | The proxy sees only the traffic of the server it wraps, and only if the client is configured to start it. |
+| MCP messages the proxy cannot parse | No | They are relayed untouched and not recorded. Only `tools/call` requests and their responses become receipts. |
+| The Stop-hook summary check being read as a lie detector | No | `hooks stop-check` flags a specific claim with no support in the session's tool output. It does not catch a grounded but misleading summary, it never blocks, and its receipt is unsigned if no local key exists. |
+
+### 5.5 Remote signers and approver keys
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| Copying the recorder key off the machine | Yes, with a remote signer | With `vault:`, `gcpkms:` or a suitable `command:` signer the private key is not on the machine. With `local` it is a readable file. |
+| A hostile agent asking the remote signer to sign | No | The hook must sign without a person present, so its credential (for example `VAULT_TOKEN`, or application default credentials) is normally available to the same user as the agent. An agent that can use that credential can have a forged checkpoint signed. What a remote signer adds is that the key cannot be copied, and that use can be logged, limited and revoked on the signer's side. Perathos does not verify how the credential is protected. |
+| A remote signer returning a bad signature | Yes | Every remote signature is verified against the signer's public key before it is used. |
+| A network attacker substituting the remote signer's key (A4) | Partly | The public key and the signatures come over the same channel, so the self-check does not catch a consistent substitution. A verifier that pins the expected key does. |
+| The recorder key approving destructive actions | Yes, once approvers are listed | With at least one listed approver the recorder key is no longer trusted for preconditions unless it is listed too. |
+| An approver key held away from the agent | Yes, if it is | `perathos precondition add --signer ...` lets an approver sign with a key the agent's user cannot use. Perathos cannot check where an approver keeps their key. |
+| Key rotation and revocation | Partly | A new key is a new pin. Removing an approver invalidates their preconditions at once. There is no revocation service, and old logs stay valid under the old key. |
+
+### 5.6 Evidence packs
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| A file in the pack changed, added or removed after export | Yes | `MANIFEST.json` lists the SHA-256 of every file and is signed. Unlisted, missing and modified files are errors. An unsigned manifest is an error. |
+| A pack rebuilt and signed by someone else | Partly | Detected only when the verifier pins the signer (`--verify-key`). Otherwise the result is `VALID_UNCONFIRMED_SIGNER`. |
+| Trusting the exporter's own report | Yes | `evidence verify` re-runs session verification from the pack's copies. `REPORT.html` and `verification.json` are the exporter's statements and should be read as such. |
+| A hostile zip | Partly | Paths that escape the extraction directory are rejected. No limit on decompressed size was found in the code. |
+| An altered precondition in the pack | Yes | Each precondition's hash and signature are re-checked. |
+| A precondition signed by someone who was not an approver | No | `evidence verify` checks that each precondition is signed by its own stated `signer`. It does not compare that signer with `approvers.json` or any pin. The reviewer must. `approvers.json` in the pack is the exporter's list, covered only by the manifest signature. |
+| A forged Gate approval in the pack | Partly | Each receipt in `approvals/` is verified for internal consistency, **without a pinned Gate key**. Run `perathos gate verify <receipt> --gate-key <hex>` with a key obtained separately. `evidence verify` does not check that an approval hash named in a receipt has a matching file in the pack, nor that its `args_hash` equals the call's. The exporter's report lists `receipt_in_pack`; the comparison is manual. |
+| A pack built from an incomplete or rewritten log | No | A pack is as complete and as honest as the log it was built from. See 5.1. |
+
+The browser verifier does not check Gate receipts.
+
+### 5.7 Perathos Gate
+
+How it works, in one paragraph. The guard (or any program with the
+organisation API key) posts a request holding the action text and `args_hash`.
+The server shows it to an approver, who approves or denies with a passkey. The
+WebAuthn challenge is a hash of the request and the decision. The server
+checks the assertion against the enrolled credential, builds a receipt
+containing the assertion and the approver's public key, and signs it. The
+client verifies the receipt offline and allows the call only if the decision
+is approve, the receipt is unexpired, and `args_hash` equals the hash of the
+arguments about to run.
+
+What the offline verifier checks (`perathos/gate.py`, `verify_receipt`): the
+receipt hash; the server signature, and that its key equals the pinned Gate
+key when one is given; the request hash; that the passkey's client data has
+type `webauthn.get`, the expected challenge, and an origin equal to the
+receipt's own `rp.origin`; that the authenticator data starts with the hash of
+the receipt's own `rp.id` and has the user-present and user-verified flags;
+and that the public key **named in the receipt** verifies the passkey
+signature.
+
+What it does not check: that the approver's public key belongs to anyone in
+particular. The verifier has no independent list of approvers. The only thing
+tying a public key to a name is the Gate server's signature.
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| An approval replayed for different arguments | Yes | The guard compares the receipt's `args_hash` with the hash of the arguments about to run. |
+| An approval replayed as a denial, or for another request | Yes | The challenge binds the decision and the request hash. |
+| A receipt altered after signing | Yes | The receipt hash covers every field and is signed by the server. |
+| A receipt signed by a different Gate | Yes, when the key is pinned | The guard refuses to use the Gate at all without a pinned key. `gate verify` and `evidence verify` accept an unpinned receipt as internally consistent (`VALID_UNCONFIRMED_GATE` in `gate verify`). |
+| An expired approval | Yes | Rejected at or after `valid_until` (default 10 minutes after the decision), judged by the local clock against a time set by the server. |
+| An approval used twice | Partly | The guard marks a used receipt with a local `.used` file in `<project>/.perathos/approvals/`. Anyone who can delete that file can reuse the receipt for the same arguments until it expires. |
+| A click without the approver's authenticator | Yes | The server requires a passkey assertion with user verification from a credential enrolled for that organisation, and the verifier re-checks the flags and the signature. |
+| A look-alike approval site collecting an approval | Yes, to WebAuthn's origin binding | A passkey is scoped to its relying-party id by the browser and authenticator. The server checks origin and RP id, and the verifier checks them against the receipt. Perathos relies on the browser here. |
+| The Gate unreachable, or traffic blocked (A4) | Yes (fails closed) | Any Gate error leaves the guard's denial in place. The cost is availability: the action stays blocked. |
+| A network attacker forging an approval (A4) | Yes, after the key is pinned | Receipts are verified against the pinned key, not the connection. `perathos gate login` takes the key from the server over HTTPS on first use; an attacker able to intercept that one connection could have a wrong key pinned. Compare it with a key published or sent separately. |
+| The action text not matching what will run | Partly | In the guard path the text is taken from the real arguments, and `args_hash` is checked before running. The server cannot check that the text matches `args_hash`. Anyone holding the organisation API key can post a request with any text and any `args_hash`. That key is stored in `~/.perathos/config.json` on the agent's machine. |
+| An agent redirecting the client to its own Gate (A2) | No | The Gate URL and the pinned key are in a local, unsigned configuration file. An agent that can write it can pin a key it controls. Guard patterns deny the obvious routes only. |
+| Proving a specific hardware device approved | No | The server requests no attestation. Passkeys may be synced between a person's devices by their passkey provider. The Gate does not claim device binding. |
+| Proving which person approved | Partly | A receipt shows that a credential enrolled under a name produced a user-verified assertion. The link from that credential to a person was made at enrolment, by whoever opened the single-use enrolment link. Anyone with control of the approver's passkey account or unlocked device can approve. |
+| Requiring a particular approver, or two approvers | No | Any active approver of the organisation can decide any request. |
+| An approver deceived into approving (A6) | No | See section 6. |
+
+**A malicious or compromised Gate server (A5).** Checked against
+`perathos/gate.py` and the server source.
+
+It can:
+
+- Refuse or delay decisions. The guard then keeps the action blocked.
+- Read everything sent to it: the command text (up to 2,000 characters in the
+  guard path), the rule id, the host name and the session id. It also holds
+  approver names and the organisation's notification webhook URL. The client
+  has no option to withhold the command text.
+- **Forge an approval that passes verification.** It holds the server signing
+  key, and the verifier takes the approver's public key from the receipt. A
+  server can generate a key pair, write a receipt naming any approver, sign the
+  WebAuthn part with its own key and sign the receipt. Nothing in `perathos`
+  detects this. The forged receipt carries a public key and credential id that
+  differ from the real approver's, so an organisation that keeps its own record
+  of its approvers' credential ids and public keys can spot it by comparison.
+  That comparison is manual.
+- Enrol a new passkey under any name, with the same effect.
+- Show an approver one action while asking their passkey to sign the challenge
+  for another. The approver's device signs a hash; the person sees whatever
+  page the server sends.
+
+It cannot:
+
+- Produce a signature under a passkey that a real approver already enrolled.
+- Cause a command to run on its own. It only answers requests the agent side
+  makes. A forged approval matters only for a command the agent has already
+  tried and the guard has blocked.
+- Get a different command run under an approval. The guard checks `args_hash`
+  against the real arguments locally.
+- Alter flight-recorder logs, sign checkpoints, or sign preconditions. It holds
+  none of those keys.
+
+Running your own Gate changes who holds the server key. It does not change
+the structure: whoever controls the server key can forge approvals for the
+clients that pin it.
+
+**The hosted Gate** at `gate.perathos.com` is a single small deployment run by
+the maintainer. It has no availability commitment, and there is no third-party
+audit of it to point to. It stores the action text of every request sent to it. Treat it as
+suitable for trials, and treat an outage as "guard-blocked actions stay
+blocked until a person signs a precondition".
+
+### 5.8 Proof bundles (the original layer)
+
+A proof bundle binds one AI output to its digest, verifier verdicts, a model
+identifier and an optional signature. Two properties must not be conflated:
+**attestation integrity** (the bundle cannot be altered undetected;
+cryptographic) and **detection quality** (how good the verifiers are;
+statistical, and not a guarantee).
+
+| Threat | Protected? | Mechanism, or why not |
+|---|---|---|
+| Editing the output digest, verdicts, model identifier or timestamps | Yes | Every field is folded into `integrity_hash`; `bundle_id` is derived from it; verification recomputes. |
+| Editing, adding or removing the verification block | Yes | `verification_hash` is in the integrity payload if and only if verification is present (`ERR_INTEGRITY_HASH_MISMATCH`). |
+| Forging a signature on an intact chain | Yes | Ed25519 signature checked when present (`ERR_BAD_SIGNATURE`). Unsigned bundles fail by default. |
+| Algorithm confusion | Yes | Any algorithm other than `ed25519` is rejected (`ERR_UNSUPPORTED_ALGORITHM`). |
+| Signature or serialisation malleability | Yes | Strict lowercase hex; deterministic canonical JSON. |
+| A malformed bundle crashing the verifier | Yes | `verify_bundle` returns `ERR_MALFORMED_BUNDLE`; `inspect` is type-guarded; verifiers degrade to `INCONCLUSIVE`. |
+| A torn bundle file after a crash | Yes | Atomic writes (temporary file, fsync, `os.replace`). |
+| Stripping a signature and re-signing with another key | Partly | Detected only when the consumer pins a key (`--verify-key`) or a trust set (`--trust-jwks`). |
+| A wrong verdict | No | A `PASS` means the configured verifiers found no problem in the evidence they were given. Detection has false negatives. `INCONCLUSIVE` is not `PASS`. Verifier quality is bounded by the evidence, the resamples and the NLI model supplied. |
+| A false model identifier | No | The identifier binds a claimed descriptor. Showing which weights ran needs attestation of the execution environment, which is out of scope. |
+| Reading a bundle's content | No | Bundles are not encrypted. |
+| A false `issued_at` | No | Self-asserted. RFC 3161 anchors apply to recorder checkpoints, not to bundles. |
+
+## 6. What each adversary can still do
+
+**A1, a careless agent.** Stopped when its command matches a guard rule and no
+approval covers it. Not stopped when the destructive command is one the rules
+do not describe, when hooks are not installed, or when a broad or long-lived
+precondition (scope `*`, a long `--ttl`) happens to cover it.
+
+**A2, a hostile agent on the same machine.** With the default set-up it can:
+disguise a command past the guard; read the local signing key by a route the
+patterns do not name, then forge checkpoints and preconditions; edit the
+approver list, the Perathos configuration or project-level hook files; work
+through a channel the hooks do not see. With every item in section 8 in place
+it is left with: disguising commands past the guard (always), and asking the
+recorder's remote signer for signatures if it can reach the signing
+credential. Perathos does not contain a hostile agent. Use operating-system
+isolation for that.
+
+**A3, a tamperer after the fact.** Without the signing key: cannot change
+sealed receipts undetected; can remove the unsealed tail; can delete whole
+logs; can cut a log back to an earlier checkpoint if they also remove the head
+witness and no anchor copy is held elsewhere. With the signing key: can
+replace a log with a different valid one, except where an off-machine anchor
+already fixes a checkpoint.
+
+**A4, a network attacker.** Can stop anchoring (checkpoints stay signed but
+unanchored) and can stop Gate approvals (actions stay blocked). Cannot forge
+an anchor or, once the Gate key is pinned, an approval. Recording with a local
+key, the guard's pattern matching and offline verification make no network
+calls. A remote signer, anchoring and the Gate do.
+
+**A5, a malicious Gate.** See 5.7. In short: it can approve, on its own
+authority, any blocked action that an agent attempts, and the receipt will
+verify.
+
+**A6, a phished or pressured approver.** The passkey proves that an enrolled
+credential approved a request. It does not prove the approver read it,
+understood it, or was not misled. Routes that work: an agent or a person who
+words a request to look routine; a stream of requests that trains the approver
+to tap approve; an approve link forwarded with a reassuring message; takeover
+of the approver's passkey provider account or unlocked device. Origin binding
+stops look-alike sites. It does not stop a real request that is wrongly
+approved. The approve link also lets anyone who holds it read the action text.
+
+## 7. Residual risks and roadmap
+
+Stated plainly, in rough order of weight:
+
+1. The guard is a pattern matcher and not a sandbox.
+2. With the default local key, an agent that can read the key can forge both
+   records and approvals.
+3. A period with hooks switched off, or a recording failure, leaves an
+   invisible gap.
+4. Completeness is never proven: only what the hooks saw is recorded.
+5. Signer identity rests on a pin the verifier must obtain out of band.
+   Unpinned results say so (`VALID_UNCONFIRMED_SIGNER`,
+   `VALID_UNCONFIRMED_GATE`), but `evidence verify` checks Gate receipts
+   without any Gate pin.
+6. Whoever controls the Gate server key can forge approvals. Verifiers do not
+   pin approver keys.
+7. The approver list, the Gate pin and the signer setting are unsigned local
+   files.
+8. A remote recorder signer keeps the key from being copied. It does not keep
+   a process with the signing credential from using it.
+9. Times are local-clock unless anchored, and an anchor is an upper bound.
+10. The `model` field is self-reported.
+11. Preconditions are reusable until expiry and are not bound to a session.
+12. Synced passkeys do not prove a specific hardware device, and the Gate does
+    not claim device binding. An approver can be socially engineered.
+13. The MCP proxy forwards a call if the guard raises an exception.
+14. The hosted Gate is a single small deployment.
+15. One maintainer. No penetration test by an accredited firm
+    ([SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md), section L).
+
+Not built yet (none of these is a commitment): verifier-side pinning of
+approver credentials for Gate receipts; a Gate pin in `evidence verify`;
+single-use or session-bound preconditions; a transparency log for checkpoints
+or receipts; attestation of the execution environment; binding key id and
+expiry into signed payloads for rotation. See
+[ROADMAP_2.0.md](ROADMAP_2.0.md).
+
+## 8. Deployment requirements for the stronger properties
+
+Each row is something the operator must do. Perathos cannot do it for them,
+and `perathos doctor --recorder` reports on several of them.
+
+| To get this | Do this | Without it |
+|---|---|---|
+| Records the agent cannot forge by reading a file | Use a **remote signer** for checkpoints (`perathos config signer vault:... \| gcpkms:... \| command:...`), and keep the signing credential as far from the agent as the hook allows. Log and alert on signer use. | An agent that reads `signing.key` can seal any log. |
+| Approvals the agent cannot forge | List **approvers** (`perathos approvers add`) whose keys are held off the machine or on a device the agent's user cannot use. Do not list the recorder key. | The recorder key approves destructive actions. |
+| Trust lists the agent cannot edit | Make `~/.perathos/` (at least `approvers.json` and `config.json`) and the hook files unwritable by the user the agent runs as, or run the agent as a different user. | The guard's path patterns are the only protection. |
+| No silent hook removal | Install **managed hooks** (`perathos hooks install --scope managed --guard --anchor`) on Claude Code, and do not give the agent administrator rights. | The agent can edit project or user hook files by a route the guard does not name. |
+| A missing guard blocks rather than allows | Keep the installer's fail-closed settings, and use an agent tool version that honours them. | A broken hook lets calls through. |
+| Detection of a cut-off or rewritten log | Keep **off-machine anchor copies**: set `perathos config anchor_mirror <path>` to a location the agent and the machine's users cannot change, and verify with `--anchors <copy>` and `--require-anchor`. | Truncation after the last surviving checkpoint is undetectable to someone who also deletes the head witness and the local anchors. |
+| Independent time | Turn anchoring on (`--anchor`, needs `perathos[anchor]` and network). | All times are the local clock. |
+| Signer identity on verification | **Pin the signer on verify**: `--verify-key <hex>` or `--trust-jwks`, with the key obtained through a separate channel. Treat `VALID_UNCONFIRMED_SIGNER` as "consistent, origin unknown". | Anyone can produce a self-consistent log or pack. |
+| Gate receipts from the right server | **Pin the Gate key**, and confirm the key that `perathos gate login` pinned against one obtained separately. Check pack approvals with `perathos gate verify --gate-key`. | A receipt signed by any key passes as internally consistent. |
+| A check on the Gate itself | Keep your own record of each approver's credential id and public key from enrolment, and compare receipts against it. Prefer a Gate you run for anything that matters. | Whoever holds the Gate key can name any approver. |
+| Approvals that mean something | Keep the approver group small. Tell approvers to read the command text and to deny anything they did not expect. Keep request volume low enough that each one is read. | Approval fatigue makes the passkey a formality. |
+| Narrow preconditions | Name the specific resource in `--scope`, keep `--ttl` short, avoid `*`, and use checks that test the safeguard. Review `check` text in audits. | One precondition covers many commands for its whole lifetime. |
+| Containment of a hostile agent | Operating-system isolation: a separate user, a container or VM, scoped credentials, no production secrets in the agent's environment. | Nothing in Perathos confines the agent. |
+
+## 9. Cryptographic choices
+
+- **Hash:** SHA-256.
+- **Signatures:** Ed25519 (the `cryptography` library) for checkpoints,
+  preconditions, pack manifests, bundles and Gate server signatures. Passkey
+  signatures in Gate receipts are verified as ES256, EdDSA or RS256.
+- **Timestamps:** RFC 3161, verified against pinned roots (needs the
+  `rfc3161-client` extra).
+- **Serialisation:** deterministic canonical JSON (sorted keys, compact
+  separators, UTF-8, NaN and Infinity rejected, string keys only), so that
+  another implementation reproduces the same bytes.
+
+These are standard primitives used in a standard way. The construction has
+had internal review and an independent red-team of 1.0.0
+([SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md), section L), not a formal
+cryptographic audit.
+
+## Related documents
+
+- [SECURITY.md](../SECURITY.md): how to report a vulnerability, and what is in
+  scope.
+- [FOR_AUDITORS.md](FOR_AUDITORS.md): how to check an evidence pack.
+- [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md): vendor questionnaire.
+- [ENTERPRISE_FAQ.md](ENTERPRISE_FAQ.md): procurement questions on the
+  proof-bundle layer.
+- Specifications: [RECEIPT_V1](specs/RECEIPT_V1.md),
+  [PRECONDITION_V1](specs/PRECONDITION_V1.md), [GATE_V1](specs/GATE_V1.md),
+  [BUNDLE_V2](specs/BUNDLE_V2.md).
