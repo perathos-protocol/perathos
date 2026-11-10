@@ -5,6 +5,8 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-11-10
+
 ### Added
 - **`perathos gate verify --approver-key KEY`** pins the approver passkey on the command line,
   repeatable or comma-separated (the format `perathos gate approvers --keys` prints). The keys

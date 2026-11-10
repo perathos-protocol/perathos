@@ -50,7 +50,7 @@ def __dir__():
     return sorted(set(globals()) | set(_LAZY) | set(_ALIASES))
 
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 __all__ = [
     "prove",
