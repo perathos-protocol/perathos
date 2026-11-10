@@ -5,6 +5,11 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- The QR code drawn by `perathos gate request` adds `&via=qr` to the approve link, so a Gate
+  server can tell a scan from a tapped notification or a typed link.
+
+
 ## [1.4.0] - 2026-11-10
 
 ### Security
