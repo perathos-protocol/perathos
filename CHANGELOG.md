@@ -5,6 +5,14 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **`perathos gate verify --approver-key KEY`** pins the approver passkey on the command line,
+  repeatable or comma-separated (the format `perathos gate approvers --keys` prints). The keys
+  replace any pinned on the machine or in `PERATHOS_GATE_APPROVERS` for that check, so an
+  auditor can run `perathos gate verify receipt.json --gate-key <hex> --approver-key <key>` in
+  any shell. The output says `approver pinned (--approver-key)`; a receipt from any other
+  passkey is `INVALID` (exit 1). Without the flag nothing changes.
+
 ## [1.4.2] - 2026-11-10
 
 Fixes for the gaps found by the threat-model review (docs/THREAT_MODEL.md).

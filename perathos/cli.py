@@ -1829,8 +1829,15 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_sec
 @gate.command(name="verify")
 @click.argument("receipt_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--gate-key", default=None, metavar="HEX", help="Expected Gate key (default: the pinned one).")
-def gate_verify(receipt_file: str, gate_key: str):
-    """Verify a Gate receipt offline: server signature, approver passkey signature, binding."""
+@click.option("--approver-key", "approver_keys", multiple=True, metavar="B64URL",
+              help="An approver passkey public key you trust, as 'perathos gate approvers --keys' prints it; "
+                   "repeatable or comma-separated (default: the approvers pinned on this machine, if any).")
+def gate_verify(receipt_file: str, gate_key: str, approver_keys: tuple):
+    """Verify a Gate receipt offline: server signature, approver passkey signature, binding.
+
+    Given --approver-key, only those passkeys are accepted, in place of any pinned on this
+    machine or in PERATHOS_GATE_APPROVERS.
+    """
     from .approvers import get_config
     from .gate import trusted_approver_keys, verify_receipt
     try:
@@ -1839,7 +1846,11 @@ def gate_verify(receipt_file: str, gate_key: str):
         click.echo(f"[ERROR] not JSON: {exc}", err=True)
         sys.exit(2)
     key = gate_key or get_config().get("gate_key")
-    pins = trusted_approver_keys()
+    given = frozenset(k for v in approver_keys for k in v.replace(",", " ").split())
+    if approver_keys and not given:
+        click.echo("[ERROR] --approver-key is empty", err=True)
+        sys.exit(2)
+    pins = given or trusted_approver_keys()
     res = verify_receipt(receipt, gate_key=key, trusted_approvers=pins)
     if not res:
         click.echo(f"INVALID  {res.error}", err=True)
@@ -1854,7 +1865,7 @@ def gate_verify(receipt_file: str, gate_key: str):
         click.echo("  approver NOT PINNED: this shows the Gate server vouched for this passkey, not that the "
                    "key is one you know. Pin it with: perathos gate trust RECEIPT_FILE")
     else:
-        click.echo("  approver pinned")
+        click.echo("  approver pinned (--approver-key)" if given else "  approver pinned")
 
 
 @gate.command(name="trust")
