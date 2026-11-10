@@ -162,8 +162,14 @@ def _verify_webauthn_sig(public_key_der: bytes, alg: int, signed: bytes, signatu
 
 
 def trusted_approver_keys() -> frozenset[str] | None:
-    """Approver passkey public keys pinned with `perathos gate trust`, or None when none are pinned."""
+    """Approver passkey public keys pinned with `perathos gate trust`, or None when none are pinned.
+
+    PERATHOS_GATE_APPROVERS (public keys separated by commas or whitespace) takes precedence,
+    for CI runners and other machines with no config file."""
     from .approvers import get_config
+    env = os.environ.get("PERATHOS_GATE_APPROVERS", "").replace(",", " ").split()
+    if env:
+        return frozenset(env)
     pinned = get_config().get("gate_approvers")
     if not isinstance(pinned, list) or not pinned:
         return None

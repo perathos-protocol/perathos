@@ -5,6 +5,11 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- For CI: `PERATHOS_GATE_APPROVERS` pins approver passkeys by environment variable
+  (`perathos gate approvers --keys` prints the value), and `perathos gate request --no-link`
+  keeps the approve link out of logs other people can read.
+
 ### Changed
 - The QR code drawn by `perathos gate request` adds `&via=qr` to the approve link, so a Gate
   server can tell a scan from a tapped notification or a typed link.
