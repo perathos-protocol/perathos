@@ -5,6 +5,24 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+- **Approver pinning for Gate receipts.** A receipt carries the approver's public
+  key, and until now nothing checked that key against one the verifier knew, so
+  whoever held the Gate server's signing key could issue a receipt naming an
+  approver key of their own and it would verify. `perathos gate trust RECEIPT`
+  pins an approver's passkey; once any is pinned, the guard, `require_approval()`
+  and `perathos gate verify` reject approvals from every other passkey
+  (`ERR_GATE_UNTRUSTED_APPROVER`). `perathos gate approvers` lists and unpins.
+  `gate verify` now says whether the approver is pinned. Not yet covered:
+  `evidence verify` still checks approvals without pins. The pin list is a local
+  unsigned file, so it protects against the Gate server, not against an agent
+  that can edit the file.
+
+### Fixed (docs)
+- GATE_V1.md, README and the security assessment no longer say a compromised
+  Gate server cannot forge an approval, that passkeys are hardware-backed, that
+  the client can withhold command text, or that there is no server component.
+
 ### Added
 - `perathos gate request` shows the approve link as a QR code when run in a
   terminal with the `qr` extra installed (`pip install "perathos[qr]"`), so the

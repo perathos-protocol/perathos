@@ -161,9 +161,23 @@ def _verify_webauthn_sig(public_key_der: bytes, alg: int, signed: bytes, signatu
     return True
 
 
-def verify_receipt(receipt: dict, *, gate_key: str | None, require_user_verification: bool = True) -> ReceiptCheck:
-    """Offline verification of a Gate receipt (spec steps 1-5). Does not check decision,
-    expiry or args binding: see ``check_approval_for`` for the guard's use."""
+def trusted_approver_keys() -> frozenset[str] | None:
+    """Approver passkey public keys pinned with `perathos gate trust`, or None when none are pinned."""
+    from .approvers import get_config
+    pinned = get_config().get("gate_approvers")
+    if not isinstance(pinned, list) or not pinned:
+        return None
+    return frozenset(str(a.get("public_key")) for a in pinned if isinstance(a, dict) and a.get("public_key"))
+
+
+def verify_receipt(receipt: dict, *, gate_key: str | None, require_user_verification: bool = True,
+                   trusted_approvers=None) -> ReceiptCheck:
+    """Offline verification of a Gate receipt (spec steps 1-6). Does not check decision,
+    expiry or args binding: see ``check_approval_for`` for the guard's use.
+
+    The approver's public key is read from the receipt, so without ``trusted_approvers`` (a set
+    of pinned passkey public keys) the receipt shows only that the Gate server vouched for
+    this approver: whoever holds the Gate signing key could name a key of their own."""
     from .signing import verify_signature
 
     try:
@@ -208,14 +222,17 @@ def verify_receipt(receipt: dict, *, gate_key: str | None, require_user_verifica
         if not _verify_webauthn_sig(b64url_decode(approver["public_key"]), int(approver["alg"]), signed,
                                     b64url_decode(wa["signature"])):
             return ReceiptCheck(False, "ERR_GATE_APPROVER_SIGNATURE: the approver's passkey signature does not verify")
+        if trusted_approvers is not None and approver["public_key"] not in trusted_approvers:
+            return ReceiptCheck(False, "ERR_GATE_UNTRUSTED_APPROVER: the approver's passkey is not one you pinned")
     except (KeyError, TypeError, ValueError) as exc:
         return ReceiptCheck(False, f"ERR_GATE_MALFORMED: {type(exc).__name__}: {exc}")
     return ReceiptCheck(True)
 
 
-def check_approval_for(receipt: dict, *, gate_key: str | None, args_hash: str, now: datetime | None = None) -> ReceiptCheck:
+def check_approval_for(receipt: dict, *, gate_key: str | None, args_hash: str, now: datetime | None = None,
+                       trusted_approvers=None) -> ReceiptCheck:
     """Can this receipt authorise running the action with these arguments right now?"""
-    res = verify_receipt(receipt, gate_key=gate_key)
+    res = verify_receipt(receipt, gate_key=gate_key, trusted_approvers=trusted_approvers)
     if not res:
         return res
     if receipt["decision"] != "approve":
@@ -310,7 +327,7 @@ def _load_json(path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def find_usable_receipt(cwd, args_hash: str, gate_key: str | None):
+def find_usable_receipt(cwd, args_hash: str, gate_key: str | None, trusted_approvers=None):
     """An approved, unexpired, unused receipt for exactly these arguments, or None."""
     d = approvals_dir(cwd)
     if not d.exists():
@@ -319,7 +336,8 @@ def find_usable_receipt(cwd, args_hash: str, gate_key: str | None):
         if f.with_suffix(".used").exists():
             continue
         rec = _load_json(f)
-        if rec and check_approval_for(rec, gate_key=gate_key, args_hash=args_hash):
+        if rec and check_approval_for(rec, gate_key=gate_key, args_hash=args_hash,
+                                      trusted_approvers=trusted_approvers):
             return rec, f
     return None, None
 
@@ -381,7 +399,8 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
                         f"{first}. Perathos Gate is configured but its key is not pinned; run 'perathos gate login'.")
     ah = content_hash(args)
 
-    rec, path = find_usable_receipt(cwd, ah, client.gate_key)
+    pins = trusted_approver_keys()
+    rec, path = find_usable_receipt(cwd, ah, client.gate_key, pins)
     if rec is not None:
         path.with_suffix(".used").write_text(now_iso(), encoding="utf-8")
         return Decision("allow", decision.rule, None,
@@ -408,7 +427,7 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
     status = st.get("status")
     receipt = st.get("receipt")
     if status == "approved" and isinstance(receipt, dict):
-        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah)
+        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah, trusted_approvers=pins)
         _set_pending(cwd, ah, None)
         if not chk:
             _save_receipt(cwd, receipt, used=True)
@@ -475,7 +494,8 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
     st = client.wait_for_decision(created["id"], wait_seconds)
     status, receipt = st.get("status"), st.get("receipt")
     if status == "approved" and isinstance(receipt, dict):
-        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah)
+        chk = check_approval_for(receipt, gate_key=client.gate_key, args_hash=ah,
+                                 trusted_approvers=trusted_approver_keys())
         if not chk:
             raise GateError(f"approval receipt rejected: {chk.error}")
         return receipt
