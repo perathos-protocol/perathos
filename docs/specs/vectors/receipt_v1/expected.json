@@ -1,0 +1,69 @@
+{
+  "format": "perathos.receipt/v1",
+  "generator": "scripts/make_receipt_v1_vectors.py",
+  "verify_key": "dbe821f7158ff4475b90d537b3b75d67c9bb655dce38c78500362fa9d5878414",
+  "test_signing_key": "74414d5d359a94ef50fba07173dd40c3689345bff85c1659d40996552b535f7f",
+  "test_signing_key_note": "FIXED TEST KEY, published on purpose. Never use it for anything real.",
+  "anchors": "none; verify without --require-anchor",
+  "cases": {
+    "01-valid": {
+      "files": {
+        "log": "receipt-v1-vector.jsonl",
+        "head": "receipt-v1-vector.head.json"
+      },
+      "description": "A session as the recorder writes it: 2 tool calls, a signed Stop checkpoint, 1 tool call, a signed SessionEnd checkpoint.",
+      "rule": null,
+      "verdict": "VALID",
+      "errors": []
+    },
+    "02-broken-prev-hash": {
+      "files": {
+        "log": "receipt-v1-vector.jsonl",
+        "head": "receipt-v1-vector.head.json"
+      },
+      "description": "seq 3 has a prev_hash that is not seq 2's receipt_hash (last hex digit changed). Its receipt_hash and every later receipt were recomputed and the checkpoints re-signed with the real key, so nothing but the chain link is wrong.",
+      "rule": "RECEIPT_V1.md Verification rule 3 (prev_hash chain)",
+      "verdict": "INVALID",
+      "errors": [
+        {
+          "code": "ERR_CHAIN",
+          "seq": 3,
+          "message": "ERR_CHAIN at seq 3 (line 3): prev_hash does not match the previous receipt"
+        }
+      ]
+    },
+    "03-forged-checkpoint-signature": {
+      "files": {
+        "log": "receipt-v1-vector.jsonl",
+        "head": "receipt-v1-vector.head.json"
+      },
+      "description": "The Stop checkpoint at seq 5 carries a well-formed 128-hex Ed25519 signature over its receipt_hash made with a different key; signature.verify_key and signer still name the real key.",
+      "rule": "RECEIPT_V1.md Verification rule 6 (checkpoint signature)",
+      "verdict": "INVALID",
+      "errors": [
+        {
+          "code": "ERR_BAD_SIGNATURE",
+          "seq": 5,
+          "message": "ERR_BAD_SIGNATURE at seq 5 (line 5)"
+        }
+      ]
+    },
+    "04-unsigned-checkpoint": {
+      "files": {
+        "log": "receipt-v1-vector.jsonl",
+        "head": "receipt-v1-vector.head.json"
+      },
+      "description": "The SessionEnd checkpoint at seq 8 was written while the remote signer was down: no signer or signature, signer_error \"SignerError\" in the hashed body. The Stop checkpoint at seq 5 is signed.",
+      "rule": "RECEIPT_V1.md Verification rule 7 and \"Signer failures\"",
+      "verdict": "INVALID",
+      "errors": [
+        {
+          "code": "ERR_UNSIGNED",
+          "seq": 8,
+          "message": "ERR_UNSIGNED at seq 8 (line 8): checkpoint has no signature: the recorder's signer failed when it was sealed ('SignerError')"
+        }
+      ],
+      "verdict_with_allow_unsigned": "VALID"
+    }
+  }
+}

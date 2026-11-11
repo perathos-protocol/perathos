@@ -68,6 +68,17 @@ or an `approval`. A call that matched no rule has no `guard` field.
   `receipt_hash` and `signature`.
 * **Signature**: Ed25519 over the 32 raw bytes of `receipt_hash` (not its hex
   text). `signature.verify_key` must equal the receipt's `signer`.
+* **Signature encoding**: `signature.algorithm` is `"ed25519"`.
+  `signature.signature` is the 64-byte Ed25519 signature as lowercase hex,
+  exactly 128 characters, encoded the same way as `signature.verify_key` (the
+  32-byte public key as 64 lowercase hex characters) and `signer`. The
+  reference verifier rejects uppercase, a `0x` prefix, whitespace or any other
+  length.
+
+Test vectors: [vectors/receipt_v1/](vectors/receipt_v1/) holds logs written by
+the reference recorder (a valid log, a broken `prev_hash`, a forged checkpoint
+signature, an unsigned checkpoint with `signer_error`), each with the verdict
+and error code it must give, in `expected.json`.
 
 ## Verification rules
 

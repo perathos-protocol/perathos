@@ -5,6 +5,14 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **`perathos.receipt/v1` test vectors** in `docs/specs/vectors/receipt_v1/`, for independent
+  verifiers: a valid log, a broken `prev_hash` (`ERR_CHAIN`), a forged checkpoint signature
+  (`ERR_BAD_SIGNATURE`) and an unsigned checkpoint with `signer_error` (`ERR_UNSIGNED`), each
+  written by the real recorder with a published test key and listed with its expected result in
+  `expected.json`. `scripts/make_receipt_v1_vectors.py` regenerates them byte for byte.
+  RECEIPT_V1.md now states that `signature.signature` is 128 lowercase hex characters.
+
 ## [1.4.3] - 2026-11-10
 
 ### Added

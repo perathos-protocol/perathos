@@ -1,0 +1,11 @@
+{
+  "receipt_hash": "17f5fd2a6994c3caa9fa97b912ff4bf66cb7a106466c7e3c36f037c64fd32270",
+  "seq": 8,
+  "session_id": "receipt-v1-vector",
+  "signature": {
+    "algorithm": "ed25519",
+    "signature": "e71f545a1f78daf8f7e8aae1cf930b723a603da58dbe947a9a3ecc663aeaf1e0dade0020aaa443e2629a095cc94bb8b4f34532bdecd9075fec26fd2891aad40f",
+    "verify_key": "dbe821f7158ff4475b90d537b3b75d67c9bb655dce38c78500362fa9d5878414"
+  },
+  "ts": "2026-01-01T12:00:07.000000Z"
+}
