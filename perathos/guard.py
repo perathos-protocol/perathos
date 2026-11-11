@@ -69,12 +69,29 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
 # Shell / CLI commands that can destroy data or the means to recover it.
 # Matched against a normalised copy of the command (quotes removed, SQL
 # comments collapsed), so `r""m -rf`, `k''eys` and `DROP/**/TABLE` match.
+# Because quotes are gone, a rule cannot use a quote to find where an argument
+# ends: `psql -c "DELETE FROM t" -h db` arrives as `psql -c DELETE FROM t -h db`.
+
+# Options before a subcommand or argument, each with an optional value:
+# `terraform -chdir=infra destroy`, `kubectl delete -n prod pvc`, `git -C repo reset`.
+_OPTS = r"(?:-[^\s;&|]+\s+(?:(?!-)[^\s;&|]+\s+)?)*"
+# Any words of the same simple command (no separator crossed).
+_ARGS = r"(?:[^\s;&|]+\s+)*?"
+# The rest of the same simple command.
+_REST = r"[^;&|\n]*"
+# A redirect target with a database-file extension. `.csv` and `.sql` are left
+# out on purpose: `script > out.csv` is ordinary output, and `pg_dump db >
+# backup.sql` makes a backup.
+_DATA_FILE = r"[^\s;&|<>]+\.(?:db|sqlite3?|duckdb|mdb|accdb|parquet)(?=\s|$|[;&|)])"
+_K8S_STATEFUL = r"(?:ns|namespaces?|pv|pvc|persistentvolume\w*|statefulsets?|sts|deployments?|deploy|all)\b"
+
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
        r"\brm\s+(-\S+\s+)*(-[a-z]*r|--recursive\b)|\brm\s+(-\S+\s+)*-[a-z]*f[a-z]*r",
        "recursive delete"),
+    # cmd.exe takes switches anywhere on the line: `rmdir data /s /q`
     _r("fs.win-delete",
-       r"(^|[\s;&|(])(del|erase)\s+(/\w\s+)*/[sq]\b|(^|[\s;&|(])(rd|rmdir)\s+(/\w\s+)*/s\b|(^|[\s;&|(])format\s+[a-z]:",
+       rf"(^|[\s;&|(])(del|erase)\s+{_ARGS}/[sq]\b|(^|[\s;&|(])(rd|rmdir)\s+{_ARGS}/s\b|(^|[\s;&|(])format\s+[a-z]:",
        "Windows recursive or quiet delete"),
     _r("fs.ps-delete",
        r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+(\S+\s+)*-(r|recurse|rec|force)\b",
@@ -83,11 +100,31 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.truncate-or-overwrite",
        r"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+.*\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null|(^|[;&|])\s*:\s*>\s*\S",
        "file truncated, overwritten or shredded"),
+    # `> file` with no command, `cp /dev/null file`, `cat /dev/null > file` and
+    # PowerShell `Clear-Content` empty any file. An ordinary `cmd > file` is
+    # flagged only when it would overwrite a database file (``_DATA_FILE``).
+    _r("fs.redirect-truncate",
+       r"(?:^|[;(]|&&|\|\|)\s*>\|?\s*[^\s>&|;]|\bcp\s+(?:-\S+\s+)*/dev/null\s|\bcat\s+/dev/null\s*>(?!>)"
+       rf"|\bclear-content\b|(?<![>\d])>(?!>)\|?\s*{_DATA_FILE}",
+       "file emptied by a redirect"),
     _r("fs.interpreter-delete",
-       r"shutil\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(.*recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\(.*\*",
+       r"shutil\)?\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(.*recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\(.*\*",
        "delete through an interpreter one-liner"),
+    # `from shutil import rmtree; rmtree(p)`, `import shutil as s; s.rmtree(p)`
+    _r("fs.python-rmtree",
+       r"\bfrom\s+shutil\s+import\b[^\n;]*\brmtree\b(?:\s+as\s+(?P<fn>\w+))?[\s\S]*?\b(?:(?P=fn)|rmtree)\s*\("
+       r"|\bimport\s+shutil\s+as\s+(?P<mod>\w+)\b[\s\S]*?\b(?P=mod)\.rmtree\s*\(",
+       "delete through an interpreter one-liner (rmtree imported by name)"),
+    _r("fs.robocopy-mirror", rf"\brobocopy\b{_REST}\s/(mir|purge)\b",
+       "robocopy /MIR or /PURGE (deletes files missing from the source)"),
+    _r("fs.ps-format", r"\b(format-volume|clear-disk|remove-partition)\b", "PowerShell volume format or disk wipe"),
+    # `checkout <tree> -- <paths>` and `checkout <tree> .` overwrite the work
+    # tree; `restore` does too unless it only unstages (`--staged`, no `--worktree`).
     _r("git.destructive",
-       r"\bgit\s+(reset\s+--hard|clean\s+-\S*[fd]|checkout\s+(-f\b|--force\b|--\s|\.\s*$|\.\s)|restore\s+(--staged\s+)?(\.|--\s)|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
+       rf"\bgit\s+{_OPTS}(reset\s+{_ARGS}--hard\b|clean\s+-\S*[fd]|checkout\s+{_ARGS}(-f\b|--force(?![\w-])|--(\s|$)|\.(\s|$))"
+       rf"|restore\b(?={_REST}\s(\.|:/|--)(\s|$))(?:(?={_REST}\s(--worktree\b|(?-i:-W)\b))|(?!{_REST}\s(--staged\b|(?-i:-S)\b)))"
+       rf"|switch\s+{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)"
+       r"|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
        "git command that discards work"),
     _r("git.force-push-main", r"\bgit\s+push\b.*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b|\bgit\s+push\s+--mirror\b",
        "force push to a main branch"),
@@ -99,31 +136,65 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
     _r("fs.rsync-delete", r"\brsync\b.*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
     _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
-    _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.\"`]+", "SQL TRUNCATE"),
-    _r("sql.delete-all", r"\bdelete\s+from\s+[\w.\"`]+\s*(;|$|\"|')", "SQL DELETE without WHERE"),
+    _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.$\[\]]+", "SQL TRUNCATE"),
+    # The statement ends at `;`, a newline, `)`, a shell separator or the next
+    # shell option (`-h db`). An alias may follow the table; a WHERE may not.
+    _r("sql.delete-all",
+       r"\bdelete\s+from\s+[\w.$\[\]]+(?:\s+(?:as\s+)?(?!where\b)\w+)?(?!\s*where\b)\s*(?:$|[;)|&\n]|-{1,2}[a-z]|--\s)",
+       "SQL DELETE without WHERE"),
+    _r("sql.alter-drop",
+       r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?[\w.$\[\]]+\s+(?:[^;\n]*?,\s*)?drop\s+"
+       r"(?:column\b|constraint\b|(?!index\b|key\b|primary\b|foreign\b|default\b|check\b|trigger\b|if\b)\w+)",
+       "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT"),
     _r("db.dropdb", r"\bdropdb\b", "PostgreSQL dropdb"),
+    _r("db.mysqladmin-drop", rf"\bmysqladmin\b{_REST}\sdrop\b", "mysqladmin drop"),
     _r("db.redis-flush", r"\bflush(all|db)\b", "Redis FLUSHALL / FLUSHDB"),
     _r("db.mongo-drop", r"\.drop(database)?\s*\(", "MongoDB drop"),
-    _r("db.migrate-reset", r"\b(prisma\s+migrate\s+reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset|heroku\s+pg:reset)\b",
+    _r("db.mongo-delete-all", r"\.(deleteMany|remove)\s*\(\s*\{\s*\}\s*[,)]|\.deleteMany\s*\(\s*\)",
+       "MongoDB delete of every document"),
+    _r("db.migrate-reset",
+       rf"\b(prisma\s+{_OPTS}migrate\s+{_OPTS}reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset|heroku\s+pg:reset)\b",
        "database reset"),
-    _r("iac.terraform-destroy", r"\bterraform\s+(destroy|apply\b.*-destroy)\b", "terraform destroy"),
+    _r("db.prisma-force-reset", rf"\bprisma\s+{_OPTS}db\s+push\b{_REST}\s--(force-reset|accept-data-loss)\b",
+       "prisma db push that drops data"),
+    _r("db.django-flush", rf"\b(manage\.py|django-admin)\s+{_OPTS}(flush|reset_db)\b", "Django flush (deletes every row)"),
+    _r("iac.terraform-destroy", rf"\bterraform\s+{_OPTS}(destroy|apply\b{_REST}\s-destroy)\b", "terraform destroy"),
+    _r("iac.tofu-destroy", rf"\btofu\s+{_OPTS}(destroy|apply\b{_REST}\s-destroy)\b", "OpenTofu destroy"),
+    _r("iac.terragrunt-destroy",
+       rf"\bterragrunt\s+{_OPTS}(?:(?:run-all|run)\s+{_OPTS}(?:--\s+)?)?(destroy|apply\b{_REST}\s-destroy)\b",
+       "terragrunt destroy"),
     _r("iac.pulumi-destroy", r"\bpulumi\s+destroy\b", "pulumi destroy"),
-    _r("k8s.delete", r"\bkubectl\s+delete\s+(ns|namespace|pv|pvc|persistentvolume\w*|statefulset|deployment|all)\b",
+    _r("k8s.delete", rf"\bkubectl\s+{_OPTS}delete\s+{_OPTS}{_K8S_STATEFUL}",
        "kubectl delete of stateful resources"),
     _r("k8s.helm-uninstall", r"\bhelm\s+(uninstall|delete)\b", "helm uninstall"),
     _r("cloud.aws-delete",
-       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
+       rf"\baws\s+{_OPTS}(s3\s+rb\b|s3\s+rm\b{_REST}--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
        "AWS delete of storage or backups"),
-    _r("cloud.gcloud-delete", r"\bgcloud\s+.*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b|\bgcloud\s+storage\s+rm\b|\bgcloud\s+projects\s+delete\b",
+    _r("cloud.aws-s3-sync-delete", rf"\baws\s+{_OPTS}s3\s+sync\b{_REST}\s--delete\b",
+       "aws s3 sync --delete (deletes objects missing from the source)"),
+    _r("cloud.gcloud-delete",
+       rf"\bgcloud\s+{_REST}\b(sql\s+(instances|databases|backups)|compute\s+(disks|snapshots)|storage\s+buckets"
+       rf"|firestore\s+databases|spanner\s+(instances|databases)|filestore\s+(instances|backups)){_REST}\sdelete\b"
+       rf"|\bgcloud\s+{_REST}\bstorage\s+rm\b|\bgcloud\s+{_REST}\bprojects\s+delete\b",
        "Google Cloud delete of storage or backups"),
+    _r("cloud.gsutil-delete", rf"\bgsutil\s+{_OPTS}(rb\b|rm\b{_REST}\s-([a-z]*r[a-z]*|-recursive)\b)",
+       "gsutil bucket remove or recursive delete"),
+    _r("cloud.rclone-delete", rf"\brclone\s+{_OPTS}(purge|delete)\b", "rclone purge / delete"),
     _r("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b.*\bdelete\b", "Azure delete of storage or backups"),
     _r("paas.railway", r"\brailway\s+(down|volume\s+delete|delete)\b", "Railway delete"),
     _r("paas.vercel", r"\bvercel\s+(remove|rm)\b", "Vercel remove"),
     _r("paas.fly", r"\bfly(ctl)?\s+(volumes?\s+(destroy|delete)|apps?\s+destroy|postgres\s+destroy)\b", "Fly destroy"),
     _r("paas.neon", r"\bneon(ctl)?\s+(branches?|projects?|databases?)\s+delete\b", "Neon delete"),
+    _r("paas.firebase", rf"\bfirebase\s+{_OPTS}(firestore:delete|database:remove)\b", "Firebase data delete"),
+    _r("paas.heroku", rf"\bheroku\s+{_OPTS}(apps:destroy|destroy|pg:backups:delete|addons:destroy)\b", "Heroku destroy"),
     _r("docker.volume",
        r"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes)|\bdocker([ -])compose\b.*\sdown\b.*\s(-v\b|--volumes\b)",
        "Docker volume delete"),
+    # podman and nerdctl take docker's volume commands; `system reset` wipes all storage
+    _r("container.volume",
+       r"\b(podman|nerdctl)\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes|system\s+reset\b)"
+       r"|\b(podman|nerdctl)([ -])compose\b.*\sdown\b.*\s(-v\b|--volumes\b)",
+       "podman / nerdctl volume delete"),
 )
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
@@ -249,6 +320,23 @@ def normalize_command(command: str) -> str:
     return command
 
 
+_DOT_SEGMENT = re.compile(r"(?<=/)\.(?:/|(?=\s|$))")
+_PARENT_SEGMENT = re.compile(r"(?<![^\s/=:])(?!\.\.(?:/|\s|$))[^/\s=:]+/\.\.(?:/|(?=\s|$))")
+
+
+def _normalize_paths(text: str) -> str:
+    """Path spellings folded for the self-protection rules: backslashes become
+    `/`, and `./`, `//` and `dir/..` segments are removed, so
+    `.claude/./settings.json`, `.claude\\x\\..\\settings.json` and
+    `.claude//settings.json` all read `.claude/settings.json`."""
+    text = text.replace("\\", "/")
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"/{2,}", "/", _PARENT_SEGMENT.sub("", _DOT_SEGMENT.sub("", text)))
+    return text
+
+
 @dataclass(frozen=True)
 class Match:
     rule_id: str
@@ -324,9 +412,10 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     into a shell; only then are the variable-indirection rules applied."""
     norm = normalize_command(text)
     if include_self_auth:
+        paths = _normalize_paths(norm)
         for rule in SELF_AUTH_RULES:
-            if rule.pattern.search(norm):
-                if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(norm):
+            if rule.pattern.search(paths):
+                if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(paths):
                     continue
                 return Match(rule.rule_id, rule.description, text, self_auth=True)
     for rule in SHELL_RULES:
@@ -376,7 +465,7 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
         return _first_match(command, shell=tool_name) or _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        norm_target = normalize_command(target)
+        norm_target = _normalize_paths(normalize_command(target))
         for rule in SELF_AUTH_RULES[1:]:
             if rule.pattern.search(norm_target) and (tool_name in _WRITE_TOOLS or rule.rule_id == "guard.key-access"):
                 return Match(rule.rule_id, rule.description, target, self_auth=True)
