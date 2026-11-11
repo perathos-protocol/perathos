@@ -15,6 +15,8 @@ Each case folder holds exactly what `perathos session verify` reads:
 
 `expected.json` lists, per case, the files, the verdict, and each error with
 its code, the `seq` where it fires and the reference verifier's exact message.
+Another verifier should match the verdict and the failing rule and `seq`. The
+error codes and messages are the reference verifier's wording, given as a guide.
 The key to pin is `verify_key` in `expected.json`:
 `dbe821f7158ff4475b90d537b3b75d67c9bb655dce38c78500362fa9d5878414`.
 
