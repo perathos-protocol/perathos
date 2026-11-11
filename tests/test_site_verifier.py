@@ -262,3 +262,57 @@ def test_head_witness_hash_mismatch_fails_in_both(tmp_path):
     js = _verify_dir(d)
     assert any(e.startswith("ERR_HEAD_MISMATCH") for e in py["errors"]), py["errors"]
     assert any(e.startswith("ERR_HEAD_MISMATCH") for e in js["errors"]), js["errors"]
+
+
+def _pack_with_head(tmp_path: Path, head) -> tuple[Path, str]:
+    import hashlib
+
+    from perathos.canonical import canonical_bytes
+    from perathos.evidence import _sha256_file
+    from perathos.signing import sign_hash
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    log = _record(project, sk, vk)
+    res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, make_zip=False)
+    d = res["dir"]
+    (d / "session.head.json").write_text(head if isinstance(head, str) else json.dumps(head), encoding="utf-8")
+    m = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
+    m["files"]["session.head.json"] = _sha256_file(d / "session.head.json")
+    body = {k: v for k, v in m.items() if k not in ("manifest_hash", "signature")}
+    m["manifest_hash"] = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    m["signature"] = sign_hash(m["manifest_hash"], sk)
+    (d / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
+    return d, vk
+
+
+@pytest.mark.parametrize("head, code", [
+    ({"seq": 4}, "ERR_HEAD_MISMATCH"),  # the checkpoint seq, no receipt_hash
+    ({"receipt_hash": "0" * 64}, "ERR_HEAD_MISMATCH"),
+    ("not json", "ERR_HEAD_MISMATCH"),
+    ({"seq": 999}, "ERR_TRUNCATED"),
+])
+def test_unusable_head_witness_agrees(tmp_path, head, code):
+    d, vk = _pack_with_head(tmp_path, head)
+    py = verify_evidence_pack(d, expected_verify_key=vk)
+    js = _verify_dir(d, vk)
+    py_head = [e for e in py["errors"] if e.startswith(("ERR_HEAD_MISMATCH", "ERR_TRUNCATED"))]
+    js_head = [e for e in js["errors"] if e.startswith(("ERR_HEAD_MISMATCH", "ERR_TRUNCATED"))]
+    assert py_head and js_head, (py["errors"], js["errors"])
+    assert py_head[0].split(":")[0] == js_head[0].split(":")[0] == code
+
+
+@pytest.mark.parametrize("empty", [{}, [], ""])
+def test_empty_precondition_is_absent_in_both(tmp_path, empty):
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                       "tool_name": "Bash", "tool_use_id": "e1", "tool_input": {"command": "ls"}},
+                      guard_decision={"decision": "allow", "rule": "r", "precondition": empty})
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    res = export_evidence_pack(session_log_path(project, SID), tmp_path / "pack", signing_key_hex=sk)
+    py = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    js = _verify_dir(_extract(res["zip"], tmp_path / "x"), vk)
+    assert py["valid"], py["errors"]
+    assert js["valid"], js["errors"]

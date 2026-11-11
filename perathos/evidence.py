@@ -70,6 +70,63 @@ def _project_root_for(log: Path) -> Path:
     return log.parent.parent.parent
 
 
+def _check_citations(receipts: list[dict], preconditions: set[str],
+                     approvals: dict[str, dict | None]) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Cross-check what the log cites against what the pack holds. Returns (errors, warnings, counts).
+
+    An allowed call that names a precondition must find it in ``preconditions``
+    (declared hashes), or nothing shows which safety check it relied on. A call
+    the log records as approved must point at an approve decision in
+    ``approvals`` (receipt_hash -> receipt, or None for a file that failed its
+    own check, which the caller has already reported) for exactly its
+    ``args_hash``. Export and ``evidence verify`` both use this, so the
+    exporter's report cannot say VERIFIED for a pack the verifier rejects.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    pc_cited = 0
+    cited: dict[str, list] = {}
+    verified = 0
+    for r in receipts:
+        g_field = r.get("guard")
+        if r.get("kind") != "pre" or not isinstance(g_field, dict):
+            continue
+        seq = r.get("seq")
+        if g_field.get("decision") != "deny" and g_field.get("precondition"):
+            pc_cited += 1
+            h = str(g_field["precondition"])
+            if h not in preconditions:
+                errors.append(f"ERR_PRECONDITION_MISSING: receipt {seq} cites precondition "
+                              f"{h[:16]}..., which is not in the pack")
+        if not g_field.get("approval"):
+            continue
+        h = str(g_field["approval"])
+        cited.setdefault(h, []).append(seq)
+        if h not in approvals:
+            errors.append(f"ERR_APPROVAL_MISSING: receipt {seq} cites approval {h[:16]}..., "
+                          f"which is not in the pack")
+            continue
+        g = approvals[h]
+        if g is None:
+            continue
+        request = g.get("request") if isinstance(g.get("request"), dict) else {}
+        if g.get("decision") != "approve":
+            errors.append(f"ERR_APPROVAL_NOT_APPROVED: receipt {seq} cites approval {h[:16]}..., "
+                          f"whose decision is {str(g.get('decision'))[:16]!r}")
+        elif request.get("args_hash") != r.get("args_hash"):
+            errors.append(f"ERR_APPROVAL_ARGS_MISMATCH: receipt {seq} cites approval {h[:16]}..., "
+                          f"which was given for different arguments")
+        else:
+            verified += 1
+    for h, seqs in cited.items():
+        if len(seqs) > 1:
+            warnings.append(f"approval {h[:16]}... is cited by {len(seqs)} calls (receipts "
+                            f"{', '.join(map(str, seqs))}); an approval is meant to be used once")
+    counts = {"preconditions_cited": pc_cited, "approvals_cited": sum(len(s) for s in cited.values()),
+              "approvals_verified": verified}
+    return errors, warnings, counts
+
+
 def _summarise(receipts: list[dict], preconditions: dict[str, dict]) -> dict[str, Any]:
     blocked, allowed = [], []
     for r in receipts:
@@ -163,6 +220,12 @@ def export_evidence_pack(
         tsa_roots=tsa_roots,
         check_head=True,
     )
+    # The same cross-check `evidence verify` makes. Gate signatures are not checked here
+    # (that needs the reviewer's pinned keys); `evidence verify` does that.
+    cite_errors, cite_warnings, _ = _check_citations(receipts, set(preconditions), dict(approvals))
+    for e in cite_errors:
+        report.fail(e)
+    report.warnings.extend(cite_warnings)
     summary = _summarise(receipts, preconditions)
     summary["approved_by_person"] = [
         {"seq": r.get("seq"), "ts": r.get("ts"), "tool": r.get("tool"), "rule": r["guard"].get("rule"),
@@ -305,21 +368,6 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                     errors.append(f"ERR_PRECONDITION_SIGNATURE: {f.name}")
             except (OSError, ValueError, TypeError, AttributeError):
                 errors.append(f"ERR_PRECONDITION_MALFORMED: {f.name}")
-        # Cross-check the log against them: an allowed call that names a precondition must
-        # find it in the pack, or nothing shows which safety check it relied on. (A file that
-        # failed its own check above still counts as present; its failure is already reported.)
-        receipts = _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []
-        pc_cited = 0
-        for r in receipts:
-            g_field = r.get("guard")
-            if (r.get("kind") != "pre" or not isinstance(g_field, dict) or g_field.get("decision") == "deny"
-                    or not g_field.get("precondition")):
-                continue
-            pc_cited += 1
-            h = str(g_field["precondition"])
-            if h not in pc_in_pack:
-                errors.append(f"ERR_PRECONDITION_MISSING: receipt {r.get('seq')} cites precondition "
-                              f"{h[:16]}..., which is not in the pack")
         # Gate approvals: each must verify (server and approver passkey signatures), against
         # the Gate key and the approver passkeys the verifier holds, if it holds any.
         from .gate import verify_receipt as _verify_gate
@@ -349,37 +397,14 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
             who = {"name": g["approver"].get("name"), "public_key": g["approver"].get("public_key")}
             if who not in approvers_seen:
                 approvers_seen.append(who)
-        # Cross-check the log against the approvals: a receipt that says "a person approved
-        # this" must point at an approve decision for exactly these arguments.
-        cited: dict[str, list] = {}
-        verified = 0
-        for r in receipts:
-            g_field = r.get("guard")
-            if r.get("kind") != "pre" or not isinstance(g_field, dict) or not g_field.get("approval"):
-                continue
-            h, seq = str(g_field["approval"]), r.get("seq")
-            cited.setdefault(h, []).append(seq)
-            if h not in in_pack:
-                errors.append(f"ERR_APPROVAL_MISSING: receipt {seq} cites approval {h[:16]}..., "
-                              f"which is not in the pack")
-                continue
-            g = in_pack[h]
-            if g is None:
-                continue  # that file's own failure is already reported above
-            if g.get("decision") != "approve":
-                errors.append(f"ERR_APPROVAL_NOT_APPROVED: receipt {seq} cites approval {h[:16]}..., "
-                              f"whose decision is {str(g.get('decision'))[:16]!r}")
-            elif g["request"].get("args_hash") != r.get("args_hash"):
-                errors.append(f"ERR_APPROVAL_ARGS_MISMATCH: receipt {seq} cites approval {h[:16]}..., "
-                              f"which was given for different arguments")
-            else:
-                verified += 1
-        for h, seqs in cited.items():
-            if len(seqs) > 1:
-                warnings.append(f"approval {h[:16]}... is cited by {len(seqs)} calls (receipts "
-                                f"{', '.join(map(str, seqs))}); an approval is meant to be used once")
+        # Cross-check the log against the preconditions and approvals in the pack. (A file
+        # that failed its own check above still counts as present; its failure is reported.)
+        receipts = _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []
+        cite_errors, cite_warnings, counts = _check_citations(receipts, pc_in_pack, in_pack)
+        errors.extend(cite_errors)
+        warnings.extend(cite_warnings)
         approvals_report = {
-            "cited": sum(len(s) for s in cited.values()), "in_pack": len(ap_files), "verified": verified,
+            "cited": counts["approvals_cited"], "in_pack": len(ap_files), "verified": counts["approvals_verified"],
             "gate_key_confirmed": gate_key is not None, "gate_key_source": gate_key_src,
             "approvers_pinned": pins is not None, "approvers_source": pins_src,
             "gate_keys": gate_keys_seen, "approvers": approvers_seen,
@@ -393,7 +418,7 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
         errors.extend(rep.errors)
         return {"valid": not errors, "errors": errors, "warnings": warnings, "session": rep.to_dict(),
                 "approvals": approvals_report,
-                "preconditions": {"cited": pc_cited, "in_pack": len(pc_files)}}
+                "preconditions": {"cited": counts["preconditions_cited"], "in_pack": len(pc_files)}}
     finally:
         if tmp is not None:
             tmp.cleanup()
