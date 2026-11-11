@@ -312,6 +312,12 @@ perathos gate trust first-receipt.json                                  # option
 - **Claude Code** waits up to `gate_wait` seconds (default 120) for the approval, then runs the
   command if approved. **Cursor** and the **MCP proxy** deny with the approval link; the agent
   retries the same command once a person approves.
+- The approve link carries a viewing token, so it is kept out of anything that may reach a
+  CI log: in CI (`CI` or `GITHUB_ACTIONS` set to `true`/`1`) the guard's deny message and
+  `require_approval` name the approval id only, and approvers get the link from the Gate's
+  notification. `PERATHOS_GATE_SHOW_LINK=1` (or `0`) forces the link on (or off) anywhere.
+  `perathos gate request --no-link` hides it from that command's output; error messages never
+  include it.
 - Each approval is bound to the exact arguments (`args_hash`), valid for 10 minutes after the
   decision, and used once (the client marks a used receipt on disk). Denials are recorded too.
 - The approval receipt's hash is written into the action's record (`guard.approval`) and the

@@ -120,7 +120,8 @@ class StubGate:
 @pytest.fixture
 def gate(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
-    for v in ("PERATHOS_GATE_URL", "PERATHOS_GATE_API_KEY", "PERATHOS_GATE_KEY", "PERATHOS_SIGNER"):
+    for v in ("PERATHOS_GATE_URL", "PERATHOS_GATE_API_KEY", "PERATHOS_GATE_KEY", "PERATHOS_SIGNER",
+              "CI", "GITHUB_ACTIONS", "PERATHOS_GATE_SHOW_LINK"):
         monkeypatch.delenv(v, raising=False)
     g = StubGate()
     yield g
@@ -521,3 +522,38 @@ def test_cli_request_no_link_never_prints_the_link_on_denial(gate):
     threading.Thread(target=deny_soon, daemon=True).start()
     r = CliRunner().invoke(cli, ["gate", "request", "--summary", "x", "--wait", "10", "--no-link", "--no-qr"])
     assert r.exit_code == 1 and "DENIED" in r.output and "Alice Moyo" in r.output and _no_link(r.output)
+
+
+@pytest.mark.parametrize("env, shown", [
+    ({}, True),
+    ({"CI": "true"}, False),
+    ({"GITHUB_ACTIONS": "true"}, False),
+    ({"CI": "1"}, False),
+    ({"CI": "TRUE"}, False),
+    ({"CI": "false"}, True),
+    ({"CI": "0", "GITHUB_ACTIONS": ""}, True),
+    ({"CI": "true", "PERATHOS_GATE_SHOW_LINK": "1"}, True),
+    ({"PERATHOS_GATE_SHOW_LINK": "0"}, False),
+])
+def test_ci_hides_the_link_from_the_guard_and_the_sdk(gate, tmp_path, monkeypatch, capsys, env, shown):
+    """The guard's deny reason and require_approval's stderr line can reach a CI log."""
+    from perathos.gate import show_approve_link
+    _login(gate)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert show_approve_link() is shown
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "Retry this exact command" in d.reason
+    if shown:
+        assert f"?t={TOKEN}" in d.reason
+    else:
+        assert _no_link(d.reason) and "link not shown in CI" in d.reason and "apr_" in d.reason
+    capsys.readouterr()
+    with pytest.raises(ApprovalTimeout):
+        require_approval("deploy", wait_seconds=1)
+    err = capsys.readouterr().err
+    assert "waiting for approval of apr_" in err
+    if shown:
+        assert f"?t={TOKEN}" in err
+    else:
+        assert _no_link(err) and "link not shown in CI" in err
