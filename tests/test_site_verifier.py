@@ -276,6 +276,8 @@ def _pack_with_head(tmp_path: Path, head) -> tuple[Path, str]:
     log = _record(project, sk, vk)
     res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, make_zip=False)
     d = res["dir"]
+    if callable(head):
+        head = head(d)
     (d / "session.head.json").write_text(head if isinstance(head, str) else json.dumps(head), encoding="utf-8")
     m = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
     m["files"]["session.head.json"] = _sha256_file(d / "session.head.json")
@@ -316,3 +318,18 @@ def test_empty_precondition_is_absent_in_both(tmp_path, empty):
     js = _verify_dir(_extract(res["zip"], tmp_path / "x"), vk)
     assert py["valid"], py["errors"]
     assert js["valid"], js["errors"]
+
+
+def test_float_head_seq_known_difference(tmp_path):
+    """Documented difference (THREAT_MODEL 5.6): JSON.parse cannot tell 4 from 4.0, so the browser
+    accepts a head witness whose seq is 4.0; the CLI requires an integer and fails it."""
+    def float_head(d: Path) -> str:
+        lines = (d / "session.jsonl").read_text(encoding="utf-8").splitlines()
+        cp = [json.loads(ln) for ln in lines if '"kind":"checkpoint"' in ln][-1]
+        return '{"seq": %d.0, "receipt_hash": "%s"}' % (cp["seq"], cp["receipt_hash"])
+
+    d, vk = _pack_with_head(tmp_path, float_head)
+    js = _verify_dir(d, vk)
+    assert js["valid"], js["errors"]
+    py = verify_evidence_pack(d, expected_verify_key=vk)
+    assert any(e.startswith("ERR_HEAD_MISMATCH") for e in py["errors"]), py["errors"]
