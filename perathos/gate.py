@@ -451,6 +451,9 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
     if status == "expired":
         _set_pending(cwd, ah, None)
         return Decision("deny", decision.rule, None, f"{first}. The approval request expired; retry to ask again.")
+    # The link is intended here: this reason goes back to the agent and the person at the keyboard
+    # (Claude Code / Cursor / MCP client), who may be the approver and needs it to approve. It is
+    # never written to a receipt (Decision.receipt_field leaves the reason out).
     return Decision("deny", decision.rule, None,
                     f"{first}. Approval requested from a person: {approve_url} . Retry this exact command "
                     f"after it is approved.")
@@ -461,11 +464,24 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
 # --------------------------------------------------------------------------- #
 
 
-class ApprovalDenied(GateError):
+class _ApprovalOutcome(GateError):
+    """A request that was not approved. ``str(exc)`` never carries the approve link: it
+    holds a viewing token and exception messages end up in CI logs other people can read.
+    A caller that should show the link to a person reads ``exc.approve_url`` instead."""
+
+    def __init__(self, message: str = "", *, approval_id: str | None = None, approve_url: str | None = None,
+                 status: str | None = None):
+        super().__init__(message)
+        self.approval_id = approval_id
+        self.approve_url = approve_url
+        self.status = status
+
+
+class ApprovalDenied(_ApprovalOutcome):
     pass
 
 
-class ApprovalTimeout(GateError):
+class ApprovalTimeout(_ApprovalOutcome):
     pass
 
 
@@ -476,7 +492,8 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
     """Block until a person approves this action with a passkey; return the verified receipt.
 
     Prints the approve link to stderr as soon as the request exists (or passes the created
-    request to ``on_created`` instead). Raises ApprovalDenied, ApprovalTimeout, or GateError. Example::
+    request to ``on_created`` instead). Raises ApprovalDenied, ApprovalTimeout, or GateError; their
+    messages name the approval id, never the approve link (it is on ``exc.approve_url``). Example::
 
         receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
                                    args={"to": "ACME Ltd", "amount": 5000})
@@ -505,6 +522,10 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
         if not chk:
             raise GateError(f"approval receipt rejected: {chk.error}")
         return receipt
+    approval_id, approve_url = created["id"], created.get("approve_url")
     if status == "denied":
-        raise ApprovalDenied(f"denied by {(receipt or {}).get('approver', {}).get('name', 'the approver')}")
-    raise ApprovalTimeout(f"no decision within {wait_seconds}s (status {status}); approve at {created['approve_url']}")
+        raise ApprovalDenied(f"{approval_id} denied by "
+                             f"{(receipt or {}).get('approver', {}).get('name', 'the approver')}",
+                             approval_id=approval_id, approve_url=approve_url, status=status)
+    raise ApprovalTimeout(f"no decision within {wait_seconds}s for {approval_id} (status {status})",
+                          approval_id=approval_id, approve_url=approve_url, status=status)

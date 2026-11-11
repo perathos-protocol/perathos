@@ -28,6 +28,7 @@ from perathos.gate import (
     decision_challenge,
     require_approval,
     ApprovalDenied,
+    ApprovalTimeout,
     verify_receipt,
 )
 from perathos.guard import Decision
@@ -35,6 +36,7 @@ from perathos.recorder import session_log_path
 from perathos.signing import generate_keypair
 
 RP = {"id": "localhost", "origin": "http://localhost:8787"}
+TOKEN = "tok-s3cret-view"  # the approve link's viewing token: must never reach an error message
 
 
 class StubGate:
@@ -87,7 +89,7 @@ class StubGate:
                 stub.approvals[req["id"]] = {"status": "pending", "request": req}
                 stub.created += 1
                 return self._send(201, {"id": req["id"], "status": "pending", "request": req,
-                                        "approve_url": f"{RP['origin']}/a/{req['id']}?t=x", "expires_at": req["expires_at"]})
+                                        "approve_url": f"{RP['origin']}/a/{req['id']}?t={TOKEN}", "expires_at": req["expires_at"]})
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.srv.server_port}"
@@ -451,3 +453,71 @@ def test_installer_gives_the_guard_time_to_wait(gate, tmp_path, monkeypatch):
     assert CliRunner().invoke(cli, ["hooks", "install", "--guard"]).exit_code == 0
     pre = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]
     assert pre["timeout"] == 150 and pre["onFailure"] == "block"
+
+
+def _no_link(text: str) -> bool:
+    return TOKEN not in text and "?t=" not in text and "/a/apr_" not in text
+
+
+def test_approval_errors_never_carry_the_approve_link(gate):
+    """Exception messages land in CI logs: they name the approval id, the link is an attribute."""
+    _login(gate)
+    quiet = lambda created: None  # noqa: E731
+    with pytest.raises(ApprovalTimeout) as ei:
+        require_approval("deploy", wait_seconds=1, on_created=quiet)
+    exc = ei.value
+    assert _no_link(str(exc)) and _no_link(repr(exc)) and _no_link(" ".join(map(str, exc.args)))
+    assert exc.approval_id and exc.approval_id in str(exc) and exc.status == "pending"
+    assert exc.approve_url.endswith(f"/a/{exc.approval_id}?t={TOKEN}")
+    gate.approvals[exc.approval_id]["status"] = "expired"  # out of the way of only_pending()
+
+    def decide_soon(decision):
+        for _ in range(100):
+            if any(a["status"] == "pending" for a in gate.approvals.values()):
+                aid = gate.only_pending()
+                if decision == "expire":
+                    gate.approvals[aid]["status"] = "expired"
+                else:
+                    gate.decide(aid, decision)
+                return
+            time.sleep(0.05)
+    threading.Thread(target=decide_soon, args=("deny",), daemon=True).start()
+    with pytest.raises(ApprovalDenied) as ei:
+        require_approval("deploy 2", wait_seconds=10, on_created=quiet)
+    assert _no_link(str(ei.value)) and "Alice Moyo" in str(ei.value) and ei.value.approval_id in str(ei.value)
+    assert ei.value.approve_url and TOKEN in ei.value.approve_url
+
+    threading.Thread(target=decide_soon, args=("expire",), daemon=True).start()
+    with pytest.raises(ApprovalTimeout) as ei:
+        require_approval("deploy 3", wait_seconds=10, on_created=quiet)
+    assert _no_link(str(ei.value)) and ei.value.status == "expired" and "expired" in str(ei.value)
+
+    # Backwards compatible: both still construct from a bare message and are GateErrors.
+    from perathos.gate import GateError
+    assert isinstance(ApprovalTimeout("x"), GateError) and ApprovalDenied("y").approve_url is None
+
+
+def test_cli_request_no_link_never_prints_the_link_on_timeout(gate):
+    _login(gate)
+    runner = CliRunner()
+    r = runner.invoke(cli, ["gate", "request", "--summary", "x", "--wait", "1", "--no-link", "--no-qr"])
+    assert r.exit_code == 3 and "PENDING no decision within 1s for apr_" in r.output
+    assert _no_link(r.output), r.output
+    # Interactive (no --no-link): the link is shown up front and again with the timeout.
+    r = runner.invoke(cli, ["gate", "request", "--summary", "y", "--wait", "1", "--no-qr"])
+    assert r.exit_code == 3 and r.output.count(f"?t={TOKEN}") == 2, r.output
+    assert "approve at http" in r.output.splitlines()[-1]
+
+
+def test_cli_request_no_link_never_prints_the_link_on_denial(gate):
+    _login(gate)
+
+    def deny_soon():
+        for _ in range(100):
+            if any(a["status"] == "pending" for a in gate.approvals.values()):
+                gate.decide(gate.only_pending(), "deny")
+                return
+            time.sleep(0.05)
+    threading.Thread(target=deny_soon, daemon=True).start()
+    r = CliRunner().invoke(cli, ["gate", "request", "--summary", "x", "--wait", "10", "--no-link", "--no-qr"])
+    assert r.exit_code == 1 and "DENIED" in r.output and "Alice Moyo" in r.output and _no_link(r.output)
