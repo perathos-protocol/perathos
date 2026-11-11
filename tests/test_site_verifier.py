@@ -211,3 +211,54 @@ def test_truncated_log_with_valid_manifest_fails(tmp_path):
     assert not js["valid"]
     assert any(e.startswith("ERR_TRUNCATED") for e in js["errors"])
     assert next(c for c in js["checks"] if c["id"] == "files")["ok"]  # manifest itself is fine
+
+
+def test_cited_precondition_missing_fails_in_both(tmp_path):
+    """An allowed call whose precondition is not in the pack: an error in the CLI and the browser alike."""
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    log = _record(project, sk, vk)
+    create_precondition(project, scope="*", signing_key_hex=sk, manual_reason="snapshot checked")
+    cmd = "terraform destroy -auto-approve"
+    d = decide("Bash", {"command": cmd}, project, trusted_key=vk)
+    record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                       "tool_name": "Bash", "tool_use_id": "z", "tool_input": {"command": cmd}},
+                      guard_decision=d.receipt_field() if d else None)
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    shutil.rmtree(project / ".perathos" / "preconditions")
+    res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, expected_verify_key=vk)
+    py = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    js = _verify_dir(_extract(res["zip"], tmp_path / "x"), vk)
+    assert not py["valid"] and not js["valid"]
+    missing = [e for e in js["errors"] if e.startswith("ERR_PRECONDITION_MISSING")]
+    assert missing == [e for e in py["errors"] if e.startswith("ERR_PRECONDITION_MISSING")] and len(missing) == 1
+    assert not next(c for c in js["checks"] if c["id"] == "preconditions")["ok"]
+
+
+def test_head_witness_hash_mismatch_fails_in_both(tmp_path):
+    """Head witness at a real checkpoint seq but with another hash: ERR_HEAD_MISMATCH in both verifiers."""
+    import hashlib
+
+    from perathos.canonical import canonical_bytes
+    from perathos.evidence import _sha256_file
+    from perathos.signing import sign_hash
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    log = _record(project, sk, vk)
+    res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, make_zip=False)
+    d = res["dir"]
+    head = json.loads((d / "session.head.json").read_text(encoding="utf-8"))
+    head["receipt_hash"] = "0" * 64
+    (d / "session.head.json").write_text(json.dumps(head), encoding="utf-8")
+    m = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
+    m["files"]["session.head.json"] = _sha256_file(d / "session.head.json")
+    body = {k: v for k, v in m.items() if k not in ("manifest_hash", "signature")}
+    m["manifest_hash"] = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    m["signature"] = sign_hash(m["manifest_hash"], sk)
+    (d / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
+    py = verify_evidence_pack(d)
+    js = _verify_dir(d)
+    assert any(e.startswith("ERR_HEAD_MISMATCH") for e in py["errors"]), py["errors"]
+    assert any(e.startswith("ERR_HEAD_MISMATCH") for e in js["errors"]), js["errors"]

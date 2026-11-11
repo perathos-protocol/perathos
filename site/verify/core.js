@@ -235,7 +235,7 @@ export async function verifyPack(files, opts = {}) {
   const cSigner = check("signer", expectedKey ? "Signed by the expected key" : "Signed by the expected key (no key given)");
   const cHead = check("head", "Head witness matches the log (no truncation)");
   const cAnch = check("anchors", "Timestamp anchors point at checkpoints in the log");
-  const cPre = check("preconditions", "Safety checks (preconditions) are intact and signed");
+  const cPre = check("preconditions", "Safety checks (preconditions) are in the pack, intact and signed");
 
   // ---- Manifest ----------------------------------------------------------
   let manifest = null;
@@ -539,12 +539,17 @@ export async function verifyPack(files, opts = {}) {
         };
       } else {
         item.precondition = { hash: g.precondition ?? null, missing: true };
-        if (g.precondition) warnings.push(`precondition ${g.precondition} used at seq ${pyStr(r.seq)} is not in the pack`);
+        if (g.precondition) {
+          cPre.errors.push(
+            `ERR_PRECONDITION_MISSING: receipt ${pyStr(r.seq)} cites precondition ` +
+              `${pyStr(g.precondition).slice(0, 16)}..., which is not in the pack`,
+          );
+        }
       }
     }
     destructive.push(item);
   }
-  if (!pcFiles.length) {
+  if (!pcFiles.length && !cPre.errors.length) {
     cPre.skipped = true;
     cPre.notes.push("no preconditions in this pack");
   } else if (!cPre.errors.length) {

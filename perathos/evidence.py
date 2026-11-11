@@ -242,6 +242,9 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
 
     Every approval a ``pre`` receipt cites must be in the pack, be an approve
     decision, and be for the same ``args_hash`` as the call that cites it.
+    Every precondition an allowed call cites must be in the pack
+    (``ERR_PRECONDITION_MISSING``), and the head witness must match the log's
+    checkpoint at its seq (``ERR_TRUNCATED`` / ``ERR_HEAD_MISMATCH``).
     """
     import tempfile
 
@@ -288,9 +291,12 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
         # Preconditions carried in the pack must be intact and signed (their
         # expiry is history by now, so it is not re-checked).
         from .guard import precondition_hash
-        for f in sorted((pack / "preconditions").glob("*.json")) if (pack / "preconditions").exists() else []:
+        pc_files = sorted((pack / "preconditions").glob("*.json")) if (pack / "preconditions").exists() else []
+        pc_in_pack: set[str] = set()  # declared precondition_hash of every readable file
+        for f in pc_files:
             try:
                 pc = json.loads(f.read_text(encoding="utf-8"))
+                pc_in_pack.add(str(pc.get("precondition_hash")))
                 if precondition_hash(pc) != pc.get("precondition_hash"):
                     errors.append(f"ERR_PRECONDITION_MODIFIED: {f.name}")
                     continue
@@ -299,6 +305,21 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                     errors.append(f"ERR_PRECONDITION_SIGNATURE: {f.name}")
             except (OSError, ValueError, TypeError, AttributeError):
                 errors.append(f"ERR_PRECONDITION_MALFORMED: {f.name}")
+        # Cross-check the log against them: an allowed call that names a precondition must
+        # find it in the pack, or nothing shows which safety check it relied on. (A file that
+        # failed its own check above still counts as present; its failure is already reported.)
+        receipts = _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []
+        pc_cited = 0
+        for r in receipts:
+            g_field = r.get("guard")
+            if (r.get("kind") != "pre" or not isinstance(g_field, dict) or g_field.get("decision") == "deny"
+                    or not g_field.get("precondition")):
+                continue
+            pc_cited += 1
+            h = str(g_field["precondition"])
+            if h not in pc_in_pack:
+                errors.append(f"ERR_PRECONDITION_MISSING: receipt {r.get('seq')} cites precondition "
+                              f"{h[:16]}..., which is not in the pack")
         # Gate approvals: each must verify (server and approver passkey signatures), against
         # the Gate key and the approver passkeys the verifier holds, if it holds any.
         from .gate import verify_receipt as _verify_gate
@@ -332,7 +353,7 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
         # this" must point at an approve decision for exactly these arguments.
         cited: dict[str, list] = {}
         verified = 0
-        for r in _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []:
+        for r in receipts:
             g_field = r.get("guard")
             if r.get("kind") != "pre" or not isinstance(g_field, dict) or not g_field.get("approval"):
                 continue
@@ -364,17 +385,15 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
             "gate_keys": gate_keys_seen, "approvers": approvers_seen,
         }
         anchors = pack / "anchors.jsonl"
+        # session.head.json sits beside session.jsonl in the pack, so session verify finds it and
+        # applies the same head check as on a live log: ERR_TRUNCATED or ERR_HEAD_MISMATCH.
         rep = verify_session(pack / "session.jsonl", expected_verify_key=expected_verify_key,
                              anchors_path=anchors if anchors.exists() else None, tsa_roots=tsa_roots,
-                             check_head=False)
-        head = pack / "session.head.json"
-        if head.exists():
-            h = json.loads(head.read_text(encoding="utf-8"))
-            if h.get("seq") is not None and int(h["seq"]) > rep.sealed_through:
-                rep.fail(f"ERR_TRUNCATED: head witness records seq {h['seq']}, log sealed through {rep.sealed_through}")
+                             check_head=True)
         errors.extend(rep.errors)
         return {"valid": not errors, "errors": errors, "warnings": warnings, "session": rep.to_dict(),
-                "approvals": approvals_report}
+                "approvals": approvals_report,
+                "preconditions": {"cited": pc_cited, "in_pack": len(pc_files)}}
     finally:
         if tmp is not None:
             tmp.cleanup()

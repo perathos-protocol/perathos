@@ -48,14 +48,17 @@ everything can be re-checked from the files.
 ## What a VALID pack establishes
 
 - **Integrity:** no receipt up to the last checkpoint was edited, removed, inserted or reordered
-  after it was written, and no file in the pack was changed after export (signed manifest).
+  after it was written, and no file in the pack was changed after export (signed manifest). If
+  the pack has a head witness, the log's checkpoint at that seq matches it in both seq and hash
+  (`ERR_TRUNCATED`, `ERR_HEAD_MISMATCH` otherwise).
 - **Who sealed it:** each checkpoint was signed by the key you confirmed.
 - **When (if anchored):** each anchored checkpoint existed no later than the time asserted by an
   independent RFC 3161 authority. An anchor for a checkpoint missing from the log proves the log
   was cut (`ERR_TRUNCATED`).
 - **Safeguards:** every destructive call the guard matched is recorded as blocked or allowed. An
   allowed call names the signed precondition it relied on: the check that was run (for example
-  a backup restore listing), who signed it, when, and its expiry.
+  a backup restore listing), who signed it, when, and its expiry. Every precondition the log
+  cites is in the pack (`ERR_PRECONDITION_MISSING` otherwise), and its hash and signature verify.
 - **Approvals by a person (if any, CLI only):** every call the log records as approved through
   the Gate points at a receipt that is in the pack, is an approve decision, and was given for
   the same arguments hash as that call (`ERR_APPROVAL_MISSING`, `ERR_APPROVAL_NOT_APPROVED`,
