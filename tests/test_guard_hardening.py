@@ -93,6 +93,7 @@ UNRESOLVABLE_REMOTE = [
 MISSED_FORMS = [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
+    "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
     "kubectl delete -n prod pvc x", "kubectl -n prod delete statefulset pg", "kubectl delete --namespace=prod pvc/x",
     "git -C repo reset --hard", "rmdir data /s /q", "del data\\*.* /s /q",
     "aws --profile prod s3 rb s3://b --force", "gcloud --project p sql backups delete 123",
@@ -101,18 +102,21 @@ MISSED_FORMS = [
     "psql -c \"DELETE FROM users -- all of them\"",
     # git forms that overwrite the work tree
     "git checkout HEAD -- .", "git checkout HEAD~1 .", "git restore --source=HEAD --worktree .", "git restore .",
-    "git restore --source=HEAD --staged --worktree .", "git restore --source=HEAD~3 -- src",
+    "git restore --source=HEAD --staged --worktree .", "git restore -SW .", "git restore :/",
     "git switch -f main", "git switch --discard-changes main",
     # infrastructure and databases
     "gcloud storage buckets delete gs://x", "tofu destroy", "tofu -chdir=infra destroy", "terragrunt destroy",
     "terragrunt run-all destroy", "terragrunt run --all destroy", "npx prisma db push --force-reset",
     "npx prisma db push --accept-data-loss", "npx prisma migrate reset --force", "python manage.py flush --noinput",
+    "python -m django flush --noinput",
     "django-admin flush", "mysqladmin -u root -f drop prod", "psql -c \"ALTER TABLE users DROP COLUMN email\"",
     "psql -c \"ALTER TABLE orders DROP CONSTRAINT orders_fk\"", "mysql -e \"ALTER TABLE users DROP email\"",
     "psql -c \"ALTER TABLE users ADD COLUMN x int, DROP COLUMN y\"",
     "mongosh prod --eval \"db.users.deleteMany({})\"", "mongo prod --eval \"db.users.remove({})\"",
     # cloud storage and platforms
-    "aws s3 sync empty/ s3://b --delete", "gsutil rb gs://b", "gsutil -m rm -r gs://b", "rclone purge remote:b",
+    "aws s3 sync empty/ s3://b --delete", "gsutil rb gs://b", "gsutil -m rm -r gs://b", "gsutil -m rm gs://b/**",
+    "gsutil rm -a gs://b/**", "gcloud alpha storage rm gs://b/**", "rclone purge remote:b",
+    "mysql -e \"DELETE FROM t LIMIT 1000\"", "echo \"DROP TABLE users\" | psql prod",
     "rclone delete remote:b/dir", "firebase firestore:delete --all-collections -f", "firebase database:remove / -f",
     "heroku apps:destroy --app x --confirm x", "heroku pg:reset DATABASE_URL --confirm x",
     "podman volume rm pgdata", "podman system prune -a --volumes", "podman system reset -f",
@@ -122,7 +126,7 @@ MISSED_FORMS = [
     # files emptied by a redirect, and rmtree imported by name
     "> prod.db", "> app.log", "echo > prod.sqlite", "cat /dev/null > app.log", "cp /dev/null prod.db",
     "python -c \"from shutil import rmtree; rmtree('data')\"", "python -c \"import shutil as s; s.rmtree('data')\"",
-    "python -c \"from shutil import rmtree as r; r('data')\"",
+    "python -c \"from shutil import rmtree as r; r('data')\"", "python -c \"from shutil import *; rmtree('d')\"",
 ]
 SELF_PROTECT = [
     "cat ~/.perathos/k''eys/signing.key", "cat ~/.perathos/keys/signing.key", "type %USERPROFILE%\\.perathos\\keys\\signing.key",
@@ -168,6 +172,23 @@ PRECISION_SAFE = [
     "python -c \"from shutil import copytree; copytree('a','b')\"", "python -c \"import shutil as s; s.copy('a','b')\"",
     "gcloud storage buckets list", "gcloud storage buckets describe gs://b", "gcloud sql instances list",
     "rmdir empty_dir", "del notes.txt", "dir /s", "cat .claude/./settings.json", "ls ./src/../docs",
+    # SQL words in text that never reaches a database
+    "gh pr create --title 'delete from cart' --body x", "git commit -m \"feat: delete from queue -h flag\"",
+    "git commit -m 'drop table users from docs; delete from t'", "grep -ri 'drop table' .",
+    "echo 'ALTER TABLE t DROP COLUMN c' >> migration.sql", "rg 'ALTER TABLE .* DROP' migrations",
+    "terraform apply -var 'destroy=false'", "terraform apply -destroy=false",
+    # option values are whole words, never the resource type
+    "kubectl delete -n deployments-test pod x", "kubectl delete --namespace ns-dev pod api", "kubectl -n all-apps delete pod x",
+    "kubectl delete -l app=all-in-one pod", "gcloud sql databases describe x --description 'safe to delete'",
+    # discarding changes to named files is allowed; the whole tree is not
+    "git checkout -- file.txt", "git checkout HEAD~1 -- src/a.py", "git checkout feature -- .github/workflows/ci.yml",
+    "git restore file.txt", "git restore -- file.txt", "git restore --source=HEAD~3 -- src", "git checkout .gitignore",
+    # redirects that are not to a data file
+    "> /dev/null", "ls >/dev/null", "cmd 2> /dev/null", "dir > NUL", "python -c \"print(1)\" > /dev/null; > /dev/null",
+    "node -e \"const f = (x) => x.db\"", "python gen.py > fixtures/test.db", "python gen.py > tests/data/app.db",
+    # help for the commands the new rules cover
+    "python manage.py flush --help", "heroku run python manage.py flush --help", "terraform destroy --help",
+    "kubectl delete pvc --help", "npx prisma db push --force-reset --help", "gsutil rb --help",
 ]
 # Ordinary variable, substitution and download use that must stay allowed.
 UNRESOLVABLE_SAFE = [
@@ -214,7 +235,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 217
+BYPASS_CORPUS_SIZE = 228
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -304,6 +325,8 @@ KNOWN_OPEN = [
     "make clean", "npm run clean",                                  # build-tool recipes are not read
     "sudo -n $CMD x", "( $CMD -rf x )", "ssh host \"$CMD\"",        # wrapper options, subshell, remote shell
     "pip install https://x.example/pkg.tar.gz", "npx some-remote-package",
+    "rclone sync src remote:b",          # deletes extra files on the remote, but it is the normal backup command
+    "kubectl delete -f pvc.yaml",        # the resource types are in the file, which is not read
 ]
 
 
@@ -335,6 +358,56 @@ def test_precision_look_alikes_allowed(cmd):
     assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
 
+def test_help_exemption_is_narrow():
+    for cmd in ("sh -c \"terraform destroy\" --help", "terraform destroy --help; terraform destroy",
+                "kubectl delete ns prod -l \"a --help\"", "terraform destroy $X --help",
+                "terraform destroy --help\nterraform destroy", "rm -rf data --help",
+                "python -c \"import shutil; shutil.rmtree('d')\" --help"):
+        assert evaluate("Bash", {"command": cmd}) is not None, cmd
+
+
+def test_query_rules_only_where_a_query_can_run():
+    # text-only programs carry SQL words in prose; a database client runs them
+    assert evaluate("Bash", {"command": "git commit -m \"DROP TABLE is gone\""}) is None
+    m = evaluate("Bash", {"command": "echo 'DROP TABLE users' | psql prod"})
+    assert m is not None and m.rule_id == "sql.drop"
+    m = evaluate("Bash", {"command": "python -c \"cur.execute('DELETE FROM users')\""})
+    assert m is not None and m.rule_id == "sql.delete-all"
+    # the flag-shaped end of a statement counts only with a database client
+    assert evaluate("Bash", {"command": "notify --text delete from cart --urgent"}) is None
+    assert evaluate("Bash", {"command": "mysql -e \"DELETE FROM cart\" --force"}).rule_id == "sql.delete-all"
+
+
+def test_overlong_input_fails_closed(tmp_path):
+    from perathos.guard import MAX_SCAN_CHARS
+    _, vk = generate_keypair()
+    d = decide("Bash", {"command": "echo " + "a" * MAX_SCAN_CHARS}, tmp_path, trusted_key=vk)
+    assert d.decision == "deny" and d.rule == "guard.too-long" and "too long" in d.reason
+    assert evaluate("mcp__db__query", {"sql": "select 1 " * 5000}).rule_id == "guard.too-long"
+    # long file content is scanned in chunks of whole lines
+    body = "print('ok')\n" * 5000
+    assert evaluate("Write", {"file_path": "/p/big.py", "content": body}) is None
+    m = evaluate("Write", {"file_path": "/p/big.sh", "content": body + "rm -rf /data\n"})
+    assert m is not None and m.rule_id == "write:fs.rm-recursive"
+
+
+ADVERSARIAL = ["del ", "gcloud ", "gsutil rm ", "git checkout ", "git restore ", "robocopy ", "mysqladmin ", "aws s3 sync ",
+               "a/", "a/../", "curl x ", "eval ", "\"a\" ", "psql ", "from shutil import rmtree ", "kubectl -n x ",
+               "terraform apply ", "delete from t "]
+
+
+@pytest.mark.parametrize("shape", ADVERSARIAL)
+def test_adversarial_input_is_fast(tmp_path, shape):
+    import time
+    for size in (16000, 50000):
+        cmd = (shape * (size // len(shape) + 1))[:size]
+        for tool, inp in (("Bash", {"command": cmd}), ("Write", {"file_path": "/p/x.sh", "content": cmd}),
+                          ("mcp__db__query", {"sql": cmd})):
+            t = time.perf_counter()
+            decide(tool, inp, tmp_path, trusted_key=None)
+            assert time.perf_counter() - t < 2.0, (shape, size, tool)
+
+
 def test_sql_rules_see_through_stripped_quotes():
     # the quote branches of the old sql.delete-all rule could never match
     assert evaluate("Bash", {"command": "psql -d prod -c \"DELETE FROM users\" -h db"}).rule_id == "sql.delete-all"
@@ -351,6 +424,14 @@ def test_file_tools_normalise_protected_paths():
     assert evaluate("Read", {"file_path": "/h/.perathos/x/../keys/signing.key"}).rule_id == "guard.key-access"
     # `..` that leaves the protected directory is not a protected path
     assert evaluate("Write", {"file_path": "/p/.claude/../notes.md", "content": "x"}) is None
+
+
+def test_normalize_paths_folds_in_one_pass():
+    from perathos.guard import _normalize_paths
+    assert _normalize_paths("cp x .claude/a/./b/../../settings.json") == "cp x .claude/settings.json"
+    assert _normalize_paths("echo > ./.perathos/../.perathos/approvers.json") == "echo > .perathos/approvers.json"
+    assert _normalize_paths("rm -r .perathos/") == "rm -r .perathos/"
+    assert _normalize_paths("cat ../a/../b C:\\x\\..\\y") == "cat ../b C:/y"
 
 
 def test_normalize_strips_quotes_and_comments():
