@@ -152,6 +152,23 @@ UNSURE_PARSE = [
     'cat <<EOF |\nDROP TABLE t;\nEOF\n# c\npsql',
     'echo "drop table t" | p${x}sql',
 ]
+# SQL written earlier on the line and read by a client later, and a client
+# reached through PowerShell's `&`: with a client named anywhere, or a computed
+# program, all the text counts, as on main.
+CLIENT_ELSEWHERE = [
+    'echo "DROP TABLE users;" > /tmp/q.sql && cat /tmp/q.sql | psql',
+    'echo "drop table t" | tee q.sql; cat q.sql | sqlite3 a.db',
+    'echo FLUSHALL > c.txt; cat c.txt | redis-cli',
+    'echo "drop table t" > q.sql; cat q.sql | docker exec -i db psql',
+    'printf -v X "drop table t"; echo $X | psql',
+    'git config x.q "drop table t"; git config x.q | psql',
+    'Write-Output "drop table t" | Out-File q.sql; Get-Content q.sql | psql',
+    'echo "drop table t" | & psql',
+    'Write-Output "drop table t" | & ("ps" + "ql")',
+    'Write-Output "drop table t" | & (Get-Command psql)',
+    'echo drop table t | p^sql',  # cmd-style escape
+    'echo "drop table t" | psq\u217c',  # a compatibility form of `l`
+]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -161,7 +178,7 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # subcommand, switches after the path, SQL whose quotes the normaliser strips,
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
-                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + [
+                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -265,8 +282,7 @@ PRECISION_SAFE = [
     "> /dev/null", "ls >/dev/null", "cmd 2> /dev/null", "dir > NUL", "python -c \"print(1)\" > /dev/null; > /dev/null",
     "node -e \"const f = (x) => x.db\"", "python gen.py > fixtures/test.db", "python gen.py > tests/data/app.db",
     # a database client's name inside text that never reaches one
-    "git commit -m 'prisma: drop table legacy_users'", "git commit -m 'bq: delete from staging'",
-    "gh pr create --title 'mysql: delete from cart' --body x", "echo 'DELETE FROM users;' > q.sql",
+    "echo 'DELETE FROM users;' > q.sql",
     "cat README.md | grep 'drop table'", "jq '.drop(x)' f.json",
 ]
 # Ordinary variable, substitution and download use that must stay allowed.
@@ -314,7 +330,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 307
+BYPASS_CORPUS_SIZE = 319
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -557,7 +573,7 @@ def test_no_regression_against_main_corpus(tmp_path):
 
 
 @pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT + PIPED_WITH_SUBSTITUTION
-                         + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE)
+                         + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE)
 def test_blocked_through_every_tool(cmd):
     for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
                       ("Write", {"file_path": "/p/a.sh", "content": cmd})):
@@ -602,6 +618,18 @@ def test_substitution_handling_keeps_text_quiet():
     assert m is not None and m.rule_id == "sql.drop"
     # a call's parentheses are not a substitution: the query text keeps them
     assert evaluate("Bash", {"command": "ssh db mongosh -e 'db.users.drop()'"}).rule_id == "db.mongo-drop"
+
+
+def test_client_named_anywhere_reads_all_text():
+    # a database client named anywhere makes the query rules read all the text, as on
+    # main; prose that names a client and SQL is therefore denied (accepted)
+    for cmd in ("git commit -m 'prisma: drop table legacy_users'", "git commit -m 'bq: delete from staging'",
+                "gh pr create --title 'mysql: delete from cart' --body x"):
+        assert evaluate("Bash", {"command": cmd}) is not None, cmd
+    # a client with no destructive query stays allowed
+    for cmd in ("cat check.sql | psql -d app", "psql -c \"SELECT count(*) FROM users\"", "echo 'select 1' | psql"):
+        assert evaluate("Bash", {"command": cmd}) is None, cmd
+        assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
 
 def test_sql_rules_see_through_stripped_quotes():

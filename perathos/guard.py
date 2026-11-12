@@ -44,6 +44,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -935,9 +936,11 @@ _EXPANSION = re.compile(r"\$\{[^{}$\n]*\}|\$\w+")  # no `{` or `$` inside: unclo
 
 def _has_client(text: str) -> bool:
     """A database client named in ``text``, also with backslash escapes
-    removed (`p\\sql`) and with `${...}` / `$name` cut out of words
-    (`p${x}sql`)."""
-    text = _UNESCAPE.sub(r"\1", text)
+    removed (`p\\sql`), cmd's `^` escapes removed (`p^sql`), Unicode
+    compatibility forms folded (`psq\u217c`), and `${...}` / `$name` cut out
+    of words (`p${x}sql`). Erring towards a client only makes the query rules
+    read more text."""
+    text = unicodedata.normalize("NFKC", _UNESCAPE.sub(r"\1", text)).replace("^", "")
     return _DB_CLIENT.search(text) is not None or _DB_CLIENT.search(_EXPANSION.sub("", text)) is not None
 
 
@@ -1035,11 +1038,12 @@ def _substitution_bodies(view: str) -> tuple[list[str], bool]:
     return bodies, balanced and not stack
 
 
-def _pipelines(line: str, base: list[str], client: list[str]) -> bool:
+def _pipelines(line: str, base: list[str], client: list[str], powershell: bool = False) -> bool:
     """Sort the simple commands of one command line into ``base`` (may hold a
     query) and ``client`` (runs a database client). True when a client reads
     a file or redirect, so anything on the line may be its query."""
-    for pipeline in re.split(r"\|\||&&|[;&\n]", line.replace("|&", "|")):
+    # In PowerShell a lone `&` is the call operator, not a separator.
+    for pipeline in re.split(r"\|\||&&|[;\n]" if powershell else r"\|\||&&|[;&\n]", line.replace("|&", "|")):
         simples = pipeline.split("|")
         kinds = [_command_kind(s) for s in simples]
         if "client" in kinds[1:]:
@@ -1065,7 +1069,25 @@ def _unsure(text: str) -> bool:
     return _UNSURE.search(text) is not None
 
 
-def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], list[str]]:
+# A program that is computed or that runs another command line: PowerShell
+# `&` / `.` before anything but a plain word, `iex`, `eval`, `source`, `xargs`,
+# a variable as the program, `sh -c`, `cmd /c`, `powershell -c`.
+_COMPUTED = (
+    re.compile(r"(?<![&>\d])&(?!&)\s*(?![A-Za-z_][\w.-]*(?:\s|$|[;|)]))\S"
+               r"|(?:^|[\s;|&(])\.\s+(?![A-Za-z_][\w.-]*(?:\s|$|[;|)]))\S"
+               r"|\b(?:iex|invoke-expression|eval|source|xargs)\b"
+               r"|(?:^|[;|&\n({])\s*\$[\w{(]"
+               rf"|\b{_SH}\s+(?:-\w+\s+)*-\w*c\b|\bcmd(?:\.exe)?\s+(?:/\w\s+)*/[ck]\b", re.IGNORECASE),
+    _FirstStart(r"\b(?:powershell|pwsh)(?:\.exe)?\b",
+                r"\b(?:powershell|pwsh)(?:\.exe)?\b[^;|&\n]*\s-(?:c|command|e|ec|enc\w*)\b", "[;|&\n]"),
+)
+
+
+def _computed_program(text: str) -> bool:
+    return any(rx.search(text) for rx in _COMPUTED)
+
+
+def _query_texts(text: str, norm: str, view: str | None, powershell: bool = False) -> tuple[list[str], list[str]]:
     """(texts for the query rules, texts that may also use the client-only
     rules). ``view`` is the structure view of a shell command line, or None
     for scripts, file content and MCP arguments (all the text counts).
@@ -1076,11 +1098,11 @@ def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], lis
     contents of each substitution are sorted again on top of that."""
     client_anywhere = _has_client(norm)
     full = [norm], ([norm] if client_anywhere else [])
-    if view is None or _unsure(text):
-        return full
-    # A client anywhere in a command with a data heredoc: the body may be its
-    # query (`cat <<EOF | psql`, a pipeline that goes on after the terminator).
-    if client_anywhere and any(not to_shell for _s, _e, to_shell in _heredocs(text)):
+    # The exemptions only ever apply where no database client is named and no
+    # program is computed: SQL written earlier on the line can reach a client
+    # through a file, a variable or git config (`echo ... > q.sql; cat q.sql
+    # | psql`), and a computed program can be one (`| & ("ps" + "ql")`).
+    if view is None or client_anywhere or _unsure(text) or _computed_program(text):
         return full
     bodies, balanced = _substitution_bodies(view)
     if not balanced:
@@ -1088,14 +1110,14 @@ def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], lis
     base: list[str] = []
     client: list[str] = []
     for line in [view] + bodies:
-        if _pipelines(line.translate(_REAL_BRACKETS), base, client):
+        if _pipelines(line.translate(_REAL_BRACKETS), base, client, powershell):
             return full  # `psql -f f.sql`: anything on the line may be the query
     return base + client, client
 
 
-def _query_match(text: str, norm: str, view: str | None) -> Match | None:
+def _query_match(text: str, norm: str, view: str | None, powershell: bool = False) -> Match | None:
     """The query-language rules, applied only where a query can be (see QUERY_RULES)."""
-    texts, client_texts = _query_texts(text, norm, view)
+    texts, client_texts = _query_texts(text, norm, view, powershell)
     for rules, ts in ((QUERY_RULES, texts), (CLIENT_QUERY_RULES, client_texts)):
         for rule in rules:
             for t in ts:
@@ -1130,7 +1152,7 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     for rule in REDIRECT_RULES:
         if (need_view and rule.pattern.search(view)) or (unsure and rule.pattern.search(norm)):
             return Match(rule.rule_id, rule.description, text)
-    hit = _query_match(text, norm, view if shell is not None else None)
+    hit = _query_match(text, norm, view if shell is not None else None, shell == "PowerShell")
     if hit is not None:
         return hit
     if shell is None and not _PREFILTER_REMOTE.search(text):
