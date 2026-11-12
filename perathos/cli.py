@@ -1815,7 +1815,9 @@ def gate_request(summary, tool, target, detail, args_json, wait_seconds, ttl_sec
         click.echo(f"DENIED  {exc}", err=True)
         sys.exit(1)
     except ApprovalTimeout as exc:
-        click.echo(f"PENDING {exc}", err=True)
+        # The message never holds the link; add it back only where the link may be shown.
+        link = "" if no_link or not getattr(exc, "approve_url", None) else f"; approve at {exc.approve_url}"
+        click.echo(f"PENDING {exc}{link}", err=True)
         sys.exit(3)
     except GateError as exc:
         click.echo(f"[ERROR] {exc}", err=True)

@@ -260,6 +260,24 @@ class GateError(RuntimeError):
     pass
 
 
+SHOW_LINK_ENV = "PERATHOS_GATE_SHOW_LINK"
+_CI_ENV = ("CI", "GITHUB_ACTIONS")
+
+
+def show_approve_link() -> bool:
+    """Whether the approve link (it carries a viewing token) may be printed or handed to an agent.
+
+    PERATHOS_GATE_SHOW_LINK=1/0 (also true/false, yes/no) decides when set. Otherwise the link
+    is hidden in CI (CI or GITHUB_ACTIONS is "true" or "1"), where logs may be public, and
+    shown everywhere else; approvers get it from the Gate's notification either way."""
+    override = os.environ.get(SHOW_LINK_ENV, "").strip().lower()
+    if override in ("1", "true", "yes"):
+        return True
+    if override in ("0", "false", "no"):
+        return False
+    return not any(os.environ.get(v, "").strip().lower() in ("true", "1") for v in _CI_ENV)
+
+
 class GateClient:
     """Agent-side client. Configure with `perathos gate login` or env vars
     PERATHOS_GATE_URL / PERATHOS_GATE_API_KEY / PERATHOS_GATE_KEY."""
@@ -451,6 +469,14 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
     if status == "expired":
         _set_pending(cwd, ah, None)
         return Decision("deny", decision.rule, None, f"{first}. The approval request expired; retry to ask again.")
+    # The link is intended here: this reason goes back to the agent and the person at the keyboard
+    # (Claude Code / Cursor / MCP client), who may be the approver and needs it to approve. It is
+    # never written to a receipt (Decision.receipt_field leaves the reason out). In CI the reason
+    # can land in a public log, so there the request is named by id only.
+    if not show_approve_link():
+        return Decision("deny", decision.rule, None,
+                        f"{first}. Approval {approval_id} requested from a person; approvers are notified by "
+                        f"the Gate (link not shown in CI). Retry this exact command after it is approved.")
     return Decision("deny", decision.rule, None,
                     f"{first}. Approval requested from a person: {approve_url} . Retry this exact command "
                     f"after it is approved.")
@@ -461,11 +487,24 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
 # --------------------------------------------------------------------------- #
 
 
-class ApprovalDenied(GateError):
+class _ApprovalOutcome(GateError):
+    """A request that was not approved. ``str(exc)`` never carries the approve link: it
+    holds a viewing token and exception messages end up in CI logs other people can read.
+    A caller that should show the link to a person reads ``exc.approve_url`` instead."""
+
+    def __init__(self, message: str = "", *, approval_id: str | None = None, approve_url: str | None = None,
+                 status: str | None = None):
+        super().__init__(message)
+        self.approval_id = approval_id
+        self.approve_url = approve_url
+        self.status = status
+
+
+class ApprovalDenied(_ApprovalOutcome):
     pass
 
 
-class ApprovalTimeout(GateError):
+class ApprovalTimeout(_ApprovalOutcome):
     pass
 
 
@@ -475,8 +514,10 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
                      on_created=None) -> dict:
     """Block until a person approves this action with a passkey; return the verified receipt.
 
-    Prints the approve link to stderr as soon as the request exists (or passes the created
-    request to ``on_created`` instead). Raises ApprovalDenied, ApprovalTimeout, or GateError. Example::
+    Prints the approve link to stderr as soon as the request exists (only the approval id in CI,
+    see ``show_approve_link``), or passes the created request to ``on_created`` instead.
+    Raises ApprovalDenied, ApprovalTimeout, or GateError; their
+    messages name the approval id, never the approve link (it is on ``exc.approve_url``). Example::
 
         receipt = require_approval("Wire $5,000 to ACME Ltd", tool="payments.transfer",
                                    args={"to": "ACME Ltd", "amount": 5000})
@@ -494,9 +535,12 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
     # Surface the approve link at once: without a notifier the requester is the only one who has it.
     if on_created is not None:
         on_created(created)
-    else:
+    elif show_approve_link():
         print(f"perathos gate: waiting for approval of {created['id']}; approve at {created['approve_url']}",
               file=sys.stderr, flush=True)
+    else:
+        print(f"perathos gate: waiting for approval of {created['id']} "
+              f"(approvers are notified by the Gate; link not shown in CI)", file=sys.stderr, flush=True)
     st = client.wait_for_decision(created["id"], wait_seconds)
     status, receipt = st.get("status"), st.get("receipt")
     if status == "approved" and isinstance(receipt, dict):
@@ -505,6 +549,10 @@ def require_approval(summary: str, *, tool: str = "custom", args=None, target: s
         if not chk:
             raise GateError(f"approval receipt rejected: {chk.error}")
         return receipt
+    approval_id, approve_url = created["id"], created.get("approve_url")
     if status == "denied":
-        raise ApprovalDenied(f"denied by {(receipt or {}).get('approver', {}).get('name', 'the approver')}")
-    raise ApprovalTimeout(f"no decision within {wait_seconds}s (status {status}); approve at {created['approve_url']}")
+        raise ApprovalDenied(f"{approval_id} denied by "
+                             f"{(receipt or {}).get('approver', {}).get('name', 'the approver')}",
+                             approval_id=approval_id, approve_url=approve_url, status=status)
+    raise ApprovalTimeout(f"no decision within {wait_seconds}s for {approval_id} (status {status})",
+                          approval_id=approval_id, approve_url=approve_url, status=status)
