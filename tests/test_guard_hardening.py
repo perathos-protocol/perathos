@@ -271,6 +271,33 @@ TEXT_ESCAPES = [
     ('echo "DROP TABLE t" | python x.py > /dev/null', ('Bash', 'PowerShell', 'mcp', 'Write')),
     ('awk "BEGIN{print \\"DROP TABLE t\\"}" > q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
 ]
+# Text-only programs that run a program or write a file themselves: git and gh
+# aliases, settings, pagers and editors, `--output`, signing, `rg --pre`, ack, yq -i,
+# PowerShell writers. With the tools main denies it for.
+TEXT_PROGRAM_ESCAPES = [
+    ('git x "DROP TABLE users"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git q "DROP TABLE users"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('gh q "DROP TABLE users"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git runsql "TRUNCATE users"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('GIT_EDITOR="python run.py" git commit -e -m "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('PAGER="python run.py" git -p log -1 --format="DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('GIT_PAGER="python run.py" git log -1 --format="DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('GH_PAGER="python run.py" gh api /user --jq \'"DROP TABLE t"\'', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git -c gpg.program="python run.py" commit -S -m "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git -c core.askPass="python run.py" -c x.y="DROP TABLE t" fetch', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git -c pager.log="python run.py" log -1 --format="DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git -c core.pager="python run.py" log -1 --format="DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git log -1 --format="DROP TABLE t" --output=q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('yq -n ".x = \\"DROP TABLE t\\"" -i c.yml', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('ack --output="DROP TABLE t" --pager="python run.py" x README.md', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('rg --pre python "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git config x.q "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('gh secret set Q -b "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Set-Content q.sql -Value "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('New-Item q.sql -Value "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Out-File -FilePath q.sql -InputObject "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Write-Output "DROP TABLE t" -OutVariable v', ('Bash', 'PowerShell', 'mcp', 'Write')),
+]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -281,7 +308,7 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
                 + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE
-                + [c for c, tools in TEXT_GOES_ON + TEXT_ESCAPES if "Bash" in tools] + [
+                + [c for c, tools in TEXT_GOES_ON + TEXT_ESCAPES + TEXT_PROGRAM_ESCAPES if "Bash" in tools] + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -433,7 +460,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 412
+BYPASS_CORPUS_SIZE = 434
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -735,7 +762,7 @@ def test_client_named_anywhere_reads_all_text():
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
 
-@pytest.mark.parametrize("cmd, tools", TEXT_GOES_ON + TEXT_ESCAPES)
+@pytest.mark.parametrize("cmd, tools", TEXT_GOES_ON + TEXT_ESCAPES + TEXT_PROGRAM_ESCAPES)
 def test_text_that_goes_on_counts(cmd, tools):
     names = {"Bash": ("Bash", {"command": cmd}), "PowerShell": ("PowerShell", {"command": cmd}),
              "mcp": ("mcp__x__run", {"cmd": cmd}), "Write": ("Write", {"file_path": "/p/a.sh", "content": cmd})}
@@ -750,6 +777,10 @@ def test_text_only_exemption_needs_output_to_go_nowhere():
     # text that goes nowhere (or only to the bit bucket) stays exempt
     for cmd in ("git commit -m \"DROP TABLE t\"", "echo done", "grep -rn \"drop table\" src/",
                 "git commit -m \"fix: handle drop table in parser\" && git push", "cd src && grep -n \"drop table\" x.sql",
+                "git commit -m \"fix: drop table in parser\"", "git tag -a v1 -m \"drop table support\"",
+                "gh pr create --title \"Handle drop table\" --body \"drop table now blocked\"",
+                "gh issue comment 1 --body \"drop table is fixed\"", "git log --grep=\"drop table\" --oneline",
+                "rg -i \"drop table\" --type sql", "git notes add -m \"DROP TABLE t\"",
                 "Write-Host \"DROP TABLE t\"", "echo \"drop table t\" > /dev/null", "grep \"drop table\" f 2> err.txt"):
         assert evaluate("Bash", {"command": cmd}) is None, cmd
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd

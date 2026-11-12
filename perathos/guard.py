@@ -460,9 +460,47 @@ _DB_CLIENT = re.compile(
 # title, an echoed or searched string. (sed and awk are not: they can write
 # files from inside their script, `sed -i`, `1w q.sql`, `print > "f"`.)
 _TEXT_ONLY_PROGRAMS = frozenset({
-    "git", "gh", "glab", "hub", "hg", "svn", "jj", "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "git", "gh", "glab", "echo", "printf", "grep", "egrep", "fgrep", "rg",
     "jq", "yq", "write-host", "write-output", "select-string", "sls",
 })
+# git, gh and glab run programs through aliases, settings and hooks, so they
+# are text-only only for an allow-list of built-in subcommands and options.
+_GIT_TEXT_SUBCOMMANDS = frozenset({
+    "commit", "tag", "log", "show", "status", "diff", "grep", "notes", "add", "push", "pull", "fetch", "checkout",
+    "switch", "branch", "stash", "rebase", "merge", "restore", "reset", "rev-parse", "describe", "blame",
+    "shortlog", "ls-files", "remote", "worktree", "cherry-pick", "revert", "init", "clone", "config",
+})
+_GIT_OPTIONS_WITH_VALUE = frozenset({"-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix"})
+# Options that run a program or write a file: `-c`, `--config-env`,
+# `--exec-path`, `-o` / `--output`, `--ext-diff`, `--textconv`, signing.
+_GIT_RUNS_OPTION = re.compile(r"(?-i:^-c$|^-o$|^-[A-Za-z]*S)|^--(?:config-env|exec-path|output|ext-diff|textconv|gpg-sign)"
+                              r"(?:=|$)", re.IGNORECASE)
+_GIT_ENV = re.compile(r"\bGIT_\w*=|\w*(?:PAGER|EDITOR)=", re.IGNORECASE)
+_FORGE_GROUPS = frozenset({"pr", "issue", "release", "repo"})
+_FORGE_ACTIONS = frozenset({"view", "list", "create", "comment", "edit", "status"})
+
+
+def _text_only_call(prog: str, prefix: str, args: list[str]) -> bool:
+    """Whether a text-only program's call stays text-only (see _GIT_TEXT_SUBCOMMANDS)."""
+    if prog == "rg":
+        return not any(a.startswith("--pre") for a in args)
+    if prog not in ("git", "gh", "glab"):
+        # PowerShell common parameters that keep the output: `-OutVariable v`, `-PipelineVariable v`
+        return not any(re.match(r"-(?:outvariable|ov|pipelinevariable|pv)(?::|$)", a, re.IGNORECASE) for a in args)
+    if _GIT_ENV.search(prefix) or any(_GIT_RUNS_OPTION.search(a) for a in args):
+        return False
+    if prog == "git":
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if args[i] in _GIT_OPTIONS_WITH_VALUE else 1
+        if i >= len(args) or args[i].lower() not in _GIT_TEXT_SUBCOMMANDS:
+            return False
+        # `git config` only reads: `--get*`, `--list`, `-l`
+        return args[i].lower() != "config" or any(a in ("-l", "--list") or a.startswith("--get") for a in args[i + 1:])
+    if any(a.startswith("--template") for a in args):
+        return False
+    words = [a.lower() for a in args if not a.startswith("-")]
+    return len(words) >= 2 and words[0] in _FORGE_GROUPS and words[1] in _FORGE_ACTIONS
 # Commands that neither carry nor run text.
 _NEUTRAL_PROGRAMS = frozenset({"cd", "pwd", "true", "false", ":"})
 # ...unless the text-only program is told to run a command: `git -c
@@ -954,7 +992,8 @@ def _command_kind(simple: str) -> str:
     m = _PROGRAM.match(unescaped)
     word = m.group(1) if m else ""
     prog = re.split(r"[/\\]", word)[-1].lower().removesuffix(".exe")
-    if prog in _TEXT_ONLY_PROGRAMS and "$" not in word and not _TEXT_PROGRAM_RUNS.search(unescaped):
+    if (prog in _TEXT_ONLY_PROGRAMS and "$" not in word and not _TEXT_PROGRAM_RUNS.search(unescaped)
+            and _text_only_call(prog, unescaped[:m.start(1)], unescaped[m.end(1):].split())):
         return "text"
     return "client" if _has_client(simple) else "other"
 
