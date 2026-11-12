@@ -476,6 +476,97 @@ _GIT_OPTIONS_WITH_VALUE = frozenset({"-C", "--git-dir", "--work-tree", "--namesp
 _GIT_RUNS_OPTION = re.compile(r"(?-i:^-c$|^-o$|^-[A-Za-z]*S)|^--(?:config-env|exec-path|output|ext-diff|textconv|gpg-sign)"
                               r"(?:=|$)", re.IGNORECASE)
 _GIT_ENV = re.compile(r"\bGIT_\w*=|\w*(?:PAGER|EDITOR)=", re.IGNORECASE)
+_GIT_PAGER_OPTION = re.compile(r"^(?:--open-files-in-pager(?:=|$)|-O)")
+
+
+def _git_options(long: str, short: str) -> tuple[dict[str, bool], dict[str, bool]]:
+    """Safe options of a git subcommand: long names (a trailing `=` means the
+    option needs a value, given as `--opt=v` or `--opt v`), short letters (a
+    trailing `:` means it needs a value, `-bv` or `-b v`)."""
+    longs = {n.rstrip("="): n.endswith("=") for n in long.split()}
+    shorts: dict[str, bool] = {}
+    for i, c in enumerate(short):
+        if c != ":":
+            shorts[c] = i + 1 < len(short) and short[i + 1] == ":"
+    return longs, shorts
+
+
+_FETCH_LONG = ("all prune prune-tags tags no-tags quiet verbose force dry-run depth= deepen= shallow-since= "
+               "shallow-exclude= unshallow append atomic progress no-progress recurse-submodules no-recurse-submodules "
+               "jobs= set-upstream multiple keep update-shallow refetch filter= ipv4 ipv6 update-head-ok no-write-fetch-head "
+               "write-fetch-head show-forced-updates no-show-forced-updates negotiation-tip= auto-maintenance "
+               "no-auto-maintenance auto-gc no-auto-gc")
+# Per-subcommand allow-lists for the git subcommands that reach a remote or
+# can run something (`--upload-pack`, `--receive-pack`, `--exec`, `rebase -x`,
+# `grep -O`): a call is text-only only if every option it uses is listed.
+# The same letter can mean different things: `push -u` is --set-upstream,
+# `clone -u` is --upload-pack.
+_GIT_SAFE_OPTIONS: dict[str, tuple[dict[str, bool], dict[str, bool]]] = {
+    "fetch": _git_options(_FETCH_LONG, "apPtqvfnkuj:"),
+    "pull": _git_options(_FETCH_LONG + " rebase no-rebase ff no-ff ff-only squash no-squash commit no-commit stat "
+                         "no-stat autostash no-autostash no-edit signoff no-signoff allow-unrelated-histories log "
+                         "no-log summary no-summary", "apPtqvfnkuj:r"),
+    "push": _git_options("set-upstream all branches mirror tags follow-tags no-follow-tags force force-with-lease "
+                         "force-if-includes no-force-if-includes delete dry-run porcelain quiet verbose progress "
+                         "no-progress no-verify verify atomic no-atomic prune push-option= recurse-submodules thin "
+                         "no-thin ipv4 ipv6 repo=", "ufdnqvo:46"),
+    "clone": _git_options("depth= shallow-since= shallow-exclude= single-branch no-single-branch branch= origin= bare "
+                          "mirror quiet verbose progress no-checkout recurse-submodules shallow-submodules "
+                          "no-shallow-submodules remote-submodules no-remote-submodules jobs= filter= also-filter-submodules "
+                          "no-tags sparse dissociate local no-local no-hardlinks shared reject-shallow no-reject-shallow",
+                          "b:o:qvnlsj:"),
+    "rebase": _git_options("onto= continue abort skip quit interactive rebase-merges no-rebase-merges autosquash "
+                           "no-autosquash autostash no-autostash keep-empty no-keep-empty root fork-point no-fork-point "
+                           "update-refs no-update-refs committer-date-is-author-date reset-author-date signoff quiet "
+                           "verbose stat no-stat empty= keep-base merge apply force-rebase no-ff ignore-whitespace "
+                           "whitespace= reapply-cherry-picks no-reapply-cherry-picks edit-todo show-current-patch",
+                           "iqvfrnm"),
+    "grep": _git_options("line-number no-line-number ignore-case count files-with-matches files-without-match "
+                         "name-only extended-regexp fixed-strings perl-regexp basic-regexp word-regexp invert-match text "
+                         "null break heading show-function function-context cached untracked no-index index "
+                         "recurse-submodules all-match and or not max-depth= context= after-context= before-context= "
+                         "threads= color no-color column only-matching quiet max-count= exclude-standard "
+                         "no-exclude-standard full-name ignore-case no-textconv", "niclLEFPGwvazhHWpqoe:f:A:B:C:m:"),
+    "merge": _git_options("no-ff ff ff-only squash no-squash commit no-commit no-edit message= file= stat no-stat log "
+                          "no-log abort continue quit autostash no-autostash allow-unrelated-histories signoff "
+                          "no-signoff quiet verbose progress no-progress no-verify cleanup= summary no-summary",
+                          "m:F:qvn"),
+    "cherry-pick": _git_options("continue abort skip quit no-commit no-edit mainline= signoff ff allow-empty "
+                                "allow-empty-message keep-redundant-commits empty= cleanup=", "nxm:s"),
+    "revert": _git_options("continue abort skip quit no-commit no-edit mainline= signoff cleanup= reference",
+                           "nm:s"),
+    "worktree": _git_options("force detach checkout no-checkout lock quiet porcelain track no-track guess-remote "
+                             "no-guess-remote expire= reason= verbose dry-run orphan", "fdb:B:vnzq"),
+    "remote": _git_options("verbose tags no-tags mirror push add delete all dry-run", "vft:m:n"),
+    "stash": _git_options("message= keep-index no-keep-index include-untracked all quiet patch staged index "
+                          "only-untracked", "m:kuaqpS"),
+}
+
+
+def _git_options_safe(sub: str, args: list[str]) -> bool:
+    """Whether every option in a git subcommand's arguments is on its safe list."""
+    longs, shorts = _GIT_SAFE_OPTIONS[sub]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            break
+        if a.startswith("--"):
+            name, eq, _ = a[2:].partition("=")
+            if name not in longs:
+                return False
+            if longs[name] and not eq:
+                i += 1  # the value is the next word
+        elif a.startswith("-") and len(a) > 1:
+            for j, c in enumerate(a[1:], 1):
+                if c not in shorts:
+                    return False
+                if shorts[c]:
+                    if j == len(a) - 1:
+                        i += 1  # the value is the next word
+                    break
+        i += 1
+    return True
 _FORGE_GROUPS = frozenset({"pr", "issue", "release", "repo"})
 _FORGE_ACTIONS = frozenset({"view", "list", "create", "comment", "edit", "status"})
 
@@ -487,16 +578,25 @@ def _text_only_call(prog: str, prefix: str, args: list[str]) -> bool:
     if prog not in ("git", "gh", "glab"):
         # PowerShell common parameters that keep the output: `-OutVariable v`, `-PipelineVariable v`
         return not any(re.match(r"-(?:outvariable|ov|pipelinevariable|pv)(?::|$)", a, re.IGNORECASE) for a in args)
-    if _GIT_ENV.search(prefix) or any(_GIT_RUNS_OPTION.search(a) for a in args):
+    if _GIT_ENV.search(prefix) or any("ext::" in a for a in args):
         return False
     if prog == "git":
         i = 0
         while i < len(args) and args[i].startswith("-"):
+            if _GIT_RUNS_OPTION.search(args[i]):
+                return False
             i += 2 if args[i] in _GIT_OPTIONS_WITH_VALUE else 1
         if i >= len(args) or args[i].lower() not in _GIT_TEXT_SUBCOMMANDS:
             return False
+        sub, rest = args[i].lower(), args[i + 1:]
+        if sub in _GIT_SAFE_OPTIONS:
+            return _git_options_safe(sub, rest)
+        if any(_GIT_RUNS_OPTION.search(a) or _GIT_PAGER_OPTION.search(a) for a in rest):
+            return False
         # `git config` only reads: `--get*`, `--list`, `-l`
-        return args[i].lower() != "config" or any(a in ("-l", "--list") or a.startswith("--get") for a in args[i + 1:])
+        return sub != "config" or any(a in ("-l", "--list") or a.startswith("--get") for a in rest)
+    if any(_GIT_RUNS_OPTION.search(a) for a in args):
+        return False
     if any(a.startswith("--template") for a in args):
         return False
     words = [a.lower() for a in args if not a.startswith("-")]
