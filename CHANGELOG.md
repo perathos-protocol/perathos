@@ -5,6 +5,42 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-11-12
+
+### Security
+- **The Gate approve link is kept out of error messages, and out of the guard's deny reason and
+  the SDK's waiting line in CI.** When an approval wait timed out, the `ApprovalTimeout` message
+  included the approve link with its viewing token, and `gate request --no-link` and gate-action
+  printed it. `ApprovalTimeout` and `ApprovalDenied` now name the approval id; the link, id and
+  status are attributes (`approve_url`, `approval_id`, `status`), and the CLI's `PENDING` and
+  `DENIED` lines include the id. In CI (`CI` or `GITHUB_ACTIONS` set to `true` or `1`) the guard's
+  deny reason and the SDK's stderr line also leave the link out; `PERATHOS_GATE_SHOW_LINK=1` or
+  `0` overrides that. `perathos gate request` still prints the link unless you pass `--no-link`.
+  The token let someone view a pending request, not approve it.
+
+### Fixed
+- **`evidence verify` checks cited preconditions.** An allowed call whose `guard.precondition`
+  is missing from the pack now fails with `ERR_PRECONDITION_MISSING` (exit 1, `INVALID`), as a
+  missing approval already did; before, it said `VALID`. `evidence verify --json` (and
+  `verify_evidence_pack`) has a new `preconditions: {cited, in_pack}` block, where `in_pack`
+  counts precondition files found. The browser verifier now gives the same error instead of a
+  warning.
+- **`session export` applies the same cross-check as `evidence verify`.** When an allowed call
+  cites a precondition, or a call cites an approval, that cannot be put in the pack, or the
+  approval is not an approve decision for the same arguments, the export now says `INVALID` and
+  exits 1, and `verification.json` and the report record why. Before, it said `VALID`. Gate
+  signatures are still checked only by `evidence verify`.
+- **`evidence verify` checks the head witness hash**, using the same check as `session verify`.
+  A head witness with the right `seq` but a different hash now fails with `ERR_HEAD_MISMATCH`.
+
+### Changed
+- **A head witness that is present but unusable now fails verification** in `session verify`,
+  `evidence verify`, `session export` and the browser verifier, with `ERR_HEAD_MISMATCH`:
+  unreadable, not JSON, or without an integer `seq` (a string, float or boolean no longer
+  counts) and a string `receipt_hash`. Before, `session verify` only warned that the file was
+  unreadable and read a float `seq` such as `5.7` as 5, and the browser skipped the check
+  (RECEIPT_V1 rule 9).
+
 ### Added
 - **`perathos.receipt/v1` test vectors** in `docs/specs/vectors/receipt_v1/`, for independent
   verifiers: a valid log, a broken `prev_hash` (`ERR_CHAIN`), a forged checkpoint signature
