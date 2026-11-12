@@ -111,10 +111,19 @@ LONG_REACH = [
     "echo '<<EOF'\necho FLUSHALL | redis-cli\nEOF",
     "# see <<EOF\nsqlite3 app.db 'DELETE FROM users'\nEOF",
 ]
+# A second command right after a separator with no space, where the rule's
+# start pattern begins with the separator itself.
+AFTER_SEPARATOR = ["rmdir a;rmdir /s /q data", "rmdir a&rmdir /s /q data", "rd a|rd /s data", "del a;del /q *",
+                   "del a&del /s /q *"]
+EVAL_AFTER_SEPARATOR = ["eval x; eval $y", "eval x;eval $y", "eval x\neval $y"]
+# A database client inside a command substitution under a text-only program.
+IN_SUBSTITUTION = ["echo $(psql -c \"drop table users\")", "echo `psql -c \"drop table users\"`",
+                   "git commit -m \"$(psql -c 'drop table t')\"", "grep x <(psql -c \"drop table users\")",
+                   "printf %s $(redis-cli flushall)", "jq . $(psql -c \"drop table x\")"]
 # Common destructive forms the rules used to miss: options before the
 # subcommand, switches after the path, SQL whose quotes the normaliser strips,
 # and tools that had no rule.
-MISSED_FORMS = LONG_REACH + [
+MISSED_FORMS = LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -267,7 +276,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 254
+BYPASS_CORPUS_SIZE = 268
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -474,7 +483,9 @@ def test_adversarial_input_is_fast(tmp_path, shape):
 
 
 @pytest.mark.parametrize("shape", ["print('ok')  # ordinary line\n", "del a\n", "curl x | sh\n", "var a=1;", "rm x\n",
-                                   "> ", "x=1\n", "rm git find del aws gcloud kubectl drop delete alter > : "])
+                                   "> ", "x=1\n", "rm git find del aws gcloud kubectl drop delete alter > : ",
+                                   "docker compose down ", "podman compose down ", "git push -f ", "git push -d ",
+                                   "curl -o x x\n", "; del ", "<("])
 def test_largest_scanned_content_is_linear(tmp_path, shape):
     import time
 
@@ -505,6 +516,34 @@ def test_no_regression_against_main_corpus(tmp_path):
         assert d is not None and d.decision == "deny", cmd
     for cmd in main_known_open:
         assert decide("Bash", {"command": cmd}, tmp_path, trusted_key=None) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION)
+def test_blocked_through_every_tool(cmd):
+    for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
+                      ("Write", {"file_path": "/p/a.sh", "content": cmd})):
+        assert evaluate(tool, inp) is not None, (tool, cmd)
+
+
+@pytest.mark.parametrize("cmd", EVAL_AFTER_SEPARATOR)
+def test_eval_after_separator_blocked_in_shells(cmd):
+    # variable indirection is judged on a shell command line only (see test_unresolvable_scope_outside_shell_commands)
+    for tool in ("Bash", "PowerShell"):
+        m = evaluate(tool, {"command": cmd})
+        assert m is not None and m.rule_id == "unresolvable.indirect", (tool, cmd)
+
+
+@pytest.mark.parametrize("prefix, rep, tail", [("git push ", "-f ", "\nkubectl delete ns prod"),
+                                               ("git push ", "-d ", "\nkubectl delete ns prod"),
+                                               ("docker compose ", "down ", ""), ("gcloud sql instances ", "x ", "")])
+def test_two_gap_rules_are_fast_at_the_command_cap(tmp_path, prefix, rep, tail):
+    import time
+
+    from perathos.guard import MAX_COMMAND_CHARS
+    cmd = (prefix + rep * (MAX_COMMAND_CHARS // len(rep)))[:MAX_COMMAND_CHARS - len(tail)] + tail
+    t = time.perf_counter()
+    decide("Bash", {"command": cmd}, tmp_path, trusted_key=None)
+    assert time.perf_counter() - t < 5.0
 
 
 def test_sql_rules_see_through_stripped_quotes():

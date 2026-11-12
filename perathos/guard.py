@@ -70,6 +70,8 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
 def _fold(s: str) -> str:
     """Case folding as close to re.IGNORECASE as a string compare gets
     (`ſ` folds to `s`; a character whose fold is longer keeps its lower case)."""
+    if s.isascii():
+        return s.lower()
     return "".join(c.casefold() if len(c.casefold()) == 1 else c.lower() for c in s)
 
 
@@ -150,7 +152,57 @@ class _FirstStart:
             b = self.breaks.search(text, m.end())
             if b is None:
                 return None
-            pos = b.end()
+            pos = b.start()  # the next start may begin with the break itself (`;del`); b.start() >= m.end() > m.start()
+
+
+class _Chain:
+    """``start`` followed by several targets, each after a gap of ``gap``
+    characters (`git push .* -f .* main`). A regex with two open gaps is
+    quadratic; this takes, for each target, the leftmost match in its gap,
+    and only when that fails downstream also a match starting on the
+    character that ends the gap (a `\s` target such as `\sdown` can start
+    on the newline itself). Like ``_FirstStart`` it tries only the first
+    ``start`` in each region. The one form this does not reproduce is a
+    target that is not leftmost and itself runs across a line end
+    (`gcloud ... sql\ninstances`)."""
+
+    def __init__(self, start: str, targets: list[str], gap: str = r"[^\n]", breaks: str = "\n"):
+        self.start = re.compile(start, re.IGNORECASE)
+        self.targets = [(re.compile(rf"{gap}*?(?:{t})", re.IGNORECASE), re.compile(t, re.IGNORECASE)) for t in targets]
+        self.breaks = re.compile(breaks)
+
+    def _from(self, text: str, p: int, k: int) -> bool:
+        if k == len(self.targets):
+            return True
+        lazy, target = self.targets[k]
+        m = lazy.match(text, p)
+        if m is None:
+            return False
+        if self._from(text, m.end(), k + 1):
+            return True
+        b = self.breaks.search(text, p)
+        if b is None:
+            return False
+        t = target.match(text, b.start())
+        return t is not None and self._from(text, t.end(), k + 1)
+
+    def search(self, text: str, pos: int = 0) -> re.Match | None:
+        while True:
+            m = self.start.search(text, pos)
+            if m is None:
+                return None
+            if self._from(text, m.end(), 0):
+                return m
+            b = self.breaks.search(text, m.end())
+            if b is None:
+                return None
+            pos = b.start()
+
+
+def _rc(rule_id: str, start: str, targets: list[str], description: str, gap: str = r"[^\n]",
+        breaks: str = "\n") -> Rule:
+    """A "keyword, gap, target, gap, target" rule matched with ``_Chain``."""
+    return Rule(rule_id, _Chain(start, targets, gap, breaks), description)  # type: ignore[arg-type]
 
 
 def _rs(rule_id: str, start: str, rest: str, description: str, breaks: str | None = "\n") -> Rule:
@@ -276,13 +328,13 @@ SHELL_RULES: tuple[Rule, ...] = (
     _rs("git.destructive", rf"{_GIT}switch\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)",
         "git command that discards work", _WORDS),
     Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
-    _rs("git.force-push-main", r"\bgit\s+push\b", r".*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b",
+    _rc("git.force-push-main", r"\bgit\s+push\b", [r"--force\b|-f\b|--mirror\b", r"\b(main|master|prod|production)\b"],
         "force push to a main branch"),
     _r("git.force-push-main", r"\bgit\s+push\s+--mirror\b", "force push to a main branch"),
     _rs("git.push-main-rewrite", r"\bgit\s+push\b",
         r".*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
         "forced overwrite or delete of a main branch on the remote"),
-    _rs("git.push-main-rewrite", r"\bgit\s+push\b", r".*(--delete\b|\s-d\b).*\b(main|master|prod|production)\b",
+    _rc("git.push-main-rewrite", r"\bgit\s+push\b", [r"--delete\b|\s-d\b", r"\b(main|master|prod|production)\b"],
         "forced overwrite or delete of a main branch on the remote"),
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
@@ -321,8 +373,8 @@ SHELL_RULES: tuple[Rule, ...] = (
        rf"|spanner\s+(instances|databases)|filestore\s+(instances|backups))\s+{_opts('gcloud')}delete\b"
        rf"|{_GCLOUD}(storage\s+{_opts('gcloud')}rm|projects\s+{_opts('gcloud')}delete)\b",
        "Google Cloud delete of storage or backups"),
-    _rs("cloud.gcloud-delete", r"\bgcloud\s+",
-        r".*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b",
+    _rc("cloud.gcloud-delete", r"\bgcloud\s+",
+        [r"\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b", r"\bdelete\b"],
         "Google Cloud delete of storage or backups"),
     _r("cloud.gsutil-delete", rf"{_GSUTIL}rb\b", "gsutil bucket remove, recursive or wildcard delete"),
     _rs("cloud.gsutil-delete", rf"{_GSUTIL}rm\b", r".*\s-([a-z]*[ra][a-z]*|-recursive|-all-versions)\b",
@@ -340,11 +392,11 @@ SHELL_RULES: tuple[Rule, ...] = (
        "Heroku destroy"),
     _r("docker.volume", rf"{_DOCKER}volume\s+(rm|prune)", "Docker volume delete"),
     _rs("docker.volume", rf"{_DOCKER}system\s+prune\b", r".*--volumes", "Docker volume delete"),
-    _rs("docker.volume", r"\bdocker([ -])compose\b", r".*\sdown\b.*\s(-v\b|--volumes\b)", "Docker volume delete"),
+    _rc("docker.volume", r"\bdocker([ -])compose\b", [r"\sdown\b", r"\s(-v\b|--volumes\b)"], "Docker volume delete"),
     # podman and nerdctl take docker's volume commands; `system reset` wipes all storage
     _r("container.volume", rf"{_PODMAN}(volume\s+(rm|prune)|system\s+reset\b)", "podman / nerdctl volume delete"),
     _rs("container.volume", rf"{_PODMAN}system\s+prune\b", r".*--volumes", "podman / nerdctl volume delete"),
-    _rs("container.volume", r"\b(podman|nerdctl)([ -])compose\b", r".*\sdown\b.*\s(-v\b|--volumes\b)",
+    _rc("container.volume", r"\b(podman|nerdctl)([ -])compose\b", [r"\sdown\b", r"\s(-v\b|--volumes\b)"],
         "podman / nerdctl volume delete"),
 )
 
@@ -422,7 +474,7 @@ _CLIENT_READS_INPUT = re.compile(r"\s(?:-f|--file|-i|--init-file|\.read|source)(
 # cap keeps the worst case (repeated keywords make some rules quadratic) well
 # inside the hook's 10 s timeout.
 MAX_COMMAND_CHARS = 65536
-MAX_CONTENT_CHARS = 1_000_000
+MAX_CONTENT_CHARS = 800_000
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
 # above can judge it. They are treated like a destructive command (denied
@@ -466,6 +518,7 @@ class _DownloadThenRun:
     _DL_RX = re.compile(rf"\b{_DL}\b", re.IGNORECASE)
     _SEP = re.compile(r"[\n;&|]")
     _NAME = re.compile(r"(?<=[/\s=])[\w-][\w.-]*(?=[\s;&]|\Z)")
+    _NAME_AT = re.compile(r"[\w-][\w.-]*(?=[\s;&])")
     _RUN_SEP = re.compile(r"(?=&&|;|\n)")
     _LEAD = re.compile(r"\s*")
     _SUDO = re.compile(r"sudo\s+", re.IGNORECASE)
@@ -483,14 +536,14 @@ class _DownloadThenRun:
                 out.append(_fold(m.group(1)))
 
         bases = [t]
-        s = self._SUDO.match(text, t)
-        if s:
-            bases.append(s.end())
+        if text[t:t + 4].casefold() == "sudo":  # casefold: re.IGNORECASE also reads `ſudo` as sudo
+            s = self._SUDO.match(text, t)
+            if s:
+                bases.append(s.end())
         for b in bases:
             token(b)
-            a = self._AMP.match(text, b)
-            if a:
-                token(a.end())
+            if text.startswith("&", b):
+                token(self._AMP.match(text, b).end())
             i = self._INTERP_RX.match(text, b)
             if i:
                 p = i.end()
@@ -537,6 +590,14 @@ class _DownloadThenRun:
                 for c in self._NAME.finditer(text[m.end():s]):
                     if run_at.get(_fold(c.group()), -1) >= s:
                         return m
+            if text[s] == "\n":
+                # the regex's `[/\s=]` before the name can be the newline itself, so the
+                # first word of the next line is a candidate too, ended by that line's separator
+                c = self._NAME_AT.match(text, s + 1)
+                s2 = self._SEP.search(text, c.end()) if c else None
+                if s2 is not None and (text[s2.start()] in "\n;" or text.startswith("&&", s2.start())):
+                    if run_at.get(_fold(c.group()), -1) >= s2.start():
+                        return m
             pos = s + 1
 
 
@@ -571,8 +632,8 @@ INDIRECT_RULES: tuple[Rule, ...] = (
        "script whose path is held in a variable (the guard cannot read it)"),
     _r("unresolvable.indirect", _STDIN_SINK,
        "text piped into an interpreter (the guard cannot tell what would run)"),
-    _rs("unresolvable.indirect", rf"\b{_SH}\b", r"[^;&|\n]*<<<[^;&|\n]*\$",
-        "substitution fed to a shell as its script (the guard cannot tell what would run)", "[;&|\n]"),
+    _rc("unresolvable.indirect", rf"\b{_SH}\b", [r"<<<", r"\$"],
+        "substitution fed to a shell as its script (the guard cannot tell what would run)", r"[^;&|\n]", "[;&|\n]"),
     _r("unresolvable.indirect", rf"(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
        "substitution fed to a shell as its script (the guard cannot tell what would run)"),
     _r("unresolvable.indirect",
@@ -851,6 +912,32 @@ def _command_kind(simple: str) -> str:
     return "client" if _DB_CLIENT.search(simple) else "other"
 
 
+_SUBSTITUTION = re.compile(r"[$<>]\(|[()]")
+
+
+def _split_substitutions(view: str) -> str:
+    """The structure view with each `$(...)`, `<(...)` and `>(...)` (and
+    backticks, which the view already turned into `$(`) opened and closed by
+    a newline, so its contents count as their own command: `echo $(psql -c
+    ...)` runs psql. Plain parentheses are left alone. One pass."""
+    out: list[str] = []
+    stack: list[bool] = []
+    last = 0
+    for m in _SUBSTITUTION.finditer(view):
+        tok = m.group()
+        if tok == "(":
+            stack.append(False)
+            continue
+        if tok == ")" and not (stack and stack.pop()):
+            continue
+        if tok != ")":
+            stack.append(True)
+        out += [view[last:m.start()], "\n"]
+        last = m.end()
+    out.append(view[last:])
+    return "".join(out)
+
+
 def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], list[str]]:
     """(texts for the query rules, texts that may also use the client-only
     rules). ``view`` is the structure view of a shell command line, or None
@@ -859,8 +946,8 @@ def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], lis
         return [norm], ([norm] if _DB_CLIENT.search(norm) else [])
     base: list[str] = []
     client: list[str] = []
-    # Parentheses are not split on: quoted code (`db.users.drop()`) keeps them.
-    for pipeline in re.split(r"\|\||&&|[;&\n]", view.replace("|&", "|")):
+    # Plain parentheses are not split on: quoted code (`db.users.drop()`) keeps them.
+    for pipeline in re.split(r"\|\||&&|[;&\n]", _split_substitutions(view).replace("|&", "|")):
         simples = pipeline.split("|")
         kinds = [_command_kind(s) for s in simples]
         if "client" in kinds[1:]:
