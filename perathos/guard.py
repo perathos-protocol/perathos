@@ -44,6 +44,8 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -66,65 +68,594 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
     return Rule(rule_id, re.compile(regex, re.IGNORECASE), description)
 
 
+def _fold(s: str) -> str:
+    """Case folding as close to re.IGNORECASE as a string compare gets
+    (`ſ` folds to `s`; a character whose fold is longer keeps its lower case)."""
+    if s.isascii():
+        return s.lower()
+    return "".join(c.casefold() if len(c.casefold()) == 1 else c.lower() for c in s)
+
+
+class _RmtreeImportedByName:
+    """`from shutil import rmtree [as r]` (or `import *`) or `import shutil as
+    s`, followed anywhere later by a call through that name. One pass over the
+    imports and one over the calls, so repeated or many distinct imports stay
+    linear."""
+
+    _IMPORT = re.compile(r"\bfrom\s+shutil\s+import\b|\bimport\s+shutil\s+as\s+(\w+)\b", re.IGNORECASE)
+    _NAMED = re.compile(r"\brmtree\b(?:[^\S\n]+as[^\S\n]+(\w+))?|(\*)", re.IGNORECASE)
+    _STOP = re.compile(r"[\n;]")
+    _CALL = re.compile(r"\b(\w+)(\.rmtree)?\s*\(", re.IGNORECASE)
+
+    def search(self, text: str) -> re.Match | None:
+        after: dict[tuple[str, str], int] = {}  # call form -> earliest import end
+        named = list(self._NAMED.finditer(text))
+        named_starts = [m.start() for m in named]
+        stops = [m.start() for m in self._STOP.finditer(text)]
+        for m in self._IMPORT.finditer(text):
+            if m.group(1) is not None:
+                key = ("mod", _fold(m.group(1)))
+            else:
+                # the first `rmtree [as r]` or `*` in the rest of the import statement
+                k = bisect_left(named_starts, m.end())
+                s = bisect_left(stops, m.end())
+                stop = stops[s] if s < len(stops) else len(text)
+                if k == len(named) or named[k].end() > stop:
+                    continue
+                key = ("fn", _fold(named[k].group(1) or "rmtree"))
+            after.setdefault(key, m.end())
+        if not after:
+            return None
+        for c in self._CALL.finditer(text):
+            name = _fold(c.group(1))
+            keys = [(("mod", name), c.start()), (("fn", "rmtree"), c.start(2))] if c.group(2) else [(("fn", name), c.start())]
+            for key, at in keys:
+                if key in after and after[key] <= at:
+                    return c
+        return None
+
+
 # Shell / CLI commands that can destroy data or the means to recover it.
 # Matched against a normalised copy of the command (quotes removed, SQL
 # comments collapsed), so `r""m -rf`, `k''eys` and `DROP/**/TABLE` match.
+# Because quotes are gone, a rule cannot use a quote to find where an argument
+# ends: `psql -c "DELETE FROM t" -h db` arrives as `psql -c DELETE FROM t -h db`.
+#
+# Reach is never capped. Rules of the form "keyword, any gap, target" are
+# matched with ``_FirstStart`` (see there), which gives the same answer as the
+# plain regex search but tries only the first keyword in each stretch of text
+# the gap can span, so repeated keywords cannot make them quadratic.
+
+
+class _FirstStart:
+    """``pattern`` (which begins with ``start``) searched by trying only the
+    first ``start`` match in each region; regions are separated by ``breaks``
+    (None: the whole text is one region).
+
+    Exact when the gap after ``start`` can absorb any text inside a region
+    (`.*` within a line, `(?:[^\\s;&|]+\\s+)*` within a simple command,
+    `(\\S+\\s+)*` anywhere): a match from a later start in the region is then
+    also a match from the first one, so the later starts need not be tried."""
+
+    def __init__(self, start: str, pattern: str, breaks: str | None):
+        self.start = re.compile(start, re.IGNORECASE)
+        self.full = re.compile(pattern, re.IGNORECASE)
+        self.breaks = re.compile(breaks) if breaks is not None else None
+
+    def search(self, text: str, pos: int = 0) -> re.Match | None:
+        while True:
+            m = self.start.search(text, pos)
+            if m is None:
+                return None
+            hit = self.full.match(text, m.start())
+            if hit is not None or self.breaks is None:
+                return hit
+            b = self.breaks.search(text, m.end())
+            if b is None:
+                return None
+            pos = b.start()  # the next start may begin with the break itself (`;del`); b.start() >= m.end() > m.start()
+
+
+class _Chain:
+    """``start`` followed by several targets, each after a gap of ``gap``
+    characters (`git push .* -f .* main`). A regex with two open gaps is
+    quadratic; this takes, for each target, the leftmost match in its gap,
+    and only when that fails downstream also a match starting on the
+    character that ends the gap (a `\s` target such as `\sdown` can start
+    on the newline itself). Like ``_FirstStart`` it tries only the first
+    ``start`` in each region. The one form this does not reproduce is a
+    target that is not leftmost and itself runs across a line end
+    (`gcloud ... sql\ninstances`)."""
+
+    def __init__(self, start: str, targets: list[str], gap: str = r"[^\n]", breaks: str = "\n"):
+        self.start = re.compile(start, re.IGNORECASE)
+        self.targets = [(re.compile(rf"{gap}*?(?:{t})", re.IGNORECASE), re.compile(t, re.IGNORECASE)) for t in targets]
+        self.breaks = re.compile(breaks)
+
+    def _from(self, text: str, p: int, k: int) -> bool:
+        if k == len(self.targets):
+            return True
+        lazy, target = self.targets[k]
+        m = lazy.match(text, p)
+        if m is None:
+            return False
+        if self._from(text, m.end(), k + 1):
+            return True
+        b = self.breaks.search(text, p)
+        if b is None:
+            return False
+        t = target.match(text, b.start())
+        return t is not None and self._from(text, t.end(), k + 1)
+
+    def search(self, text: str, pos: int = 0) -> re.Match | None:
+        while True:
+            m = self.start.search(text, pos)
+            if m is None:
+                return None
+            if self._from(text, m.end(), 0):
+                return m
+            b = self.breaks.search(text, m.end())
+            if b is None:
+                return None
+            pos = b.start()
+
+
+def _rc(rule_id: str, start: str, targets: list[str], description: str, gap: str = r"[^\n]",
+        breaks: str = "\n") -> Rule:
+    """A "keyword, gap, target, gap, target" rule matched with ``_Chain``."""
+    return Rule(rule_id, _Chain(start, targets, gap, breaks), description)  # type: ignore[arg-type]
+
+
+def _rs(rule_id: str, start: str, rest: str, description: str, breaks: str | None = "\n") -> Rule:
+    """A "keyword, gap, target" rule matched with ``_FirstStart``."""
+    return Rule(rule_id, _FirstStart(start, start + rest, breaks), description)  # type: ignore[arg-type]
+
+
+def _opts(prog: str) -> str:
+    """Options before a subcommand, each with an optional value: `terraform
+    -chdir=infra destroy`, `aws --profile p s3 rb`, `git -C repo reset`. A
+    value is never the program's own name, so `prog -x prog -x ...` stays
+    linear (an option whose value is literally the program name is the only
+    form this leaves out)."""
+    return rf"(?:-[^\s;&|]+\s+(?:(?!-|(?:{prog})\b)[^\s;&|]+\s+)?)*"
+
+
+# Any words of the same simple command (no separator crossed).
+_ARGS = r"(?:[^\s;&|]+\s+)*?"
+_WORDS = "[;&|]"  # what an _ARGS gap cannot cross (it can cross a newline)
+# The end of a word.
+_END = r"(?=$|[\s;&|)])"
+# A redirect target with a database-file extension. `.csv` and `.sql` are left
+# out on purpose: `script > out.csv` is ordinary output, and `pg_dump db >
+# backup.sql` makes a backup. Files under a test or fixture directory are
+# generated test data and stay allowed.
+_DATA_FILE = r"[^\s;&|<>]+\.(?:db|sqlite3?|duckdb|mdb|accdb|parquet)(?=\s|$|[;&|)])"
+_TEST_DIR = r"(?:[^\s;&|<>]*[/\\])?(?:tests?|fixtures?|testdata|test_data|__fixtures__|__tests__|spec)[/\\]"
+# Redirect targets that are not files.
+_NOT_A_FILE = r"(?!/dev/(?:null|stdout|stderr|tty)\b|nul\b|\$null\b)"
+# kubectl options that take a value, so `-n deployments-test` is never read
+# as the resource type; the resource type must be a whole word.
+_K8S_VALUE_OPT = (r"(?:-[nlofksc]|--(?:namespace|selector|context|cluster|user|kubeconfig|output|field-selector"
+                  r"|filename|kustomize|grace-period|timeout|server|token|as|as-group|container))")
+_K8S_OPTS = rf"(?:{_K8S_VALUE_OPT}\s+(?!kubectl\b)[^\s;&|]+\s+|(?!{_K8S_VALUE_OPT}\s)-[^\s;&|]+\s+)*"
+_K8S_STATEFUL = r"(?:ns|namespaces?|pv|pvc|persistentvolume\w*|statefulsets?|sts|deployments?|deploy|all)(?=$|[\s/,.;&|)])"
+# A git pathspec for the whole work tree: `.`, `./`, `:/`, `*`. (`--` with no
+# pathspec after it is a no-op for `checkout` and an error for `restore`.)
+_WHOLE_TREE = rf"(?::/\.?|\./?|\.?\*){_END}"
+_GIT = rf"\bgit\s+{_opts('git')}"
+_AWS = rf"\baws\s+{_opts('aws')}"
+_GSUTIL = rf"\bgsutil\s+{_opts('gsutil')}"
+_GCLOUD = rf"\bgcloud\s+{_opts('gcloud')}(?:(?:alpha|beta)\s+{_opts('gcloud')})?"
+_DOCKER = rf"\bdocker\s+{_opts('docker')}"
+_PODMAN = rf"\b(podman|nerdctl)\s+{_opts('podman|nerdctl')}"
+_TERRAGRUNT = rf"\bterragrunt\s+{_opts('terragrunt')}(?:(?:run-all|run)\s+{_opts('terragrunt')}(?:--\s+)?)?"
+
+
+class _GitRestore:
+    """`git restore` that discards work in the whole tree: a whole-tree
+    pathspec later in the same simple command, and `--worktree` / `-W` there or
+    no `--staged` / `-S` (which would only unstage). Named files and
+    directories (`git restore a.py`, `git restore src/`) are allowed. One pass
+    per simple command: the last position of each option is noted, then each
+    `git restore` start is checked against them."""
+
+    _START = re.compile(rf"{_GIT}restore\b", re.IGNORECASE)
+    _WHOLE = re.compile(rf"\s{_WHOLE_TREE}", re.IGNORECASE)
+    _WORKTREE = re.compile(r"\s(?:--worktree\b|(?-i:-[A-Za-z]*W[A-Za-z]*)\b)", re.IGNORECASE)
+    _STAGED = re.compile(r"\s(?:--staged\b|(?-i:-[A-Za-z]*S[A-Za-z]*)\b)", re.IGNORECASE)
+
+    @staticmethod
+    def _last(rx: re.Pattern, seg: str) -> int:
+        last = -1
+        for m in rx.finditer(seg):
+            last = m.start()
+        return last
+
+    def search(self, text: str) -> re.Match | None:
+        for seg in re.split(r"[;&|\n]", text):
+            starts = list(self._START.finditer(seg))
+            if not starts:
+                continue
+            whole, worktree, staged = (self._last(rx, seg) for rx in (self._WHOLE, self._WORKTREE, self._STAGED))
+            for m in starts:
+                if whole >= m.end() and (worktree >= m.end() or staged < m.end()):
+                    return m
+        return None
+
+
+_DJANGO = r"manage\.py|django-admin|django"
+# `git push` force flags: `--force`, `--force-with-lease[=...]`, `--force-if-includes`,
+# `--mirror`, `-f` and combined short flags holding an f (`-uf`).
+# git accepts unique prefixes of long options: `--mir`, `--del`.
+_PUSH_FORCE = r"--force\b|--mir(?:r|ro|ror)?\b|(?-i:(?<![\w-])-[A-Za-z]*f[A-Za-z]*\b)"
+_PUSH_DELETE = r"--del(?:e|et|ete)?\b|\s-d\b"
+# The flag and the branch must be in the same simple command: `git push origin
+# main && rm -f x` is not a force push. These rules read the structure view
+# (quoted separators blanked, `-o "a&b"`), and the `&` of a redirect (`2>&1`,
+# `&>`, `>&2`) does not end the command.
+_PUSH_GAP = r"(?:[^;&|\n]|(?<=>)&|&(?=>))"
+_PUSH_BREAKS = r"[;|\n]|(?<!>)&(?!>)"
+_MAIN_BRANCH = r"\b(main|master|trunk|prod|production)\b"
+# `git push` after any global options (`-C dir`, `-c k=v`, `--git-dir=...`, `--no-pager`).
+_GIT_PUSH = rf"{_GIT}push\b"
+# Matched against the structure view with heredoc bodies kept (see _first_match).
+# The force flag and the branch may come in either order, before or after the remote.
+PUSH_RULES: tuple[Rule, ...] = (
+    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mir(?:r|ro|ror)?\b", "force push to a main branch"),
+    _rs("git.push-main-rewrite", _GIT_PUSH,
+        _PUSH_GAP + r"*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
+        "forced overwrite or delete of a main branch on the remote", _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_PUSH_DELETE, _MAIN_BRANCH],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_DELETE],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
+)
+_PUSH_HINT = re.compile(r"\bpush\b", re.IGNORECASE)
+
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
        r"\brm\s+(-\S+\s+)*(-[a-z]*r|--recursive\b)|\brm\s+(-\S+\s+)*-[a-z]*f[a-z]*r",
        "recursive delete"),
-    _r("fs.win-delete",
-       r"(^|[\s;&|(])(del|erase)\s+(/\w\s+)*/[sq]\b|(^|[\s;&|(])(rd|rmdir)\s+(/\w\s+)*/s\b|(^|[\s;&|(])format\s+[a-z]:",
-       "Windows recursive or quiet delete"),
-    _r("fs.ps-delete",
-       r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+(\S+\s+)*-(r|recurse|rec|force)\b",
-       "PowerShell recursive delete"),
-    _r("fs.find-delete", r"\bfind\b.*\s(-delete\b|-exec\s+rm\b)", "find -delete"),
-    _r("fs.truncate-or-overwrite",
-       r"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+.*\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null|(^|[;&|])\s*:\s*>\s*\S",
+    # cmd.exe takes switches anywhere on the line: `rmdir data /s /q`
+    _rs("fs.win-delete", r"(^|[\s;&|(])(del|erase)\s+", rf"{_ARGS}/[sq]\b", "Windows recursive or quiet delete", _WORDS),
+    _rs("fs.win-delete", r"(^|[\s;&|(])(rd|rmdir)\s+", rf"{_ARGS}/s\b", "Windows recursive or quiet delete", _WORDS),
+    _r("fs.win-delete", r"(^|[\s;&|(])format\s+[a-z]:", "Windows recursive or quiet delete"),
+    _rs("fs.ps-delete", r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+", r"(\S+\s+)*-(r|recurse|rec|force)\b",
+        "PowerShell recursive delete", None),
+    _rs("fs.find-delete", r"\bfind\b", r".*\s(-delete\b|-exec\s+rm\b)", "find -delete"),
+    _r("fs.truncate-or-overwrite", r"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bshred\b|\bmv\s+\S+\s+/dev/null",
        "file truncated, overwritten or shredded"),
-    _r("fs.interpreter-delete",
-       r"shutil\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(.*recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\(.*\*",
-       "delete through an interpreter one-liner"),
+    _rs("fs.truncate-or-overwrite", r"\bdd\s+", r".*\bof=(?!/dev/null)", "file truncated, overwritten or shredded"),
+    # `cp /dev/null file`, `cat /dev/null > file` and PowerShell `Clear-Content`
+    # empty any file. (Redirects are judged on the structure view: REDIRECT_RULES.)
+    _r("fs.redirect-truncate",
+       rf"\bcp\s+(?:-\S+\s+)*/dev/null\s+{_NOT_A_FILE}\S|\bcat\s+/dev/null\s*>(?!>)\|?\s*{_NOT_A_FILE}\S|\bclear-content\b",
+       "file emptied by a redirect"),
+    _r("fs.interpreter-delete", r"shutil\)?\.rmtree|\brimraf\b|FileUtils\.rm_rf", "delete through an interpreter one-liner"),
+    _rs("fs.interpreter-delete", r"\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(", r".*recursive",
+        "delete through an interpreter one-liner"),
+    _rs("fs.interpreter-delete", r"\bos\.(remove|unlink|rmdir|removedirs)\s*\(", r".*\*",
+        "delete through an interpreter one-liner"),
+    # `from shutil import rmtree; rmtree(p)`, `... import rmtree as r; r(p)`,
+    # `from shutil import *; rmtree(p)`, `import shutil as s; s.rmtree(p)`
+    Rule("fs.python-rmtree", _RmtreeImportedByName(),  # type: ignore[arg-type]
+         "delete through an interpreter one-liner (rmtree imported by name)"),
+    _rs("fs.robocopy-mirror", r"\brobocopy\b", r".*\s/(mir|purge)\b",
+        "robocopy /MIR or /PURGE (deletes files missing from the source)"),
+    _r("fs.ps-format", r"\b(format-volume|clear-disk|remove-partition)\b", "PowerShell volume format or disk wipe"),
+    # Discarding work in the whole tree is flagged: `checkout -f`, `checkout
+    # [<tree>] [--] .`, `restore .` / `restore :/` unless it only unstages
+    # (`--staged` without `--worktree`). Named files or directories
+    # (`checkout -- a.py`, `checkout feature -- ci.yml`, `restore src/`) are not.
     _r("git.destructive",
-       r"\bgit\s+(reset\s+--hard|clean\s+-\S*[fd]|checkout\s+(-f\b|--force\b|--\s|\.\s*$|\.\s)|restore\s+(--staged\s+)?(\.|--\s)|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
+       rf"{_GIT}(clean\s+-\S*[fd]|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
        "git command that discards work"),
-    _r("git.force-push-main", r"\bgit\s+push\b.*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b|\bgit\s+push\s+--mirror\b",
-       "force push to a main branch"),
-    _r("git.push-main-rewrite",
-       r"\bgit\s+push\b.*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)"
-       r"|\bgit\s+push\b.*(--delete\b|\s-d\b).*\b(main|master|prod|production)\b",
-       "forced overwrite or delete of a main branch on the remote"),
+    _rs("git.destructive", rf"{_GIT}reset\s+", rf"{_ARGS}--hard\b", "git command that discards work", _WORDS),
+    _rs("git.destructive", rf"{_GIT}checkout\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|(--\s+)?{_WHOLE_TREE})",
+        "git command that discards work", _WORDS),
+    _rs("git.destructive", rf"{_GIT}switch\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)",
+        "git command that discards work", _WORDS),
+    Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
-    _r("fs.rsync-delete", r"\brsync\b.*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
-    _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
-    _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.\"`]+", "SQL TRUNCATE"),
-    _r("sql.delete-all", r"\bdelete\s+from\s+[\w.\"`]+\s*(;|$|\"|')", "SQL DELETE without WHERE"),
+    _rs("fs.rsync-delete", r"\brsync\b", r".*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
     _r("db.dropdb", r"\bdropdb\b", "PostgreSQL dropdb"),
-    _r("db.redis-flush", r"\bflush(all|db)\b", "Redis FLUSHALL / FLUSHDB"),
-    _r("db.mongo-drop", r"\.drop(database)?\s*\(", "MongoDB drop"),
-    _r("db.migrate-reset", r"\b(prisma\s+migrate\s+reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset|heroku\s+pg:reset)\b",
+    _rs("db.mysqladmin-drop", r"\bmysqladmin\b", r".*\sdrop\b", "mysqladmin drop"),
+    _r("db.migrate-reset",
+       rf"\b(prisma\s+{_opts('prisma')}migrate\s+{_opts('prisma')}reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset"
+       r"|heroku\s+pg:reset)\b",
        "database reset"),
-    _r("iac.terraform-destroy", r"\bterraform\s+(destroy|apply\b.*-destroy)\b", "terraform destroy"),
+    _rs("db.prisma-force-reset", rf"\bprisma\s+{_opts('prisma')}db\s+push\b", r".*\s--(force-reset|accept-data-loss)\b",
+        "prisma db push that drops data"),
+    _r("db.django-flush",
+       rf"(?:\b(?:manage\.py|django-admin)|\s-m\s+django)\s+{_opts(_DJANGO)}(flush|reset_db)\b",
+       "Django flush (deletes every row)"),
+    _r("iac.terraform-destroy", rf"\bterraform\s+{_opts('terraform')}destroy\b", "terraform destroy"),
+    _rs("iac.terraform-destroy", rf"\bterraform\s+{_opts('terraform')}apply\b", r".*-destroy\b", "terraform destroy"),
+    _r("iac.tofu-destroy", rf"\btofu\s+{_opts('tofu')}destroy\b", "OpenTofu destroy"),
+    _rs("iac.tofu-destroy", rf"\btofu\s+{_opts('tofu')}apply\b", r".*-destroy\b", "OpenTofu destroy"),
+    _r("iac.terragrunt-destroy", rf"{_TERRAGRUNT}destroy\b", "terragrunt destroy"),
+    _rs("iac.terragrunt-destroy", rf"{_TERRAGRUNT}apply\b", r".*-destroy\b", "terragrunt destroy"),
     _r("iac.pulumi-destroy", r"\bpulumi\s+destroy\b", "pulumi destroy"),
-    _r("k8s.delete", r"\bkubectl\s+delete\s+(ns|namespace|pv|pvc|persistentvolume\w*|statefulset|deployment|all)\b",
+    _r("k8s.delete", rf"\bkubectl\s+{_K8S_OPTS}delete\s+{_K8S_OPTS}{_K8S_STATEFUL}",
        "kubectl delete of stateful resources"),
     _r("k8s.helm-uninstall", r"\bhelm\s+(uninstall|delete)\b", "helm uninstall"),
     _r("cloud.aws-delete",
-       r"\baws\s+(s3\s+rb\b|s3\s+rm\b.*--recursive|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
+       rf"{_AWS}(s3\s+rb\b|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)"
+       r"|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
        "AWS delete of storage or backups"),
-    _r("cloud.gcloud-delete", r"\bgcloud\s+.*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b|\bgcloud\s+storage\s+rm\b|\bgcloud\s+projects\s+delete\b",
+    _rs("cloud.aws-delete", rf"{_AWS}s3\s+rm\b", r".*--recursive", "AWS delete of storage or backups"),
+    _rs("cloud.aws-s3-sync-delete", rf"{_AWS}s3\s+sync\b", r".*\s--delete\b",
+        "aws s3 sync --delete (deletes objects missing from the source)"),
+    # gcloud takes global options and release tracks (`alpha`, `beta`) before the group
+    _r("cloud.gcloud-delete",
+       rf"{_GCLOUD}(sql\s+(instances|databases|backups)|compute\s+(disks|snapshots)|storage\s+buckets|firestore\s+databases"
+       rf"|spanner\s+(instances|databases)|filestore\s+(instances|backups))\s+{_opts('gcloud')}delete\b"
+       rf"|{_GCLOUD}(storage\s+{_opts('gcloud')}rm|projects\s+{_opts('gcloud')}delete)\b",
        "Google Cloud delete of storage or backups"),
-    _r("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b.*\bdelete\b", "Azure delete of storage or backups"),
+    _rc("cloud.gcloud-delete", r"\bgcloud\s+",
+        [r"\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b", r"\bdelete\b"],
+        "Google Cloud delete of storage or backups"),
+    _r("cloud.gsutil-delete", rf"{_GSUTIL}rb\b", "gsutil bucket remove, recursive or wildcard delete"),
+    _rs("cloud.gsutil-delete", rf"{_GSUTIL}rm\b", r".*\s-([a-z]*[ra][a-z]*|-recursive|-all-versions)\b",
+        "gsutil bucket remove, recursive or wildcard delete"),
+    _rs("cloud.gsutil-delete", rf"{_GSUTIL}rm\b", r".*\*", "gsutil bucket remove, recursive or wildcard delete"),
+    _r("cloud.rclone-delete", rf"\brclone\s+{_opts('rclone')}(purge|delete)\b", "rclone purge / delete"),
+    _rs("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b", r".*\bdelete\b",
+        "Azure delete of storage or backups"),
     _r("paas.railway", r"\brailway\s+(down|volume\s+delete|delete)\b", "Railway delete"),
     _r("paas.vercel", r"\bvercel\s+(remove|rm)\b", "Vercel remove"),
     _r("paas.fly", r"\bfly(ctl)?\s+(volumes?\s+(destroy|delete)|apps?\s+destroy|postgres\s+destroy)\b", "Fly destroy"),
     _r("paas.neon", r"\bneon(ctl)?\s+(branches?|projects?|databases?)\s+delete\b", "Neon delete"),
-    _r("docker.volume",
-       r"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b.*--volumes)|\bdocker([ -])compose\b.*\sdown\b.*\s(-v\b|--volumes\b)",
-       "Docker volume delete"),
+    _r("paas.firebase", rf"\bfirebase\s+{_opts('firebase')}(firestore:delete|database:remove)\b", "Firebase data delete"),
+    _r("paas.heroku", rf"\bheroku\s+{_opts('heroku')}(apps:destroy|destroy|pg:backups:delete|addons:destroy)\b",
+       "Heroku destroy"),
+    _r("docker.volume", rf"{_DOCKER}volume\s+(rm|prune)", "Docker volume delete"),
+    _rs("docker.volume", rf"{_DOCKER}system\s+prune\b", r".*--volumes", "Docker volume delete"),
+    _rc("docker.volume", r"\bdocker([ -])compose\b", [r"\sdown\b", r"\s(-v\b|--volumes\b)"], "Docker volume delete"),
+    # podman and nerdctl take docker's volume commands; `system reset` wipes all storage
+    _r("container.volume", rf"{_PODMAN}(volume\s+(rm|prune)|system\s+reset\b)", "podman / nerdctl volume delete"),
+    _rs("container.volume", rf"{_PODMAN}system\s+prune\b", r".*--volumes", "podman / nerdctl volume delete"),
+    _rc("container.volume", r"\b(podman|nerdctl)([ -])compose\b", [r"\sdown\b", r"\s(-v\b|--volumes\b)"],
+        "podman / nerdctl volume delete"),
 )
+
+# Redirects, matched against the structure view (quotes removed but a `;` or
+# `>` inside a quoted argument blanked), so `echo 'DELETE FROM t;' > q.sql` is
+# an ordinary write. `> file` with no command (and `: > file`) empties any
+# file; an ordinary `cmd > file` is flagged only when it would overwrite a
+# database file outside a test directory. `> /dev/null`, `> NUL` and `=>` are
+# not redirects to a file.
+REDIRECT_RULES: tuple[Rule, ...] = (
+    _r("fs.truncate-or-overwrite", r"(^|[;&|])\s*:\s*>\s*\S", "file truncated, overwritten or shredded"),
+    _r("fs.redirect-truncate",
+       rf"(?:^|[;(]|&&|\|\|)\s*>\|?\s*{_NOT_A_FILE}[^\s>&|;]|(?<![>\d=-])>(?!>)\|?\s*(?!{_TEST_DIR}){_DATA_FILE}",
+       "file emptied by a redirect"),
+)
+
+# Query-language rules (SQL, Redis, MongoDB). On a shell command line they
+# apply only to text that can reach a database (see ``_query_texts``): a
+# simple command that runs a database client (`psql`, `docker exec db psql`,
+# `ssh db mysql`), a whole pipeline that feeds one (`echo 'DROP TABLE t' |
+# psql`), and every other simple command except those that only carry text
+# (`git commit -m`, `gh pr create --title`, `echo`, `grep`...). A client that
+# reads a file or stdin redirect (`psql -f f.sql`, `sqlite3 db < q.sql`) makes
+# the whole line count, since the file may have been written earlier on it.
+# In scripts, MCP arguments and file writes the rules apply to all the text.
+_ALTER_TABLE = r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?[\w.$\[\]]+\s+"
+_DROP_WHAT = (r"drop\s+(?:column\b|constraint\b"
+              r"|(?!index\b|key\b|primary\b|foreign\b|default\b|check\b|trigger\b|if\b)\w+)")
+QUERY_RULES: tuple[Rule, ...] = (
+    _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
+    _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.$\[\]]+", "SQL TRUNCATE"),
+    # The statement ends at `;`, a newline, `)`, a shell separator or redirect
+    # or a `--` comment. An alias or a LIMIT may follow the table; a WHERE may not.
+    _r("sql.delete-all",
+       r"\bdelete\s+from\s+[\w.$\[\]]+(?:\s+(?:as\s+)?(?!where\b|limit\b)\w+)?(?!\s*where\b)(?:\s+limit\s+\d+)?"
+       r"\s*(?:$|[;)|&\n<>]|--\s)",
+       "SQL DELETE without WHERE"),
+    _r("sql.alter-drop", _ALTER_TABLE + _DROP_WHAT, "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT"),
+    _rs("sql.alter-drop", _ALTER_TABLE, r"[^;\n]*?,\s*" + _DROP_WHAT, "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT",
+        "[;\n]"),
+    _r("db.redis-flush", r"\bflush(all|db)\b", "Redis FLUSHALL / FLUSHDB"),
+    _r("db.mongo-drop", r"\.drop(database)?\s*\(", "MongoDB drop"),
+    _r("db.mongo-delete-all", r"\.(deleteMany|remove)\s*\(\s*\{\s*\}\s*[,)]|\.deleteMany\s*\(\s*\)",
+       "MongoDB delete of every document"),
+)
+# With a database client on the line, the statement may also end at the
+# client's next option: `psql -c "DELETE FROM users" -h db`.
+CLIENT_QUERY_RULES: tuple[Rule, ...] = (
+    _r("sql.delete-all",
+       r"\bdelete\s+from\s+[\w.$\[\]]+(?:\s+(?:as\s+)?(?!where\b|limit\b)\w+)?(?!\s*where\b)(?:\s+limit\s+\d+)?"
+       r"\s+-{1,2}[a-z]",
+       "SQL DELETE without WHERE"),
+)
+_DB_CLIENT = re.compile(
+    r"(?<![\w-])(?:psql|pgcli|mysql|mariadb|mysqlsh|mycli|sqlite3?|litecli|sqlcmd|osql|isql|invoke-sqlcmd|sqlplus"
+    r"|cockroach|duckdb|clickhouse(?:-client)?|mongo|mongosh|redis-cli|valkey-cli|cqlsh|snowsql|bq|trino|presto|usql"
+    r"|vsql|beeline|impala-shell|dbshell|dbconsole|prisma|wrangler|turso|supabase|hdbsql|db2)(?:\.exe)?(?![\w-])",
+    re.IGNORECASE)
+# Programs whose arguments are text, not a query: a commit message, a PR
+# title, an echoed or searched string. (sed and awk are not: they can write
+# files from inside their script, `sed -i`, `1w q.sql`, `print > "f"`.)
+_TEXT_ONLY_PROGRAMS = frozenset({
+    "git", "gh", "glab", "echo", "printf", "grep", "egrep", "fgrep", "rg",
+    "jq", "yq", "write-host", "write-output", "select-string", "sls",
+})
+# git, gh and glab run programs through aliases, settings and hooks, so they
+# are text-only only for an allow-list of built-in subcommands and options.
+_GIT_TEXT_SUBCOMMANDS = frozenset({
+    "commit", "tag", "log", "show", "status", "diff", "grep", "notes", "add", "push", "pull", "fetch", "checkout",
+    "switch", "branch", "stash", "rebase", "merge", "restore", "reset", "rev-parse", "describe", "blame",
+    "shortlog", "ls-files", "remote", "worktree", "cherry-pick", "revert", "init", "clone", "config",
+})
+_GIT_OPTIONS_WITH_VALUE = frozenset({"-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix"})
+# Options that run a program or write a file: `-c`, `--config-env`,
+# `--exec-path`, `-o` / `--output`, `--ext-diff`, `--textconv`, signing.
+_GIT_RUNS_OPTION = re.compile(r"(?-i:^-c$|^-o$|^-[A-Za-z]*S)|^--(?:config-env|exec-path|output|ext-diff|textconv|gpg-sign)"
+                              r"(?:=|$)", re.IGNORECASE)
+_GIT_ENV = re.compile(r"\bGIT_\w*=|\w*(?:PAGER|EDITOR)=", re.IGNORECASE)
+_GIT_PAGER_OPTION = re.compile(r"^(?:--open-files-in-pager(?:=|$)|-O)")
+# git accepts any unambiguous prefix of a long option (`--outp=q.sql`), so a
+# denied long option is matched by prefix too.
+_GIT_DENIED_LONG = ("config-env", "exec-path", "output", "ext-diff", "textconv", "gpg-sign", "open-files-in-pager")
+
+
+def _git_denied(arg: str) -> bool:
+    if _GIT_RUNS_OPTION.search(arg) or _GIT_PAGER_OPTION.search(arg):
+        return True
+    if arg.startswith("--") and len(arg) > 3:
+        name = arg[2:].partition("=")[0].lower()
+        return any(d.startswith(name) for d in _GIT_DENIED_LONG)
+    return False
+
+
+def _git_options(long: str, short: str) -> tuple[dict[str, bool], dict[str, bool]]:
+    """Safe options of a git subcommand: long names (a trailing `=` means the
+    option needs a value, given as `--opt=v` or `--opt v`), short letters (a
+    trailing `:` means it needs a value, `-bv` or `-b v`)."""
+    longs = {n.rstrip("="): n.endswith("=") for n in long.split()}
+    shorts: dict[str, bool] = {}
+    for i, c in enumerate(short):
+        if c != ":":
+            shorts[c] = i + 1 < len(short) and short[i + 1] == ":"
+    return longs, shorts
+
+
+_FETCH_LONG = ("all prune prune-tags tags no-tags quiet verbose force dry-run depth= deepen= shallow-since= "
+               "shallow-exclude= unshallow append atomic progress no-progress recurse-submodules no-recurse-submodules "
+               "jobs= set-upstream multiple keep update-shallow refetch filter= ipv4 ipv6 update-head-ok no-write-fetch-head "
+               "write-fetch-head show-forced-updates no-show-forced-updates negotiation-tip= auto-maintenance "
+               "no-auto-maintenance auto-gc no-auto-gc")
+# Per-subcommand allow-lists for the git subcommands that reach a remote or
+# can run something (`--upload-pack`, `--receive-pack`, `--exec`, `rebase -x`,
+# `grep -O`): a call is text-only only if every option it uses is listed.
+# The same letter can mean different things: `push -u` is --set-upstream,
+# `clone -u` is --upload-pack.
+_GIT_SAFE_OPTIONS: dict[str, tuple[dict[str, bool], dict[str, bool]]] = {
+    "fetch": _git_options(_FETCH_LONG, "apPtqvfnkuj:"),
+    "pull": _git_options(_FETCH_LONG + " rebase no-rebase ff no-ff ff-only squash no-squash commit no-commit stat "
+                         "no-stat autostash no-autostash no-edit signoff no-signoff allow-unrelated-histories log "
+                         "no-log summary no-summary", "apPtqvfnkuj:r"),
+    "push": _git_options("set-upstream all branches mirror tags follow-tags no-follow-tags force force-with-lease "
+                         "force-if-includes no-force-if-includes delete dry-run porcelain quiet verbose progress "
+                         "no-progress no-verify verify atomic no-atomic prune push-option= recurse-submodules thin "
+                         "no-thin ipv4 ipv6 repo=", "ufdnqvo:46"),
+    "clone": _git_options("depth= shallow-since= shallow-exclude= single-branch no-single-branch branch= origin= bare "
+                          "mirror quiet verbose progress no-checkout recurse-submodules shallow-submodules "
+                          "no-shallow-submodules remote-submodules no-remote-submodules jobs= filter= also-filter-submodules "
+                          "no-tags sparse dissociate local no-local no-hardlinks shared reject-shallow no-reject-shallow",
+                          "b:o:qvnlsj:"),
+    "rebase": _git_options("onto= continue abort skip quit interactive rebase-merges no-rebase-merges autosquash "
+                           "no-autosquash autostash no-autostash keep-empty no-keep-empty root fork-point no-fork-point "
+                           "update-refs no-update-refs committer-date-is-author-date reset-author-date signoff quiet "
+                           "verbose stat no-stat empty= keep-base merge apply force-rebase no-ff ignore-whitespace "
+                           "whitespace= reapply-cherry-picks no-reapply-cherry-picks edit-todo show-current-patch",
+                           "iqvfrnm"),
+    "grep": _git_options("line-number no-line-number ignore-case count files-with-matches files-without-match "
+                         "name-only extended-regexp fixed-strings perl-regexp basic-regexp word-regexp invert-match text "
+                         "null break heading show-function function-context cached untracked no-index index "
+                         "recurse-submodules all-match and or not max-depth= context= after-context= before-context= "
+                         "threads= color no-color column only-matching quiet max-count= exclude-standard "
+                         "no-exclude-standard full-name ignore-case no-textconv", "niclLEFPGwvazhHWpqoe:f:A:B:C:m:"),
+    "merge": _git_options("no-ff ff ff-only squash no-squash commit no-commit no-edit message= file= stat no-stat log "
+                          "no-log abort continue quit autostash no-autostash allow-unrelated-histories signoff "
+                          "no-signoff quiet verbose progress no-progress no-verify cleanup= summary no-summary",
+                          "m:F:qvn"),
+    "cherry-pick": _git_options("continue abort skip quit no-commit no-edit mainline= signoff ff allow-empty "
+                                "allow-empty-message keep-redundant-commits empty= cleanup=", "nxm:s"),
+    "revert": _git_options("continue abort skip quit no-commit no-edit mainline= signoff cleanup= reference",
+                           "nm:s"),
+    "worktree": _git_options("force detach checkout no-checkout lock quiet porcelain track no-track guess-remote "
+                             "no-guess-remote expire= reason= verbose dry-run orphan", "fdb:B:vnzq"),
+    "remote": _git_options("verbose tags no-tags mirror push add delete all dry-run", "vft:m:n"),
+    "stash": _git_options("message= keep-index no-keep-index include-untracked all quiet patch staged index "
+                          "only-untracked", "m:kuaqpS"),
+}
+
+
+def _git_options_safe(sub: str, args: list[str]) -> bool:
+    """Whether every option in a git subcommand's arguments is on its safe list."""
+    longs, shorts = _GIT_SAFE_OPTIONS[sub]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            # words after `--` are not options; one that looks like an option is not trusted
+            return not any(w.startswith("-") for w in args[i + 1:])
+        if a.startswith("--"):
+            name, eq, _ = a[2:].partition("=")
+            if name not in longs:
+                return False
+            if longs[name] and not eq:
+                i += 1  # the value is the next word
+                if i < len(args) and args[i].startswith("-"):
+                    return False  # an option where a value belongs: the parse is unsure
+        elif a.startswith("-") and len(a) > 1:
+            for j, c in enumerate(a[1:], 1):
+                if c not in shorts:
+                    return False
+                if shorts[c]:
+                    if j == len(a) - 1:
+                        i += 1  # the value is the next word
+                        if i < len(args) and args[i].startswith("-"):
+                            return False  # an option where a value belongs: the parse is unsure
+                    break
+        i += 1
+    return True
+_FORGE_GROUPS = frozenset({"pr", "issue", "release", "repo"})
+_FORGE_ACTIONS = frozenset({"view", "list", "create", "comment", "edit", "status"})
+
+
+def _text_only_call(prog: str, prefix: str, args: list[str]) -> bool:
+    """Whether a text-only program's call stays text-only (see _GIT_TEXT_SUBCOMMANDS)."""
+    if prog == "rg":
+        return not any(a.startswith("--pre") for a in args)
+    if prog not in ("git", "gh", "glab"):
+        # PowerShell common parameters that keep the output: `-OutVariable v`, `-PipelineVariable v`
+        return not any(re.match(r"-(?:outvariable|ov|pipelinevariable|pv)(?::|$)", a, re.IGNORECASE) for a in args)
+    if _GIT_ENV.search(prefix) or any("ext::" in a for a in args):
+        return False
+    if prog == "git":
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            if _git_denied(args[i]):
+                return False
+            i += 2 if args[i] in _GIT_OPTIONS_WITH_VALUE else 1
+        if i >= len(args) or args[i].lower() not in _GIT_TEXT_SUBCOMMANDS:
+            return False
+        sub, rest = args[i].lower(), args[i + 1:]
+        if sub in _GIT_SAFE_OPTIONS:
+            return _git_options_safe(sub, rest)
+        if any(_git_denied(a) for a in rest):
+            return False
+        # `git config` only reads: `--get*`, `--list`, `-l`
+        return sub != "config" or any(a in ("-l", "--list") or a.startswith("--get") for a in rest)
+    if any(_git_denied(a) for a in args):
+        return False
+    if any(a.startswith("--template") for a in args):
+        return False
+    words = [a.lower() for a in args if not a.startswith("-")]
+    return len(words) >= 2 and words[0] in _FORGE_GROUPS and words[1] in _FORGE_ACTIONS
+# Commands that neither carry nor run text.
+_NEUTRAL_PROGRAMS = frozenset({"cd", "pwd", "true", "false", ":"})
+# ...unless the text-only program is told to run a command: `git -c
+# alias.x='!psql ...'`, `git -c core.sshCommand=...`, awk `system(...)`.
+_TEXT_PROGRAM_RUNS = re.compile(r"\s-c\s+\S*(?:alias|command|editor|pager|hook)|\bsystem\s*\(", re.IGNORECASE)
+_PROGRAM = re.compile(r"^[\s({!]*(?:(?:sudo|env|command|builtin|nohup|time|exec)\s+(?:-\S+\s+)*)*"
+                      r"(?:[a-z_]\w*=\S*\s+)*([^\s]+)", re.IGNORECASE)
+
+# The whole text is matched, as before; input above these sizes is not
+# matched at all and is denied (fail closed): a shell command, or the total of
+# a script write's content or of an MCP call's string arguments. The content
+# cap keeps the worst case (repeated keywords make some rules quadratic) well
+# inside the hook's 10 s timeout.
+MAX_COMMAND_CHARS = 65536
+MAX_CONTENT_CHARS = 700_000
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
 # above can judge it. They are treated like a destructive command (denied
@@ -141,7 +672,8 @@ _NOT_LITERAL_PATH = r"(?![/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))"
 # Where a command starts: line start, after a separator, inside `$(`, after a
 # shell keyword or `sh -c`; then any wrappers and `NAME=value` prefixes.
 _CP = (rf"(?:^|[;&|\n]|\$\(|\b(?:if|then|else|elif|do|while|until)\s|\b{_SH}\s+(?:-\w+\s+)*?-\w*c\s)\s*(?:!\s+)?"
-       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout\s+[\d.]+\w?)\s+)*(?:[a-z_]\w*=\S*\s+)*")
+       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout[^\S\n]+[\d.]+\w?)[^\S\n]+)*"
+       r"(?:[a-z_]\w*=\S*[^\S\n]+)*")  # `[^\S\n]`: a newline is itself a command start, so chaining across it adds nothing
 # An interpreter reading its program from the pipe: `| sh`, `| bash -s -- -y`,
 # `| python -`, `| iex`. `| python -m json.tool` and `| node x.js` are not.
 _STDIN_SINK = (rf"(?<!\|)\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:(?:{_INTERP}|iex|invoke-expression)"
@@ -155,46 +687,146 @@ _EVAL_OK = (r"\$\((?:ssh-agent(?:\s+-s)?|(?:\S*/)?brew\s+shellenv|(?:pyenv|rbenv
             r"\s+[\w .=-]*|minikube\s+(?:-p\s+\S+\s+)?docker-env|conda\s+shell\.\w+\s+hook|docker-machine\s+env[\w -]*)\)"
             r"\s*(?:$|[;&|\n])")
 
+class _DownloadThenRun:
+    """A download that names a file (`curl -o i.sh URL`, `wget URL/i.sh`),
+    ended by `&&`, `;` or a newline, and a later command that runs that name
+    (`bash i.sh`, `./i.sh`, `sudo /tmp/i.sh`, `& .\\i.ps1`). The regex form of
+    this (a backreference after two open gaps) is cubic; this finds the same
+    matches in linear time: every command start is parsed once into the names
+    it could run, and only the first download of each simple command is read,
+    because a later one in the same command can only name a subset."""
+
+    _DL_RX = re.compile(rf"\b{_DL}\b", re.IGNORECASE)
+    _SEP = re.compile(r"[\n;&|]")
+    _NAME = re.compile(r"(?<=[/\s=])[\w-][\w.-]*(?=[\s;&]|\Z)")
+    _NAME_AT = re.compile(r"[\w-][\w.-]*(?=[\s;&])")
+    _RUN_SEP = re.compile(r"(?=&&|;|\n)")
+    _LEAD = re.compile(r"\s*")
+    _SUDO = re.compile(r"sudo\s+", re.IGNORECASE)
+    _AMP = re.compile(r"&\s*")
+    _INTERP_RX = re.compile(rf"(?:{_INTERP}|source)\s+", re.IGNORECASE)
+    _FLAG = re.compile(r"-\S+\s+")
+    _TOKEN = re.compile(rf"(?:[\w.~/\\-]*[/\\])?([\w-][\w.-]*){_WORD_END}", re.IGNORECASE)
+
+    def _names_run_at(self, text: str, t: int, seen_flags: set[int]) -> list[str]:
+        out: list[str] = []
+
+        def token(p: int) -> None:
+            m = self._TOKEN.match(text, p)
+            if m:
+                out.append(_fold(m.group(1)))
+
+        bases = [t]
+        if text[t:t + 4].casefold() == "sudo":  # casefold: re.IGNORECASE also reads `ſudo` as sudo
+            s = self._SUDO.match(text, t)
+            if s:
+                bases.append(s.end())
+        for b in bases:
+            token(b)
+            if text.startswith("&", b):
+                token(self._AMP.match(text, b).end())
+            i = self._INTERP_RX.match(text, b)
+            if i:
+                p = i.end()
+                while p not in seen_flags:  # a flag run already walked (for a later separator) adds nothing
+                    seen_flags.add(p)
+                    token(p)
+                    f = self._FLAG.match(text, p)
+                    if f is None:
+                        break
+                    p = f.end()
+        return out
+
+    def search(self, text: str) -> re.Match | None:
+        # name -> last separator (`&&`, `;`, newline) followed by a command that runs it.
+        # Separators are taken right to left so the first record is the last one,
+        # and whitespace runs and flag runs shared by several separators are walked once.
+        run_at: dict[str, int] = {}
+        n = len(text)
+        lead: dict[int, int] = {}
+        names_at: dict[int, list[str]] = {}
+        seen_flags: set[int] = set()
+        for r in reversed([m.start() for m in self._RUN_SEP.finditer(text)]):
+            q = r + (2 if text.startswith("&&", r) else 1)
+            j = q
+            while j < n and j not in lead and text[j].isspace():
+                j += 1
+            t = lead[q] = lead.get(j, j)
+            if t not in names_at:
+                names_at[t] = self._names_run_at(text, t, seen_flags)
+            for name in names_at[t]:
+                run_at.setdefault(name, r)
+        if not run_at:
+            return None
+        pos = 0
+        while True:
+            m = self._DL_RX.search(text, pos)
+            if m is None:
+                return None
+            sm = self._SEP.search(text, m.end())
+            if sm is None:
+                return None
+            s = sm.start()
+            if text[s] in "\n;" or text.startswith("&&", s):
+                for c in self._NAME.finditer(text[m.end():s]):
+                    if run_at.get(_fold(c.group()), -1) >= s:
+                        return m
+            if text[s] == "\n":
+                # the regex's `[/\s=]` before the name can be the newline itself, so the
+                # first word of the next line is a candidate too, ended by that line's separator
+                c = self._NAME_AT.match(text, s + 1)
+                s2 = self._SEP.search(text, c.end()) if c else None
+                if s2 is not None and (text[s2.start()] in "\n;" or text.startswith("&&", s2.start())):
+                    if run_at.get(_fold(c.group()), -1) >= s2.start():
+                        return m
+            pos = s + 1
+
+
 REMOTE_SCRIPT_RULES: tuple[Rule, ...] = (
-    _r("unresolvable.remote-script", rf"\b{_DL}\b[^;&\n]*{_STDIN_SINK}",
-       "download piped into an interpreter (the guard cannot see what it would run)"),
+    _rs("unresolvable.remote-script", rf"\b{_DL}\b", rf"[^;&\n]*{_STDIN_SINK}",
+        "download piped into an interpreter (the guard cannot see what it would run)", "[;&\n]"),
     _r("unresolvable.remote-script",
        rf"(?:\b(?:{_INTERP}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(\s*(?:sudo\s+)?{_DL}\b",
        "download substituted into an interpreter (the guard cannot see what it would run)"),
-    _r("unresolvable.remote-script",
-       rf"\b(?:eval|iex|invoke-expression)\b[^;|\n]*\b{_DL}\b|\s(?:-\w*c|-e|-r|-command|/c)\s+\$\(\s*{_DL}\b"
-       rf"|{_CP}\$\(\s*{_DL}\b|\[scriptblock\]::create\([^\n]*\b{_DL}\b",
+    _rs("unresolvable.remote-script", r"\b(?:eval|iex|invoke-expression)\b", rf"[^;|\n]*\b{_DL}\b",
+        "download evaluated as a command (the guard cannot see what it would run)", "[;|\n]"),
+    _r("unresolvable.remote-script", rf"\s(?:-\w*c|-e|-r|-command|/c)\s+\$\(\s*{_DL}\b|{_CP}\$\(\s*{_DL}\b",
        "download evaluated as a command (the guard cannot see what it would run)"),
-    _r("unresolvable.remote-script",
-       rf"\b{_DL}\b[^\n;&|]*?[/\s=]([\w-][\w.-]*)(?=[\s;&])[^\n;&|]*(?:&&|;|\n)(?:[\s\S]*?(?:&&|;|\n))??\s*"
-       rf"(?:sudo\s+)?(?:(?:{_INTERP}|source)\s+(?:-\S+\s+)*|&\s*)?(?:[\w.~/\\-]*[/\\])?\1{_WORD_END}",
-       "download saved and then run (the guard cannot see what it would run)"),
+    _rs("unresolvable.remote-script", r"\[scriptblock\]::create\(", rf"[^\n]*\b{_DL}\b",
+        "download evaluated as a command (the guard cannot see what it would run)"),
+    Rule("unresolvable.remote-script", _DownloadThenRun(),  # type: ignore[arg-type]
+         "download saved and then run (the guard cannot see what it would run)"),
 )
 
 INDIRECT_RULES: tuple[Rule, ...] = (
     _r("unresolvable.indirect", rf"{_CP}\$\((?![^()\n]*\)[/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))",
        "command produced by a command substitution (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect", rf"{_CP}eval\s+(?!{_EVAL_OK})[^;&|\n]*\$",
-       "eval of a variable or substitution (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect",
-       rf"\b(?:{_INTERP}|psql|mysql|su|wsl)\s+(?:[^\s;&|]+\s+)*?(?:-\w*c|-e|-r|-command|--command|/c|/k)\s+"
-       r"(?:\$[\w{(]|[%!]\w+[%!])|\s-exec(?:dir)?\s+\$[\w{(]|\btrap\s+\$[\w{(]",
+    _rs("unresolvable.indirect", rf"{_CP}eval\s+(?!{_EVAL_OK})", r"[^;&|\n]*\$",
+        "eval of a variable or substitution (the guard cannot tell what would run)", "[;&|\n]"),
+    _rs("unresolvable.indirect", rf"\b(?:{_INTERP}|psql|mysql|su|wsl)\s+",
+        r"(?:[^\s;&|]+\s+)*?(?:-\w*c|-e|-r|-command|--command|/c|/k)\s+(?:\$[\w{(]|[%!]\w+[%!])",
+        "command string held in a variable (the guard cannot tell what would run)", _WORDS),
+    _r("unresolvable.indirect", r"\s-exec(?:dir)?\s+\$[\w{(]|\btrap\s+\$[\w{(]",
        "command string held in a variable (the guard cannot tell what would run)"),
     _r("unresolvable.indirect",
        rf"{_CP}(?:{_INTERP}|source|\.)\s+(?:-(?!c\b|e\b|r\b|command\b)\S+\s+)*{_VAR}{_WORD_END}",
        "script whose path is held in a variable (the guard cannot read it)"),
     _r("unresolvable.indirect", _STDIN_SINK,
        "text piped into an interpreter (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect",
-       rf"\b{_SH}\b[^;&|\n]*<<<[^;&|\n]*\$|(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
+    _rc("unresolvable.indirect", rf"\b{_SH}\b", [r"<<<", r"\$"],
+        "substitution fed to a shell as its script (the guard cannot tell what would run)", r"[^;&|\n]", "[;&|\n]"),
+    _r("unresolvable.indirect", rf"(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
        "substitution fed to a shell as its script (the guard cannot tell what would run)"),
     _r("unresolvable.indirect",
        r"(?<![>\d&])&\s*\$[\w{(]|\b(?:iex|invoke-expression)\s+(?:-command\s+)?[$(@]"
-       r"|\[scriptblock\]::create\([^)\n]*\$|\b(?:start-process|saps)\s+(?:-filepath\s+)?\$"
-       r"|\b(?:invoke-command|icm)\b[^;|\n]*-scriptblock\s+\$",
+       r"|\b(?:start-process|saps)\s+(?:-filepath\s+)?\$",
        "PowerShell call of a variable or expression (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect", r"\b(?:powershell|pwsh)(?:\.exe)?\b[^;|&\n]*\s-(?:e|ec|en\w*)\s+[a-z0-9+/=]{8,}",
-       "PowerShell encoded command (the guard cannot tell what would run)"),
+    _rs("unresolvable.indirect", r"\[scriptblock\]::create\(", r"[^)\n]*\$",
+        "PowerShell call of a variable or expression (the guard cannot tell what would run)", "[)\n]"),
+    _rs("unresolvable.indirect", r"\b(?:invoke-command|icm)\b", r"[^;|\n]*-scriptblock\s+\$",
+        "PowerShell call of a variable or expression (the guard cannot tell what would run)", "[;|\n]"),
+    _rs("unresolvable.indirect", r"\b(?:powershell|pwsh)(?:\.exe)?\b", r"[^;|&\n]*\s-(?:e|ec|en\w*)\s+[a-z0-9+/=]{8,}",
+        "PowerShell encoded command (the guard cannot tell what would run)", "[;|&\n]"),
     _r("unresolvable.indirect",
        r"(?:^|[&|(\n])\s*@?(?:call\s+|start\s+(?:/\w+\s+)*)?[%!]\w+[%!](?:\s|$|[&|)])"
        r"|\bdo\s+@?(?:call\s+)?%%?~?\w+%?(?:\s|$)",
@@ -231,22 +863,71 @@ _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".bat", ".cmd", ".sql", ".rb", ".pl")
 # `bash x.sh`, `python x.py`, `psql -f x.sql`, `./x.sh`: scripts the command runs
 _SCRIPT_RUN = re.compile(
-    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+)*|powershell\s+(?:-\S+\s+)*|psql\b.*?\s-f\s+|mysql\b.*?<\s*|sqlite3\b.*?<\s*)"
+    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+)*|powershell\s+(?:-\S+\s+)*)"
     r"([^\s;&|)<>\"']+)", re.I)
+# `psql ... -f x.sql`, `mysql ... < x.sql`, `sqlite3 ... < x.sql` on the same line
+_SCRIPT_RUN_DB = (
+    (re.compile(r"(?:^|[\s;&|(])psql\b", re.I), re.compile(r"\s-f\s+([^\s;&|)<>\"']+)")),
+    (re.compile(r"(?:^|[\s;&|(])(?:mysql|sqlite3)\b", re.I), re.compile(r"<\s*([^\s;&|)<>\"']+)")),
+)
 _MAX_SCRIPT_BYTES = 1 << 20
 _CMD_NORMALISERS = (
     (re.compile(r"""['"`]"""), ""),            # r""m -rf, k''eys
     (re.compile(r"\\\r?\n"), " "),             # line continuations
-    (re.compile(r"/\*.*?\*/", re.S), " "),     # SQL block comments
-    (re.compile(r"[ \t]+"), " "),
 )
+_SPACES = re.compile(r"[ \t]+")
+
+
+def _drop_block_comments(command: str) -> str:
+    """`/* ... */` collapsed to a space, as `re.sub(r"/\*.*?\*/", " ", ..., re.S)`
+    would, but linear when a `/*` is never closed."""
+    out, i = [], 0
+    while True:
+        a = command.find("/*", i)
+        b = command.find("*/", a + 2) if a >= 0 else -1
+        if b < 0:
+            break
+        out += [command[i:a], " "]
+        i = b + 2
+    out.append(command[i:])
+    return "".join(out)
 
 
 def normalize_command(command: str) -> str:
     """The text rules are matched against: quotes stripped, comments collapsed."""
     for rx, rep in _CMD_NORMALISERS:
         command = rx.sub(rep, command)
-    return command
+    return _SPACES.sub(" ", _drop_block_comments(command))
+
+
+_PATH_WORD = re.compile(r"(?<![^\s=:])[^\s=:/]*+/[^\s=:]*")  # a word (split at whitespace, `=`, `:`) with a `/`
+
+
+def _fold_path(word: str) -> str:
+    """One path with `.`, empty and `dir/..` segments removed (one pass, a stack)."""
+    if "/" not in word:
+        return word
+    out: list[str] = []
+    for seg in word.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == ".." and out and out[-1] != "..":
+            out.pop()
+        else:
+            out.append(seg)
+    folded = ("/" if word.startswith("/") else "") + "/".join(out)
+    if word.endswith("/") and out:
+        folded += "/"
+    return folded or "."
+
+
+def _normalize_paths(text: str) -> str:
+    """Path spellings folded for the self-protection rules: backslashes become
+    `/`, and `./`, `//` and `dir/..` segments are removed, so
+    `.claude/./settings.json`, `.claude\\x\\..\\settings.json` and
+    `.claude//settings.json` all read `.claude/settings.json`. Linear in the
+    length of the text."""
+    return _PATH_WORD.sub(lambda m: _fold_path(m.group()), text.replace("\\", "/"))
 
 
 @dataclass(frozen=True)
@@ -257,24 +938,124 @@ class Match:
     self_auth: bool = False
 
 
-_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$|\))", re.S)
-_HEREDOC_TO_SHELL = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b[^|;&]*$", re.I)
+_SHELL_WORD = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b", re.I)
+
+
+def _feeds_shell(before: str) -> bool:
+    """Whether the text before `<<` on its line ends in a shell's simple
+    command (`bash <<EOF`): a shell word after the last `|`, `;` or `&`."""
+    k = max(before.rfind("|"), before.rfind(";"), before.rfind("&"))
+    return _SHELL_WORD.search(before[max(k, 0):]) is not None
 # Programs whose quoted argument is itself a shell command line.
 _SHELL_STRING_RUNNER = re.compile(
     rf"(?:^|[\s(])(?:{_SH}|su|sudo|ssh|eval|iex|invoke-expression|pwsh|powershell|cmd|wsl|watch|xargs|env|exec"
     r"|(?:docker|podman|kubectl)\s+exec)(?:\.exe)?(?:\s|$)", re.I)
+_VIEW_SCAN = re.compile(r"['\";|&\n(]")
 _QUOTED_SEPARATORS = str.maketrans(dict.fromkeys(";|&<>\r\n", " "))
 _BACKTICKS = re.compile(r"`([^`\n]*)`")
 
 
-def _drop_heredoc_body(m: re.Match) -> str:
-    line_start = m.string.rfind("\n", 0, m.start()) + 1
-    if _HEREDOC_TO_SHELL.search(m.string[line_start:m.start()]):
-        return m.group(0)  # `bash <<EOF`: the body is the script
-    return m.string[m.start():m.start(3)] + m.string[m.end(3):m.end()]
+_HEREDOC_SCAN = re.compile(r"['\"#]|<<")
+_DQ = re.compile('"')
 
 
-def _structure_view(command: str) -> str:
+def _closing_quotes(command: str) -> list[int]:
+    """Positions of the `"` characters that can close a double-quoted string:
+    those after an even run of backslashes. A run of backslashes cannot
+    contain a quote, so whether a `"` is escaped does not depend on where the
+    string opened; one pass finds them all."""
+    out = []
+    for m in _DQ.finditer(command):
+        k = m.start()
+        j = k
+        while j > 0 and command[j - 1] == "\\":
+            j -= 1
+        if (k - j) % 2 == 0:
+            out.append(k)
+    return out
+
+
+def _end_of_double_quote(closers: list[int], i: int) -> int:
+    """Index after the `"` that closes the one at ``i`` (a backslash escapes
+    the next character), or 0 when it is never closed. ``closers`` is
+    ``_closing_quotes`` of the same text, so a long run of unclosed quotes
+    is not rescanned from every quote."""
+    k = bisect_right(closers, i)
+    return closers[k] + 1 if k < len(closers) else 0
+
+
+_HEREDOC_START = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n")
+_HEREDOC_END = re.compile(r"[ \t]*([A-Za-z_]\w*)[ \t]*(?:\)|$)")
+
+
+def _heredocs(command: str) -> list[tuple[int, int, bool]]:
+    """(body start, body end, body is a shell script) for each heredoc.
+
+    One pass over the command: a `<<WORD` inside quotes or a `#` comment is
+    not a heredoc (`echo "<<EOF"`), and quotes inside a body do not count.
+    The terminator is the first later line holding only the word, optionally
+    followed by `)`; it is looked up, not searched for, so the pass stays
+    linear when a terminator is missing."""
+    ends: dict[str, list[int]] = {}
+    pos = 0
+    for line in command.split("\n"):
+        m = _HEREDOC_END.match(line)
+        if m:
+            ends.setdefault(m.group(1), []).append(pos)
+        pos += len(line) + 1
+    out: list[tuple[int, int, bool]] = []
+    closers = _closing_quotes(command)
+    i, n = 0, len(command)
+    while True:
+        sp = _HEREDOC_SCAN.search(command, i)
+        if sp is None:
+            return out
+        i = sp.start()
+        ch = command[i]
+        if ch in "'\"":
+            j = command.find("'", i + 1) + 1 if ch == "'" else _end_of_double_quote(closers, i)
+            if ch == '"' and j > 0 and ("$(" in command[i:j] or "`" in command[i:j]):
+                j = i + 1  # a command substitution inside double quotes is a command: read on inside it
+            i = j if j > 0 else i + 1  # an unbalanced quote is dropped, as in _structure_view
+            continue
+        if ch == "#":
+            if i == 0 or command[i - 1] in " \t\n;&|(":
+                j = command.find("\n", i)
+                i = n if j < 0 else j
+            else:
+                i += 1
+            continue
+        m = _HEREDOC_START.match(command, i)
+        if m:
+            starts = ends.get(m.group(2), [])
+            k = bisect_left(starts, m.end() + 1)
+            if k < len(starts):
+                line_start = command.rfind("\n", 0, i) + 1
+                out.append((m.end(), starts[k] - 1, _feeds_shell(command[line_start:i])))
+                i = starts[k]
+                continue
+        i += 2
+
+
+def _drop_data_heredocs(command: str) -> str:
+    """The command with heredoc bodies that are data removed (`cat > f <<EOF`);
+    a body fed to a shell (`bash <<EOF`) is the script and is kept."""
+    parts, last = [], 0
+    for start, end, to_shell in _heredocs(command):
+        if not to_shell:
+            parts.append(command[last:start])
+            last = end
+    parts.append(command[last:])
+    return "".join(parts)
+
+
+# An empty or blank quoted word (`""`, `''`, `" "`) in the word view, so the
+# words of a command keep their positions: `git grep -e "" -O...` is not read
+# as `-e -O...`.
+_EMPTY_WORD = "\ue004"
+
+
+def _structure_view(command: str, keep_empty: bool = False, keep_heredocs: bool = False) -> str:
     """The text the "unresolvable" rules are matched against.
 
     Like ``normalize_command`` it removes quote characters, but it keeps the
@@ -285,38 +1066,276 @@ def _structure_view(command: str) -> str:
     (``bash -c "..."``, ``eval "..."``, ``ssh host "..."``) is kept as written.
     """
     command = re.sub(r"\\\r?\n", " ", command)
-    command = _HEREDOC.sub(_drop_heredoc_body, command)
+    if not keep_heredocs:
+        command = _drop_data_heredocs(command)
     out: list[str] = []
     segment: list[str] = []  # the simple command being read, to spot a runner
+    # The segment is checked for a runner incrementally: the text added since
+    # the last check plus the end of what was checked, with whitespace runs
+    # collapsed (the runner pattern only asks whether there is whitespace), so
+    # a long command with many quotes stays linear and nothing is missed.
+    checked, tail, runner = 0, "", False
+    closers = _closing_quotes(command)
     i, n = 0, len(command)
     while i < n:
-        ch = command[i]
-        if ch in "'\"":
-            j = i + 1
-            while j < n and command[j] != ch:
-                if ch == '"' and command[j] == "\\" and j + 1 < n:
-                    j += 1
-                j += 1
-            if j < n:
-                body = command[i + 1:j]
-                if not _SHELL_STRING_RUNNER.search("".join(segment)):
-                    body = body.translate(_QUOTED_SEPARATORS)
-                    if ch == "'":
-                        body = body.replace("$", " ").replace("`", " ")
-                out.append(body)
-                segment.append(body)
-                i = j + 1
-                continue
-            i += 1  # unbalanced quote: drop the character
-            continue
-        if ch in ";|&\n(":
+        sp = _VIEW_SCAN.search(command, i)
+        k = sp.start() if sp else n
+        if k > i:
+            out.append(command[i:k])
+            segment.append(command[i:k])
+        if sp is None:
+            break
+        ch = command[k]
+        if ch not in "'\"":
             segment.clear()
-        else:
-            segment.append(ch)
-        out.append(ch)
-        i += 1
+            checked, tail, runner = 0, "", False
+            out.append(ch)
+            i = k + 1
+            continue
+        j = command.find("'", k + 1) + 1 if ch == "'" else _end_of_double_quote(closers, k)
+        if j == 0:
+            i = k + 1  # unbalanced quote: drop the character
+            continue
+        body = command[k + 1:j - 1]
+        if not runner:
+            window = re.sub(r"\s+", " ", tail + "".join(segment[checked:]))
+            runner = _SHELL_STRING_RUNNER.search(window) is not None
+            checked = len(segment)
+            tail = window if len(window) <= 64 else "x" + window[-64:]
+        if not runner:
+            body = body.translate(_QUOTED_SEPARATORS)
+            if ch == "'":
+                body = body.replace("$", " ").replace("`", " ").translate(_LITERAL_BRACKETS)
+            else:
+                body = _blank_literal_parens(body)
+        if keep_empty and not body.strip():
+            body = _EMPTY_WORD
+        out.append(body)
+        segment.append(body)
+        i = j
     view = _BACKTICKS.sub(r"$(\1)", "".join(out))
     return re.sub(r"[ \t]+", " ", re.sub(r"['\"]", "", view))
+
+
+_UNESCAPE = re.compile(r"\\([^\n])")
+
+
+_EXPANSION = re.compile(r"\$\{[^{}$\n]*\}|\$\w+")  # no `{` or `$` inside: unclosed `${` runs stay linear
+
+
+def _has_client(text: str) -> bool:
+    """A database client named in ``text``, also with backslash escapes
+    removed (`p\\sql`), cmd's `^` escapes removed (`p^sql`), Unicode
+    compatibility forms folded (`psq\u217c`), and `${...}` / `$name` cut out
+    of words (`p${x}sql`). Erring towards a client only makes the query rules
+    read more text."""
+    text = unicodedata.normalize("NFKC", _UNESCAPE.sub(r"\1", text)).replace("^", "")
+    return _DB_CLIENT.search(text) is not None or _DB_CLIENT.search(_EXPANSION.sub("", text)) is not None
+
+
+def _command_kind(simple: str) -> str:
+    """'client' (runs a database client), 'text' (only carries text) or 'other'.
+    Backslash escapes are removed first: `p\\sql` runs psql. A program word
+    holding a `$` is never text-only: it could expand to anything."""
+    unescaped = _UNESCAPE.sub(r"\1", simple)
+    m = _PROGRAM.match(unescaped)
+    word = m.group(1) if m else ""
+    prog = re.split(r"[/\\]", word)[-1].lower().removesuffix(".exe")
+    if (prog in _TEXT_ONLY_PROGRAMS and "$" not in word and not _TEXT_PROGRAM_RUNS.search(unescaped)
+            and _text_only_call(prog, unescaped[:m.start(1)], unescaped[m.end(1):].split())):
+        return "text"
+    return "client" if _has_client(simple) else "other"
+
+
+_BRACKETS = re.compile(r"\$?[(){}]")
+# Quoted (literal) parentheses and braces are written into the structure view
+# as these private-use characters, so they never open or close a
+# substitution; the query rules get the real characters back.
+_LITERAL_BRACKETS = str.maketrans("(){}", "\ue000\ue001\ue002\ue003")
+_REAL_BRACKETS = str.maketrans("\ue000\ue001\ue002\ue003", "(){}")
+
+
+def _blank_literal_parens(body: str) -> str:
+    """A double-quoted argument with its literal parentheses and braces
+    marked (see _LITERAL_BRACKETS). A `$(` or `${` and what closes it stay
+    real, and inside a live `$(...)` everything is command text
+    (`"$(iex (Get-Content x))"`)."""
+    if not any(c in body for c in "(){}"):
+        return body
+    out: list[str] = []
+    stack: list[str] = []  # "$": a live `$(` / `${`; "L": a bracket inside one; "-": a literal one
+    live = 0
+    last = 0
+    for m in _BRACKETS.finditer(body):
+        tok = m.group()
+        if tok in ("$(", "${"):
+            stack.append("$")
+            live += 1
+            continue
+        if tok[-1] in "({":
+            stack.append("L" if live else "-")
+            if live:
+                continue
+            tok = tok[-1]
+            start = m.end() - 1
+        else:
+            kind = stack.pop() if stack else "u"  # an unmatched closer opens nothing: left real
+            if kind == "$":
+                live -= 1
+            if kind != "-":
+                continue
+            start = m.start()
+            if tok[0] == "$":
+                tok, start = tok[1:], start + 1
+        out += [body[last:start], tok.translate(_LITERAL_BRACKETS)]
+        last = start + 1
+    out.append(body[last:])
+    return "".join(out)
+
+
+_SUBSTITUTION = re.compile(r"[$<>=@]?\(|\$\{(?=[ \t\n])|[{)}]")
+
+
+def _substitution_bodies(view: str) -> tuple[list[str], bool]:
+    """The contents of every `(...)` and `{...}` in the structure view, each
+    with its own nested ones blanked (they are listed separately), so the
+    total stays the size of the view. That is: `$(...)` (and backticks,
+    which the view turned into `$(`), `<(...)`, `>(...)`, zsh `=(...)`,
+    PowerShell `(...)`, `@(...)`, `a(...)` and `{...}`, a subshell, a brace
+    group and bash 5.3 `${ ...; }`. Quoted brackets were marked literal by
+    the view, so only live ones count. One pass. The flag is False when a
+    bracket is left unmatched (the parse is unsure)."""
+    bodies: list[str] = []
+    balanced = True
+    stack: list[tuple[str, int, list[tuple[int, int]]]] = []  # (closer, content start, nested spans)
+    for m in _SUBSTITUTION.finditer(view):
+        tok = m.group()
+        if tok in (")", "}"):
+            if not stack or stack[-1][0] != tok:
+                balanced = False
+                continue
+            _, begin, nested = stack.pop()
+            parts, last = [], begin
+            for a, b in nested:
+                parts += [view[last:a], " "]
+                last = b
+            parts.append(view[last:m.start()])
+            bodies.append("".join(parts))
+            if stack:
+                stack[-1][2].append((begin, m.end()))
+            continue
+        stack.append(("}" if tok.endswith("{") else ")", m.end(), []))
+    return bodies, balanced and not stack
+
+
+# Every output redirect: an optional descriptor (`2`, `&`, `*`), `>`, `>>` or
+# `>|`, and its target (`&N` or a word).
+_REDIRECT = re.compile(r"(\d+|&|\*)?(>>?\|?)\s*(&\d*|[^\s;&|<>]*)")
+_BIT_BUCKET = re.compile(r"(?:/dev/null|\$null|nul)$", re.IGNORECASE)
+# What can send text somewhere without a redirect or a pipe.
+_TEXT_ESCAPES = re.compile(r"[{|]|(?:^|[\s;&(])(?:exec|coproc)(?:\s|$)|\bprintf\s+(?:-\S+\s+)*-v\b", re.IGNORECASE)
+
+
+def _harmless_redirect(fd: str, op: str, target: str) -> bool:
+    """`>/dev/null`, `2>/dev/null`, `2>&1`, `>&2`, `1>&2`, `2>file`, `&>/dev/null`
+    and PowerShell `$null` / `NUL`: nothing a later command could read."""
+    if _BIT_BUCKET.match(target) and fd in ("", "1", "2", "&", "*"):
+        return True
+    if fd == "2" and (target == "&1" or not target.startswith("&")):
+        return True
+    return fd in ("", "1") and target == "&2"
+
+
+def _text_only_line(view: str, bodies: list[str], powershell: bool) -> bool:
+    """True when the whole command line only carries text that stays put: every
+    command on it (and in its substitutions) is a text-only program or a
+    neutral one (`cd`, `true`...), there is no pipe, no output redirect beyond
+    the harmless ones, and no brace group, `exec`, `coproc` or `printf -v`.
+    Only then is its text exempt from the query rules."""
+    if _TEXT_ESCAPES.search(view):
+        return False
+    for m in _REDIRECT.finditer(view):
+        if not _harmless_redirect(m.group(1) or "", m.group(2), m.group(3)):
+            return False
+    sep = r"\|\||&&|[;\n]" if powershell else r"\|\||&&|[;\n]|(?<![>&])&(?![>&])"
+    for line in [view] + bodies:
+        for simple in re.split(sep, line.translate(_REAL_BRACKETS)):
+            if not simple.strip():
+                continue
+            m = _PROGRAM.match(_UNESCAPE.sub(r"\1", simple))
+            if m and m.group(1).lower() in _NEUTRAL_PROGRAMS:
+                continue
+            if _command_kind(simple) != "text":
+                return False
+    return True
+
+
+# Where the structure view's quote and bracket tracking may be wrong: then the
+# query rules read the whole line, as main does, instead of trusting the
+# text-only and heredoc-body exemptions.
+_UNSURE = re.compile(r"\$\(|`|[<>=]\(|\$\{|\$'|\\[\"'(){}]")
+
+
+def _unsure(text: str) -> bool:
+    return _UNSURE.search(text) is not None
+
+
+# A program that is computed or that runs another command line: PowerShell
+# `&` / `.` before anything but a plain word, `iex`, `eval`, `source`, `xargs`,
+# a variable as the program, `sh -c`, `cmd /c`, `powershell -c`.
+_COMPUTED = (
+    re.compile(r"(?<![&>\d])&(?!&)\s*(?![A-Za-z_][\w.-]*(?:\s|$|[;|)]))\S"
+               r"|(?:^|[\s;|&(])\.\s+(?![A-Za-z_][\w.-]*(?:\s|$|[;|)]))\S"
+               r"|\b(?:iex|invoke-expression|eval|source|xargs)\b"
+               r"|(?:^|[;|&\n({])\s*\$[\w{(]"
+               rf"|\b{_SH}\s+(?:-\w+\s+)*-\w*c\b|\bcmd(?:\.exe)?\s+(?:/\w\s+)*/[ck]\b", re.IGNORECASE),
+    _FirstStart(r"\b(?:powershell|pwsh)(?:\.exe)?\b",
+                r"\b(?:powershell|pwsh)(?:\.exe)?\b[^;|&\n]*\s-(?:c|command|e|ec|enc\w*)\b", "[;|&\n]"),
+)
+
+
+def _computed_program(text: str) -> bool:
+    return any(rx.search(text) for rx in _COMPUTED)
+
+
+def _query_texts(text: str, norm: str, view: str | None, powershell: bool = False) -> tuple[list[str], list[str]]:
+    """(texts for the query rules, texts that may also use the client-only
+    rules). ``view`` is the structure view of a shell command line, or None
+    for scripts, file content and MCP arguments (all the text counts).
+
+    The only exemption: a command line made of text-only programs whose text
+    stays put (see ``_text_only_line``) is not read, where the parse is sure.
+    Everything else reads all the text, as main does."""
+    client_anywhere = _has_client(norm)
+    full = [norm], ([norm] if client_anywhere else [])
+    # The exemptions only ever apply where no database client is named and no
+    # program is computed: SQL written earlier on the line can reach a client
+    # through a file, a variable or git config (`echo ... > q.sql; cat q.sql
+    # | psql`), and a computed program can be one (`| & ("ps" + "ql")`).
+    if view is None or client_anywhere or _unsure(text) or _computed_program(text):
+        return full
+    # The words of each command come from a view that keeps empty quoted words.
+    words = _structure_view(text, keep_empty=True)
+    bodies, balanced = _substitution_bodies(words)
+    if not balanced or not _text_only_line(words, bodies, powershell):
+        return full
+    return [], []
+
+
+def _query_match(text: str, norm: str, view: str | None, powershell: bool = False) -> Match | None:
+    """The query-language rules, applied only where a query can be (see QUERY_RULES)."""
+    texts, client_texts = _query_texts(text, norm, view, powershell)
+    for rules, ts in ((QUERY_RULES, texts), (CLIENT_QUERY_RULES, client_texts)):
+        for rule in rules:
+            for t in ts:
+                if rule.pattern.search(t):
+                    return Match(rule.rule_id, rule.description, text)
+    return None
+
+
+def _too_long(subject: str, size: int, limit: int, what: str) -> Match:
+    return Match("guard.too-long",
+                 f"{what} too long to check safely ({size} chars > {limit}); split it or write it in parts", subject)
 
 
 def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None) -> Match | None:
@@ -324,22 +1343,40 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     into a shell; only then are the variable-indirection rules applied."""
     norm = normalize_command(text)
     if include_self_auth:
+        paths = _normalize_paths(norm)
         for rule in SELF_AUTH_RULES:
-            if rule.pattern.search(norm):
-                if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(norm):
+            if rule.pattern.search(paths):
+                if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(paths):
                     continue
                 return Match(rule.rule_id, rule.description, text, self_auth=True)
     for rule in SHELL_RULES:
         if rule.pattern.search(norm):
             return Match(rule.rule_id, rule.description, text)
+    if _PUSH_HINT.search(norm):
+        # Both views: the structure view sees past a quoted separator (`-o "a&b"`),
+        # the normalised text past what the view parses differently (a stray backtick).
+        pushes = (_structure_view(text, keep_heredocs=True), norm)
+        for rule in PUSH_RULES:
+            if any(rule.pattern.search(p) for p in pushes):
+                return Match(rule.rule_id, rule.description, text)
+    # The structure view is needed for redirects, shell command lines and downloads.
+    need_view = shell is not None or ">" in text or _PREFILTER_REMOTE.search(text) is not None
+    view = _structure_view(text) if need_view else ""
+    unsure = _unsure(text)
+    for rule in REDIRECT_RULES:
+        if (need_view and rule.pattern.search(view)) or (unsure and rule.pattern.search(norm)):
+            return Match(rule.rule_id, rule.description, text)
+    hit = _query_match(text, norm, view if shell is not None else None, shell == "PowerShell")
+    if hit is not None:
+        return hit
     if shell is None and not _PREFILTER_REMOTE.search(text):
         return None
-    view = _structure_view(text)
     rules = REMOTE_SCRIPT_RULES
     if shell is not None:
         rules += INDIRECT_RULES + (() if shell == "PowerShell" else POSIX_INDIRECT_RULES)
+    views = [view, view.translate(_REAL_BRACKETS)] if unsure else [view]
     for rule in rules:
-        if rule.pattern.search(view):
+        if any(rule.pattern.search(v) for v in views):
             return Match(rule.rule_id, rule.description, text)
     return None
 
@@ -348,8 +1385,13 @@ def _scan_script_files(command: str, cwd: str | os.PathLike | None) -> Match | N
     """If the command runs a script file that exists, scan the script's content too."""
     if cwd is None:
         return None
-    for m in _SCRIPT_RUN.finditer(command):
-        name = m.group(1)
+    names = [m.group(1) for m in _SCRIPT_RUN.finditer(command)]
+    for line in command.split("\n"):
+        for prog, arg in _SCRIPT_RUN_DB:
+            p = prog.search(line)
+            if p:
+                names += [m.group(1) for m in arg.finditer(line, p.end())]
+    for name in names:
         if not name or name.startswith("-"):
             continue
         path = Path(name) if os.path.isabs(name) else Path(cwd) / name
@@ -373,10 +1415,12 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name in _SHELL_TOOLS:
         command = str(tool_input.get("command") or "")
+        if len(command) > MAX_COMMAND_CHARS:
+            return _too_long(command, len(command), MAX_COMMAND_CHARS, "command")
         return _first_match(command, shell=tool_name) or _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        norm_target = normalize_command(target)
+        norm_target = _normalize_paths(normalize_command(target))
         for rule in SELF_AUTH_RULES[1:]:
             if rule.pattern.search(norm_target) and (tool_name in _WRITE_TOOLS or rule.rule_id == "guard.key-access"):
                 return Match(rule.rule_id, rule.description, target, self_auth=True)
@@ -385,6 +1429,8 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
             for e in tool_input.get("edits") or []:
                 if isinstance(e, dict):
                     body += " " + str(e.get("new_string") or "")
+            if len(body) > MAX_CONTENT_CHARS:
+                return _too_long(target, len(body), MAX_CONTENT_CHARS, "content")
             hit = _first_match(body, include_self_auth=False)
             if hit is not None:
                 return Match(f"write:{hit.rule_id}", f"writes a script containing a {hit.description}", target)
@@ -396,7 +1442,11 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
         # A generic tool (e.g. a database server's `query` / `execute_sql`, or a
         # shell server's `run`) can still carry a destructive command in its
         # arguments: scan every string argument with the shell/SQL rules.
-        for text in _string_values(tool_input):
+        texts = _string_values(tool_input)
+        total = sum(len(t) for t in texts)
+        if total > MAX_CONTENT_CHARS:
+            return _too_long(subject, total, MAX_CONTENT_CHARS, "MCP arguments")
+        for text in texts:
             hit = _first_match(text)
             if hit is not None:
                 desc = hit.description if hit.self_auth else f"{hit.description} inside an MCP tool call"
@@ -582,6 +1632,9 @@ def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_k
         return Decision("deny", m.rule_id, None,
                         f"perathos guard: blocked ({m.description}). Preconditions must be created by a "
                         f"person outside the agent session.")
+    if m.rule_id == "guard.too-long":
+        # Not a destructive command, so a backup precondition is not the remedy.
+        return Decision("deny", m.rule_id, None, f"perathos guard: blocked: {m.description}.")
     hint = ('A person must first run, outside this agent session:\n'
             '  perathos precondition add --scope "<target name in the command>" --check "<command that '
             'proves a restorable backup exists>"\n'
