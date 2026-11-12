@@ -290,12 +290,31 @@ _DJANGO = r"manage\.py|django-admin|django"
 _PUSH_FORCE = r"--force\b|--mir(?:r|ro|ror)?\b|(?-i:(?<![\w-])-[A-Za-z]*f[A-Za-z]*\b)"
 _PUSH_DELETE = r"--del(?:e|et|ete)?\b|\s-d\b"
 # The flag and the branch must be in the same simple command: `git push origin
-# main && rm -f x` is not a force push.
-_PUSH_GAP = r"[^;&|\n]"
-_PUSH_BREAKS = "[;&|\n]"
+# main && rm -f x` is not a force push. These rules read the structure view
+# (quoted separators blanked, `-o "a&b"`), and the `&` of a redirect (`2>&1`,
+# `&>`, `>&2`) does not end the command.
+_PUSH_GAP = r"(?:[^;&|\n]|(?<=>)&|&(?=>))"
+_PUSH_BREAKS = r"[;|\n]|(?<!>)&(?!>)"
 _MAIN_BRANCH = r"\b(main|master|trunk|prod|production)\b"
 # `git push` after any global options (`-C dir`, `-c k=v`, `--git-dir=...`, `--no-pager`).
 _GIT_PUSH = rf"{_GIT}push\b"
+# Matched against the structure view with heredoc bodies kept (see _first_match).
+# The force flag and the branch may come in either order, before or after the remote.
+PUSH_RULES: tuple[Rule, ...] = (
+    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mir(?:r|ro|ror)?\b", "force push to a main branch"),
+    _rs("git.push-main-rewrite", _GIT_PUSH,
+        _PUSH_GAP + r"*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
+        "forced overwrite or delete of a main branch on the remote", _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_PUSH_DELETE, _MAIN_BRANCH],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_DELETE],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
+)
+_PUSH_HINT = re.compile(r"\bpush\b", re.IGNORECASE)
 
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
@@ -341,19 +360,6 @@ SHELL_RULES: tuple[Rule, ...] = (
     _rs("git.destructive", rf"{_GIT}switch\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)",
         "git command that discards work", _WORDS),
     Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
-    # The force flag and the branch may come in either order, before or after the remote.
-    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch",
-        _PUSH_GAP, _PUSH_BREAKS),
-    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch",
-        _PUSH_GAP, _PUSH_BREAKS),
-    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mir(?:r|ro|ror)?\b", "force push to a main branch"),
-    _rs("git.push-main-rewrite", _GIT_PUSH,
-        r"[^;&|\n]*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
-        "forced overwrite or delete of a main branch on the remote", _PUSH_BREAKS),
-    _rc("git.push-main-rewrite", _GIT_PUSH, [_PUSH_DELETE, _MAIN_BRANCH],
-        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
-    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_DELETE],
-        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
     _rs("fs.rsync-delete", r"\brsync\b", r".*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
@@ -1049,7 +1055,7 @@ def _drop_data_heredocs(command: str) -> str:
 _EMPTY_WORD = "\ue004"
 
 
-def _structure_view(command: str, keep_empty: bool = False) -> str:
+def _structure_view(command: str, keep_empty: bool = False, keep_heredocs: bool = False) -> str:
     """The text the "unresolvable" rules are matched against.
 
     Like ``normalize_command`` it removes quote characters, but it keeps the
@@ -1060,7 +1066,8 @@ def _structure_view(command: str, keep_empty: bool = False) -> str:
     (``bash -c "..."``, ``eval "..."``, ``ssh host "..."``) is kept as written.
     """
     command = re.sub(r"\\\r?\n", " ", command)
-    command = _drop_data_heredocs(command)
+    if not keep_heredocs:
+        command = _drop_data_heredocs(command)
     out: list[str] = []
     segment: list[str] = []  # the simple command being read, to spot a runner
     # The segment is checked for a runner incrementally: the text added since
@@ -1345,6 +1352,13 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     for rule in SHELL_RULES:
         if rule.pattern.search(norm):
             return Match(rule.rule_id, rule.description, text)
+    if _PUSH_HINT.search(norm):
+        # Both views: the structure view sees past a quoted separator (`-o "a&b"`),
+        # the normalised text past what the view parses differently (a stray backtick).
+        pushes = (_structure_view(text, keep_heredocs=True), norm)
+        for rule in PUSH_RULES:
+            if any(rule.pattern.search(p) for p in pushes):
+                return Match(rule.rule_id, rule.description, text)
     # The structure view is needed for redirects, shell command lines and downloads.
     need_view = shell is not None or ">" in text or _PREFILTER_REMOTE.search(text) is not None
     view = _structure_view(text) if need_view else ""

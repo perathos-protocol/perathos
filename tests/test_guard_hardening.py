@@ -357,7 +357,13 @@ FORCE_PUSH_ANY_ORDER = ["git push origin main --force", "git push origin main -f
                         "git --namespace=x push -f origin main", "git -C repo push origin --delete main",
                         # abbreviated `--delete` / `--mirror`, either order
                         "git push --del origin main", "git push origin main --del", "git push origin --dele main",
-                        "git push --mir origin", "git push origin main --mirr", "git push --mirro origin main"]
+                        "git push --mir origin", "git push origin main --mirr", "git push --mirro origin main",
+                        # a redirect's `&` or a quoted separator does not end the command
+                        "git push --force 2>&1 origin main", "git push -f &>/dev/null origin main",
+                        "git push --force >&2 origin main", "git push --force -o \"a&b\" origin main",
+                        "git push -f -o \"x;y\" origin main", "git push -f -o 'x|y' origin main",
+                        "git push --delete 2>&1 origin main", "git push origin 2>&1 +main",
+                        "git push origin -o \"a&b\" :main"]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -522,7 +528,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 492
+BYPASS_CORPUS_SIZE = 501
 
 
 def test_bypass_corpus_size_and_all_blocked():
