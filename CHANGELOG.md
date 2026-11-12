@@ -5,6 +5,88 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-11-12
+
+Guard coverage. A full system test and an internal evaluation found ordinary forms of
+destructive commands that 1.4.4 let through. The bypass corpus in `tests/test_guard_hardening.py`
+grows from 148 to 501 commands, all blocked (90 of the 353 added got past 1.4.4; the rest pin
+behaviour 1.4.4 already had). Like every guard change, this is coverage tested against a corpus,
+not a proof; see docs/THREAT_MODEL.md.
+
+### Security
+- **Forms of covered commands that slipped past a rule are now denied**, for example:
+  - options before the verb: `terraform -chdir=x destroy`, `kubectl -n prod delete pvc x`,
+    `kubectl --context prod delete namespace x`, `aws --profile p rds delete-db-instance x`,
+    `git -C repo push -f origin main`;
+  - short and plural resource names: `kubectl delete deploy x`, `namespaces`, `sts`;
+  - the force or delete flag after the branch: `git push origin main --force`, `-f`,
+    `git push origin HEAD:main -f`, `git push origin main --delete`, and git's abbreviations
+    `--del` and `--mir`;
+  - `psql -d prod -c "DELETE FROM users" -h db` (a quoted query after other options);
+  - whole-tree git discards: `git checkout HEAD -- .`, `git checkout --theirs .` / `--ours .`,
+    `git checkout *`, `git restore --worktree .`, `git restore --staged --worktree .`,
+    `git switch -f`, `git switch --discard-changes`, `git reset HEAD~1 --hard`;
+  - Windows switches after the path: `rmdir data /s /q`, `del file.txt /q`, `del *.tmp /s`.
+- **New rules** for commands no rule covered:
+  - infrastructure: `tofu destroy`, `terragrunt destroy`;
+  - databases: `prisma db push --force-reset` and `--accept-data-loss`, `manage.py flush`,
+    `ALTER TABLE ... DROP COLUMN`, `mysqladmin ... drop`, MongoDB `.deleteMany({})` and
+    `.remove({})` (also in script files);
+  - cloud: `aws s3 sync --delete`, `gcloud storage buckets delete`, gcloud sql databases and
+    backups, firestore, spanner and filestore deletes, `gsutil rb`, `gsutil rm` with a wildcard,
+    `rclone purge` and `rclone delete`, `firebase firestore:delete` and `database:remove`,
+    `heroku apps:destroy`, `addons:destroy` and `pg:backups:delete`;
+  - containers: podman and nerdctl `volume rm` / `prune` and `system reset`;
+  - files and disks: truncating a file (`> file`, `cat /dev/null > file`, `cp /dev/null file`,
+    `Clear-Content`), any redirect onto a database file (`.db`, `.sqlite`, `.sqlite3`,
+    `.duckdb`, `.mdb`, `.accdb`, `.parquet`) outside a test directory, `robocopy /MIR` and
+    `/PURGE`, `Format-Volume`, `Clear-Disk`, `Remove-Partition`, and Python `shutil.rmtree`
+    reached through an import.
+- **Very long input is denied unchecked.** A shell command over 65,536 characters, or a script
+  file write's content (the file types the guard scans, such as `.sh`, `.py` and `.sql`) or an
+  MCP call's string arguments over about 700,000 characters in total, is denied with rule
+  `guard.too-long` ("command too long to check safely (N chars > limit); split it or write it
+  in parts"). No precondition covers it. Several rules that could take minutes on crafted input
+  now run in one pass. The slowest inputs measured took about 3 to 6 s at the 700,000 cap (one
+  run near 9 s on a loaded machine), against the hook's 10 s timeout; a script file the command
+  runs is scanned up to 1 MiB outside this cap (about 8 s measured). With the guard hook
+  installed fail-closed, a timeout blocks the call. These are measurements, not a bound.
+
+### Changed
+- **Fewer false alarms for text that never reaches a database.** A line made only of text-only
+  commands, with no pipe or output redirect, is no longer denied for SQL, Redis or MongoDB words
+  in its text. So `git commit -m "fix: drop table handling" && git push`,
+  `grep -rn "drop table" src/`, `rg -i "truncate table" .` and `echo "flushdb"` are allowed. The
+  exact conditions (which programs, subcommands and options count as text-only) are in
+  docs/THREAT_MODEL.md. Everywhere else the rules still read all the text. Script file writes and
+  MCP arguments are always read in full; other file writes are not scanned.
+- **SQL, Redis and MongoDB commands inside command substitutions, process substitutions,
+  PowerShell `(…)` / `@(…)` / `{…}`, heredocs piped into a client, and pipelines are still
+  denied, as in 1.4.4:** the new text-only exemption does not apply to them
+  (`echo $(psql -c "drop table t")`, `cat <<EOF | psql`, `echo "DROP TABLE $(cat t)" | psql`,
+  `Write-Output "..." | & psql`). A client name written with escapes or a variable (`p\sql`,
+  `p${x}sql`) still counts as a client.
+- **Some commands 1.4.4 allowed are now denied** because their text reaches a pipe, a file or a
+  program, or matches a new rule, for example `grep -rn "delete from users" src | head`,
+  `echo "DELETE FROM sessions" >> TODO.txt`, `Write-Host ("found: " + "delete from users")`,
+  `cat /dev/null > app.log`, `Clear-Content log.txt`, `robocopy src dst /MIR`,
+  `git checkout --theirs .`, `sqlite3 x.db .dump > backup.sqlite`, and script files containing
+  ``db.execute(`DELETE FROM sessions`)``. A commit message written through
+  `$(cat <<'EOF' ...)` that names SQL is still denied, as in 1.4.4.
+- **Discarding changes to named files or directories is allowed:** `git checkout -- a.py`,
+  `git checkout -- src/`, `git checkout feature -- ci.yml` and `git restore -- a.py`;
+  `git restore --staged .` (unstage only) is allowed. Whole-tree discards are denied (above).
+- **The self-protection paths are normalised**, so `.claude/./settings.json`,
+  `.claude\.\settings.json` and `x/../` spellings count as the hook files.
+
+### Not covered (documented in docs/THREAT_MODEL.md)
+- SQL that the command text does not spell out: encoded or transformed, read from a file, git or
+  the network (`cat existing.sql | psql`), built in a program, or split by a substitution.
+- Commands with no rule yet, for example `alembic downgrade`, `UPDATE` without `WHERE`,
+  `kubectl delete secret`, `kubectl scale --replicas=0`, IAM and secrets changes.
+- Force or delete pushes set through git configuration, and programs run by repository hooks
+  or settings already in place.
+
 ## [1.4.4] - 2026-11-12
 
 ### Security
