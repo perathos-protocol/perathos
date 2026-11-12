@@ -258,7 +258,7 @@ database and its backups, not a sandbox against a deliberately hostile
 agent, and the signing key lives on the same machine. An independent
 red-team of 1.0.0 found about thirty accident-class commands that passed;
 1.1.0 blocks all of them, and the list it used is now a test
-(`tests/test_guard_hardening.py`). That corpus has since grown to 228
+(`tests/test_guard_hardening.py`). That corpus has since grown to 238
 commands, all blocked.
 
 Commands whose text does not say what will run are flagged as

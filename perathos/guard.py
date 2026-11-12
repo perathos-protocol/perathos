@@ -44,7 +44,8 @@ import hashlib
 import json
 import os
 import re
-import shlex
+from bisect import bisect_left
+from dataclasses import replace
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +68,34 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
     return Rule(rule_id, re.compile(regex, re.IGNORECASE), description)
 
 
+class _RmtreeImportedByName:
+    """`from shutil import rmtree [as r]` (or `import *`) or `import shutil as
+    s`, followed anywhere later by a call through that name. A regex with a
+    lazy gap would be quadratic on repeated imports; this looks up each
+    distinct name once (at most 32 of them)."""
+
+    _IMPORT = re.compile(r"\bfrom\s+shutil\s+import\b([^\n;]{0,256})|\bimport\s+shutil\s+as\s+(\w+)\b", re.IGNORECASE)
+    _NAMED = re.compile(r"\brmtree\b(?:\s+as\s+(\w+))?|(\*)", re.IGNORECASE)
+
+    def search(self, text: str) -> re.Match | None:
+        seen: set[str] = set()
+        for m in self._IMPORT.finditer(text):
+            if m.group(2) is not None:
+                call = rf"\b{re.escape(m.group(2))}\.rmtree\s*\("
+            else:
+                named = self._NAMED.search(m.group(1))
+                if named is None:
+                    continue
+                call = rf"\b{re.escape(named.group(1) or 'rmtree')}\s*\("
+            if call in seen:
+                continue
+            seen.add(call)
+            hit = re.compile(call, re.IGNORECASE).search(text, m.end())
+            if hit is not None or len(seen) >= 32:
+                return hit
+        return None
+
+
 # Shell / CLI commands that can destroy data or the means to recover it.
 # Matched against a normalised copy of the command (quotes removed, SQL
 # comments collapsed), so `r""m -rf`, `k''eys` and `DROP/**/TABLE` match.
@@ -74,8 +103,8 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
 # ends: `psql -c "DELETE FROM t" -h db` arrives as `psql -c DELETE FROM t -h db`.
 #
 # Repetitions are bounded ({0,N}) so a long command made of repeated keywords
-# cannot make a rule take seconds; input longer than MAX_SCAN_CHARS is not
-# scanned at all (see ``evaluate``).
+# cannot make a rule take seconds; long input is matched in pieces (see
+# CHUNK_CHARS) and only input over a hard cap is denied unmatched.
 
 # Options before a subcommand or argument, each with an optional value:
 # `terraform -chdir=infra destroy`, `aws --profile p s3 rb`, `git -C repo reset`.
@@ -118,26 +147,20 @@ SHELL_RULES: tuple[Rule, ...] = (
        "PowerShell recursive delete"),
     _r("fs.find-delete", rf"\bfind\b{_ANY}\s(-delete\b|-exec\s+rm\b)", "find -delete"),
     _r("fs.truncate-or-overwrite",
-       rf"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+{_ANY}\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null|(^|[;&|])\s*:\s*>\s*\S",
+       rf"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+{_ANY}\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null",
        "file truncated, overwritten or shredded"),
-    # `> file` with no command, `cp /dev/null file`, `cat /dev/null > file` and
-    # PowerShell `Clear-Content` empty any file. An ordinary `cmd > file` is
-    # flagged only when it would overwrite a database file outside a test
-    # directory. `> /dev/null`, `> NUL` and `=>` are not redirects to a file.
+    # `cp /dev/null file`, `cat /dev/null > file` and PowerShell `Clear-Content`
+    # empty any file. (Redirects are judged on the structure view: REDIRECT_RULES.)
     _r("fs.redirect-truncate",
-       rf"(?:^|[;(]|&&|\|\|)\s*>\|?\s*{_NOT_A_FILE}[^\s>&|;]|\bcp\s+(?:-\S+\s+){{0,8}}/dev/null\s+{_NOT_A_FILE}\S"
-       rf"|\bcat\s+/dev/null\s*>(?!>)\|?\s*{_NOT_A_FILE}\S|\bclear-content\b"
-       rf"|(?<![>\d=-])>(?!>)\|?\s*(?!{_TEST_DIR}){_DATA_FILE}",
+       rf"\bcp\s+(?:-\S+\s+){{0,8}}/dev/null\s+{_NOT_A_FILE}\S|\bcat\s+/dev/null\s*>(?!>)\|?\s*{_NOT_A_FILE}\S|\bclear-content\b",
        "file emptied by a redirect"),
     _r("fs.interpreter-delete",
        rf"shutil\)?\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\({_ANY}recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\({_ANY}\*",
        "delete through an interpreter one-liner"),
     # `from shutil import rmtree; rmtree(p)`, `... import rmtree as r; r(p)`,
     # `from shutil import *; rmtree(p)`, `import shutil as s; s.rmtree(p)`
-    _r("fs.python-rmtree",
-       r"\bfrom\s+shutil\s+import\b[^\n;]{0,256}?(?:\brmtree\b(?:\s+as\s+(?P<fn>\w+))?|\*)[\s\S]{0,2048}?\b(?:(?P=fn)|rmtree)\s*\("
-       r"|\bimport\s+shutil\s+as\s+(?P<mod>\w+)\b[\s\S]{0,2048}?\b(?P=mod)\.rmtree\s*\(",
-       "delete through an interpreter one-liner (rmtree imported by name)"),
+    Rule("fs.python-rmtree", _RmtreeImportedByName(),  # type: ignore[arg-type]
+         "delete through an interpreter one-liner (rmtree imported by name)"),
     _r("fs.robocopy-mirror", rf"\brobocopy\b{_REST}\s/(mir|purge)\b",
        "robocopy /MIR or /PURGE (deletes files missing from the source)"),
     _r("fs.ps-format", r"\b(format-volume|clear-disk|remove-partition)\b", "PowerShell volume format or disk wipe"),
@@ -204,29 +227,45 @@ SHELL_RULES: tuple[Rule, ...] = (
     _r("paas.firebase", rf"\bfirebase\s+{_OPTS}(firestore:delete|database:remove)\b", "Firebase data delete"),
     _r("paas.heroku", rf"\bheroku\s+{_OPTS}(apps:destroy|destroy|pg:backups:delete|addons:destroy)\b", "Heroku destroy"),
     _r("docker.volume",
-       rf"\bdocker\s+(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes)|\bdocker([ -])compose\b{_ANY}\sdown\b{_ANY}\s(-v\b|--volumes\b)",
+       rf"\bdocker\s+{_OPTS}(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes)|\bdocker([ -])compose\b{_ANY}\sdown\b{_ANY}\s(-v\b|--volumes\b)",
        "Docker volume delete"),
     # podman and nerdctl take docker's volume commands; `system reset` wipes all storage
     _r("container.volume",
-       rf"\b(podman|nerdctl)\s+(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes|system\s+reset\b)"
+       rf"\b(podman|nerdctl)\s+{_OPTS}(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes|system\s+reset\b)"
        rf"|\b(podman|nerdctl)([ -])compose\b{_ANY}\sdown\b{_ANY}\s(-v\b|--volumes\b)",
        "podman / nerdctl volume delete"),
 )
 
+# Redirects, matched against the structure view (quotes removed but a `;` or
+# `>` inside a quoted argument blanked), so `echo 'DELETE FROM t;' > q.sql` is
+# an ordinary write. `> file` with no command (and `: > file`) empties any
+# file; an ordinary `cmd > file` is flagged only when it would overwrite a
+# database file outside a test directory. `> /dev/null`, `> NUL` and `=>` are
+# not redirects to a file.
+REDIRECT_RULES: tuple[Rule, ...] = (
+    _r("fs.truncate-or-overwrite", r"(^|[;&|])\s*:\s*>\s*\S", "file truncated, overwritten or shredded"),
+    _r("fs.redirect-truncate",
+       rf"(?:^|[;(]|&&|\|\|)\s*>\|?\s*{_NOT_A_FILE}[^\s>&|;]|(?<![>\d=-])>(?!>)\|?\s*(?!{_TEST_DIR}){_DATA_FILE}",
+       "file emptied by a redirect"),
+)
+
 # Query-language rules (SQL, Redis, MongoDB). On a shell command line they
-# apply only to text that can reach a database: the whole line when it names a
-# database client (`psql`, `mysql`, `mongosh`...), otherwise every simple
-# command except those that only carry text (`git commit -m`, `gh pr create
-# --title`, `echo`, `grep`...). In scripts, MCP arguments and file writes they
-# apply to all the text.
+# apply only to text that can reach a database (see ``_query_texts``): a
+# simple command that runs a database client (`psql`, `docker exec db psql`,
+# `ssh db mysql`), a whole pipeline that feeds one (`echo 'DROP TABLE t' |
+# psql`), and every other simple command except those that only carry text
+# (`git commit -m`, `gh pr create --title`, `echo`, `grep`...). A client that
+# reads a file or stdin redirect (`psql -f f.sql`, `sqlite3 db < q.sql`) makes
+# the whole line count, since the file may have been written earlier on it.
+# In scripts, MCP arguments and file writes the rules apply to all the text.
 QUERY_RULES: tuple[Rule, ...] = (
     _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
     _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.$\[\]]+", "SQL TRUNCATE"),
-    # The statement ends at `;`, a newline, `)`, a shell separator or a `--`
-    # comment. An alias or a LIMIT may follow the table; a WHERE may not.
+    # The statement ends at `;`, a newline, `)`, a shell separator or redirect
+    # or a `--` comment. An alias or a LIMIT may follow the table; a WHERE may not.
     _r("sql.delete-all",
        r"\bdelete\s+from\s+[\w.$\[\]]+(?:\s+(?:as\s+)?(?!where\b|limit\b)\w+)?(?!\s*where\b)(?:\s+limit\s+\d+)?"
-       r"\s*(?:$|[;)|&\n]|--\s)",
+       r"\s*(?:$|[;)|&\n<>]|--\s)",
        "SQL DELETE without WHERE"),
     _r("sql.alter-drop",
        r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?[\w.$\[\]]+\s+(?:[^;\n]{0,1024}?,\s*)?drop\s+"
@@ -254,21 +293,24 @@ _DB_CLIENT = re.compile(
 # title, an echoed or searched string.
 _TEXT_ONLY_PROGRAMS = frozenset({
     "git", "gh", "glab", "hub", "hg", "svn", "jj", "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack",
-    "sed", "awk", "write-host", "write-output", "select-string", "sls",
+    "sed", "awk", "jq", "yq", "write-host", "write-output", "select-string", "sls",
 })
-_PROGRAM = re.compile(r"^\s*(?:!\s*)?(?:(?:sudo|env|command|builtin|nohup|time|exec)\s+(?:-\S+\s+)*)*"
+# ...unless the text-only program is told to run a command: `git -c
+# alias.x='!psql ...'`, `git -c core.sshCommand=...`, awk `system(...)`.
+_TEXT_PROGRAM_RUNS = re.compile(r"\s-c\s+\S*(?:alias|command|editor|pager|hook)|\bsystem\s*\(", re.IGNORECASE)
+_PROGRAM = re.compile(r"^[\s({!]*(?:(?:sudo|env|command|builtin|nohup|time|exec)\s+(?:-\S+\s+)*)*"
                       r"(?:[a-z_]\w*=\S*\s+)*([^\s]+)", re.IGNORECASE)
+_CLIENT_READS_INPUT = re.compile(r"\s(?:-f|--file|-i|--init-file|\.read|source)(?:\s|=)|<", re.IGNORECASE)
 
-# `terraform destroy --help` prints help and deletes nothing. The exemption
-# covers only these CLI rules, and only a single simple command with a literal
-# `--help` word and nothing that could run a command string (see _help_only).
-_HELP_EXEMPT = ("iac.", "k8s.", "cloud.", "paas.", "docker.", "container.", "git.", "db.dropdb", "db.mysqladmin-drop",
-                "db.migrate-reset", "db.prisma-force-reset", "db.django-flush")
-_RUNNER_OPTIONS = frozenset({"-c", "-e", "--eval", "-command", "--command", "/c", "/k", "-encodedcommand", "-enc"})
-
-# Input longer than this is not matched against the rules: a pattern matcher
-# that may take seconds on it cannot be trusted to finish, so it is denied.
-MAX_SCAN_CHARS = 16384
+# Long input is matched in pieces of at most CHUNK_CHARS: whole lines, with
+# the last WINDOW_OVERLAP characters' worth of lines repeated at the start of
+# the next piece, and a single longer line cut into overlapping windows. The
+# overlap is longer than any rule's reach, so a match is never cut in two.
+# Above the hard caps the input is not matched at all and is denied.
+CHUNK_CHARS = 16384
+WINDOW_OVERLAP = 4096
+MAX_COMMAND_CHARS = 65536
+MAX_CONTENT_CHARS = 2_000_000
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
 # above can judge it. They are treated like a destructive command (denied
@@ -285,7 +327,8 @@ _NOT_LITERAL_PATH = r"(?![/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))"
 # Where a command starts: line start, after a separator, inside `$(`, after a
 # shell keyword or `sh -c`; then any wrappers and `NAME=value` prefixes.
 _CP = (rf"(?:^|[;&|\n]|\$\(|\b(?:if|then|else|elif|do|while|until)\s|\b{_SH}\s+(?:-\w+\s+)*?-\w*c\s)\s*(?:!\s+)?"
-       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout\s+[\d.]+\w?)\s+)*(?:[a-z_]\w*=\S*\s+)*")
+       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout[ \t]+[\d.]+\w?)[ \t]+){0,8}"
+       r"(?:[a-z_]\w*=\S*[ \t]+){0,16}")  # on one line: `x=1\nx=1\n...` must not chain
 # An interpreter reading its program from the pipe: `| sh`, `| bash -s -- -y`,
 # `| python -`, `| iex`. `| python -m json.tool` and `| node x.js` are not.
 _STDIN_SINK = (rf"(?<!\|)\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:(?:{_INTERP}|iex|invoke-expression)"
@@ -365,6 +408,37 @@ SELF_AUTH_RULES: tuple[Rule, ...] = (
     _r("guard.self-disable", _ENFORCEMENT_PATHS,
        "agent tried to change the files that keep the recorder and guard running"),
 )
+# A rule can only match text that contains one of its words (lower case, after
+# normalising), so a rule whose words are all absent is skipped. This keeps
+# long ordinary content (a 2 MB file write) fast. Rules not listed always run.
+_NEEDLES: dict[str, tuple[str, ...]] = {
+    "fs.rm-recursive": ("rm",), "fs.win-delete": ("del", "erase", "rd", "rmdir", "format"), "fs.ps-delete": ("-r", "-f"),
+    "fs.find-delete": ("find",), "fs.truncate-or-overwrite": ("truncate", "dd", "shred", "/dev/null", ":"),
+    "fs.redirect-truncate": ("/dev/null", "clear-content", ">"), "fs.interpreter-delete": ("rm", "rimraf", "os."),
+    "fs.python-rmtree": ("shutil",), "fs.robocopy-mirror": ("robocopy",),
+    "fs.ps-format": ("format-volume", "clear-disk", "remove-partition"), "git.destructive": ("git",),
+    "git.force-push-main": ("git",), "git.push-main-rewrite": ("git",), "git.repo-delete": ("gh",), "fs.mkfs": ("mkfs",),
+    "fs.rsync-delete": ("rsync",), "db.dropdb": ("dropdb",), "db.mysqladmin-drop": ("mysqladmin",),
+    "db.migrate-reset": ("prisma", "rails", "supabase", "heroku"), "db.prisma-force-reset": ("prisma",),
+    "db.django-flush": ("manage.py", "django"), "iac.terraform-destroy": ("terraform",), "iac.tofu-destroy": ("tofu",),
+    "iac.terragrunt-destroy": ("terragrunt",), "iac.pulumi-destroy": ("pulumi",), "k8s.delete": ("kubectl",),
+    "k8s.helm-uninstall": ("helm",), "cloud.aws-delete": ("aws",), "cloud.aws-s3-sync-delete": ("aws",),
+    "cloud.gcloud-delete": ("gcloud",), "cloud.gsutil-delete": ("gsutil",), "cloud.rclone-delete": ("rclone",),
+    "cloud.az-delete": ("az",), "paas.railway": ("railway",), "paas.vercel": ("vercel",), "paas.fly": ("fly",),
+    "paas.neon": ("neon",), "paas.firebase": ("firebase",), "paas.heroku": ("heroku",), "docker.volume": ("docker",),
+    "container.volume": ("podman", "nerdctl"), "sql.drop": ("drop",), "sql.truncate": ("truncate",),
+    "sql.delete-all": ("delete",), "sql.alter-drop": ("alter",), "db.redis-flush": ("flush",), "db.mongo-drop": (".drop",),
+    "db.mongo-delete-all": ("deletemany", "remove"), "guard.self-authorize": ("perathos",),
+    "guard.key-access": (".perathos", "signing.key"),
+    "guard.self-disable": (".perathos", ".claude", ".cursor", "managed-settings", "claudecode"),
+}
+
+
+def _may_match(rule: Rule, low: str) -> bool:
+    needles = _NEEDLES.get(rule.rule_id)
+    return needles is None or any(n in low for n in needles)
+
+
 # Reading those files is fine; only commands that could write them are denied.
 _READ_ONLY_PREFIX = re.compile(r"^\s*(cat|type|ls|dir|head|tail|less|more|stat|get-content|gc|get-childitem|perathos|git\s+(status|diff|log|show))\b", re.I)
 
@@ -376,7 +450,8 @@ _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".bat", ".cmd", ".sql", ".rb", ".pl")
 # `bash x.sh`, `python x.py`, `psql -f x.sql`, `./x.sh`: scripts the command runs
 _SCRIPT_RUN = re.compile(
-    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+)*|powershell\s+(?:-\S+\s+)*|psql\b.*?\s-f\s+|mysql\b.*?<\s*|sqlite3\b.*?<\s*)"
+    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+){0,16}"
+    r"|powershell\s+(?:-\S+\s+){0,16}|psql\b[^;&|\n]{0,1024}?\s-f\s+|mysql\b[^;&|\n]{0,1024}?<\s*|sqlite3\b[^;&|\n]{0,1024}?<\s*)"
     r"([^\s;&|)<>\"']+)", re.I)
 _MAX_SCRIPT_BYTES = 1 << 20
 _CMD_NORMALISERS = (
@@ -433,7 +508,6 @@ class Match:
     self_auth: bool = False
 
 
-_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$|\))", re.S)
 _HEREDOC_TO_SHELL = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b[^|;&]*$", re.I)
 # Programs whose quoted argument is itself a shell command line.
 _SHELL_STRING_RUNNER = re.compile(
@@ -443,11 +517,47 @@ _QUOTED_SEPARATORS = str.maketrans(dict.fromkeys(";|&<>\r\n", " "))
 _BACKTICKS = re.compile(r"`([^`\n]*)`")
 
 
-def _drop_heredoc_body(m: re.Match) -> str:
-    line_start = m.string.rfind("\n", 0, m.start()) + 1
-    if _HEREDOC_TO_SHELL.search(m.string[line_start:m.start()]):
-        return m.group(0)  # `bash <<EOF`: the body is the script
-    return m.string[m.start():m.start(3)] + m.string[m.end(3):m.end()]
+_HEREDOC_START = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n")
+
+
+def _heredocs(command: str) -> list[tuple[int, int, bool]]:
+    """(body start, body end, body is a shell script) for each heredoc.
+
+    One pass over the lines and a lookup per `<<WORD`, so it stays linear on a
+    long command (a regex with a lazy body search is quadratic when the
+    terminator is missing). The terminator is a line holding only the word,
+    optionally followed by `)`."""
+    lines: dict[str, list[int]] = {}
+    pos = 0
+    for line in command.split("\n"):
+        lines.setdefault(line.strip(" \t\r").rstrip(")").rstrip(" \t"), []).append(pos)
+        pos += len(line) + 1
+    out: list[tuple[int, int, bool]] = []
+    end = 0
+    for m in _HEREDOC_START.finditer(command):
+        if m.start() < end:
+            continue  # inside an earlier body
+        starts = lines.get(m.group(2), [])
+        k = bisect_left(starts, m.end())
+        if k == len(starts):
+            continue  # unterminated: not a heredoc body we can delimit
+        body_end = max(m.end(), starts[k] - 1)
+        line_start = command.rfind("\n", 0, m.start()) + 1
+        out.append((m.end(), body_end, _HEREDOC_TO_SHELL.search(command[line_start:m.start()]) is not None))
+        end = starts[k]
+    return out
+
+
+def _drop_data_heredocs(command: str) -> str:
+    """The command with heredoc bodies that are data removed (`cat > f <<EOF`);
+    a body fed to a shell (`bash <<EOF`) is the script and is kept."""
+    parts, last = [], 0
+    for start, end, to_shell in _heredocs(command):
+        if not to_shell:
+            parts.append(command[last:start])
+            last = end
+    parts.append(command[last:])
+    return "".join(parts)
 
 
 def _structure_view(command: str) -> str:
@@ -461,7 +571,7 @@ def _structure_view(command: str) -> str:
     (``bash -c "..."``, ``eval "..."``, ``ssh host "..."``) is kept as written.
     """
     command = re.sub(r"\\\r?\n", " ", command)
-    command = _HEREDOC.sub(_drop_heredoc_body, command)
+    command = _drop_data_heredocs(command)
     out: list[str] = []
     segment: list[str] = []  # the simple command being read, to spot a runner
     # The segment is checked for a runner incrementally (new text plus a short
@@ -503,74 +613,89 @@ def _structure_view(command: str) -> str:
     return re.sub(r"[ \t]+", " ", re.sub(r"['\"]", "", view))
 
 
-def _help_only(command: str) -> bool:
-    """True for one simple command with a literal `--help` word that cannot run
-    a command string: `terraform destroy --help`, `python manage.py flush --help`.
-    Not `sh -c "terraform destroy" --help`, `... --help; terraform destroy` or
-    `kubectl delete ns x -l "a --help"`."""
-    if "--help" not in command or any(c in command for c in "\n$`"):
-        return False
-    try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        words = list(lex)
-    except ValueError:
-        return False
-    if "--help" not in words or any(w and w[0] in "();<>|&" for w in words):
-        return False
-    if any(w.lower() in _RUNNER_OPTIONS for w in words) or _SHELL_STRING_RUNNER.search(command):
-        return False
-    return True
+def _command_kind(simple: str) -> str:
+    """'client' (runs a database client), 'text' (only carries text) or 'other'."""
+    m = _PROGRAM.match(simple)
+    prog = re.split(r"[/\\]", m.group(1))[-1].lower().removesuffix(".exe") if m else ""
+    if prog in _TEXT_ONLY_PROGRAMS and not _TEXT_PROGRAM_RUNS.search(simple):
+        return "text"
+    return "client" if _DB_CLIENT.search(simple) else "other"
 
 
-def _query_match(text: str, norm: str, shell: str | None) -> Match | None:
+def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], list[str]]:
+    """(texts for the query rules, texts that may also use the client-only
+    rules). ``view`` is the structure view of a shell command line, or None
+    for scripts, file content and MCP arguments (all the text counts)."""
+    if view is None:
+        return [norm], ([norm] if _DB_CLIENT.search(norm) else [])
+    base: list[str] = []
+    client: list[str] = []
+    # Parentheses are not split on: quoted code (`db.users.drop()`) keeps them.
+    for pipeline in re.split(r"\|\||&&|[;&\n]", view.replace("|&", "|")):
+        simples = pipeline.split("|")
+        kinds = [_command_kind(s) for s in simples]
+        if "client" in kinds[1:]:
+            client.append(normalize_command(pipeline))  # text piped into a client is a query
+            continue
+        for simple, kind in zip(simples, kinds):
+            if kind == "client":
+                if _CLIENT_READS_INPUT.search(simple):
+                    return [norm], [norm]  # `psql -f f.sql`: anything on the line may be the query
+                client.append(normalize_command(simple))
+            elif kind == "other":
+                base.append(normalize_command(simple))
+    return base + client, client
+
+
+def _query_match(text: str, norm: str, view: str | None) -> Match | None:
     """The query-language rules, applied only where a query can be (see QUERY_RULES)."""
-    client = _DB_CLIENT.search(norm) is not None
-    rules = QUERY_RULES + (CLIENT_QUERY_RULES if client else ())
-    if client or shell is None:
-        texts = [norm]
-    else:
-        texts = []
-        for seg in re.split(r"[;&|\n()]", _structure_view(text)):
-            m = _PROGRAM.match(seg)
-            prog = re.split(r"[/\\]", m.group(1))[-1].lower().removesuffix(".exe") if m else ""
-            if prog not in _TEXT_ONLY_PROGRAMS:
-                texts.append(normalize_command(seg))
-    for rule in rules:
-        for t in texts:
-            if rule.pattern.search(t):
-                return Match(rule.rule_id, rule.description, text)
+    texts, client_texts = _query_texts(text, norm, view)
+    for rules, ts in ((QUERY_RULES, texts), (CLIENT_QUERY_RULES, client_texts)):
+        for rule in rules:
+            for t in ts:
+                if _may_match(rule, t.lower()) and rule.pattern.search(t):
+                    return Match(rule.rule_id, rule.description, text)
     return None
 
 
-def _too_long(text: str) -> Match:
-    return Match("guard.too-long",
-                 f"input too long for the guard to check ({len(text)} characters; the limit is {MAX_SCAN_CHARS})", text)
+def _too_long(text: str, limit: int, *, command: bool) -> Match:
+    if command:
+        desc = (f"command too long to check safely ({len(text)} chars > {limit}); split it or write the "
+                f"content with the Write tool")
+    else:
+        desc = f"content too long to check safely ({len(text)} chars > {limit}); split it into smaller pieces"
+    return Match("guard.too-long", desc, text)
 
 
-def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None) -> Match | None:
+def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None,
+                 queries: bool = True) -> Match | None:
     """``shell`` is the shell tool's name when ``text`` is a command line typed
-    into a shell; only then are the variable-indirection rules applied."""
+    into a shell; only then are the variable-indirection rules applied.
+    ``queries=False`` skips the query-language rules (a data heredoc body)."""
     norm = normalize_command(text)
+    low = norm.lower()
     if include_self_auth:
         paths = _normalize_paths(norm)
+        low_paths = paths.lower()
         for rule in SELF_AUTH_RULES:
-            if rule.pattern.search(paths):
+            if _may_match(rule, low_paths) and rule.pattern.search(paths):
                 if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(paths):
                     continue
                 return Match(rule.rule_id, rule.description, text, self_auth=True)
-    help_only = shell is not None and _help_only(text)
     for rule in SHELL_RULES:
-        if help_only and rule.rule_id.startswith(_HELP_EXEMPT):
-            continue
-        if rule.pattern.search(norm):
+        if _may_match(rule, low) and rule.pattern.search(norm):
             return Match(rule.rule_id, rule.description, text)
-    hit = _query_match(text, norm, shell)
+    # The structure view is needed for redirects, shell command lines and downloads.
+    need_view = shell is not None or ">" in text or _PREFILTER_REMOTE.search(text) is not None
+    view = _structure_view(text) if need_view else ""
+    for rule in REDIRECT_RULES:
+        if need_view and rule.pattern.search(view):
+            return Match(rule.rule_id, rule.description, text)
+    hit = _query_match(text, norm, view if shell is not None else None) if queries else None
     if hit is not None:
         return hit
     if shell is None and not _PREFILTER_REMOTE.search(text):
         return None
-    view = _structure_view(text)
     rules = REMOTE_SCRIPT_RULES
     if shell is not None:
         rules += INDIRECT_RULES + (() if shell == "PowerShell" else POSIX_INDIRECT_RULES)
@@ -595,31 +720,78 @@ def _scan_script_files(command: str, cwd: str | os.PathLike | None) -> Match | N
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hit = _first_match_long(content)
+        hit = _scan_content(content)
         if hit is not None:
             return Match(f"script:{hit.rule_id}", f"{hit.description} inside {name}", command, self_auth=hit.self_auth)
     return None
 
 
-def _first_match_long(text: str, *, include_self_auth: bool = True) -> Match | None:
-    """``_first_match`` for file and argument content that may be long: text
-    over MAX_SCAN_CHARS is scanned in chunks of whole lines (a construct split
-    across two chunks can be missed); a single line over the limit is denied."""
-    if len(text) <= MAX_SCAN_CHARS:
-        return _first_match(text, include_self_auth=include_self_auth)
+def _pieces(text: str):
+    """``text`` in pieces of at most CHUNK_CHARS (see CHUNK_CHARS)."""
+    step = CHUNK_CHARS - WINDOW_OVERLAP
     chunk: list[str] = []
     size = 0
-    for line in text.splitlines(keepends=True) + [""]:
-        if len(line) > MAX_SCAN_CHARS:
-            return _too_long(line)
-        if chunk and (not line or size + len(line) > MAX_SCAN_CHARS):
-            hit = _first_match("".join(chunk), include_self_auth=include_self_auth)
-            if hit is not None:
-                return hit
-            chunk, size = [], 0
+    for line in text.splitlines(keepends=True):
+        if len(line) > CHUNK_CHARS:
+            if chunk:
+                yield "".join(chunk)
+                chunk, size = [], 0
+            for start in range(0, len(line) - WINDOW_OVERLAP, step):
+                # a window that starts mid-line must not look like a command start
+                yield line[start:start + CHUNK_CHARS] if start == 0 else "x " + line[start:start + CHUNK_CHARS]
+            continue
+        if chunk and size + len(line) > CHUNK_CHARS:
+            yield "".join(chunk)
+            keep: list[str] = []  # repeat the last lines, up to the overlap
+            kept = 0
+            for prev in reversed(chunk):
+                if kept + len(prev) > WINDOW_OVERLAP:
+                    break
+                keep.insert(0, prev)
+                kept += len(prev)
+            chunk, size = keep, kept
         chunk.append(line)
         size += len(line)
+    if chunk:
+        yield "".join(chunk)
+
+
+def _scan_content(text: str, *, include_self_auth: bool = True, shell: str | None = None,
+                  queries: bool = True) -> Match | None:
+    """``_first_match`` for file content, script files, MCP arguments and
+    heredoc bodies, which may be long: matched in pieces (see CHUNK_CHARS);
+    denied unmatched only above MAX_CONTENT_CHARS."""
+    if len(text) > MAX_CONTENT_CHARS:
+        return _too_long(text, MAX_CONTENT_CHARS, command=False)
+    if len(text) <= CHUNK_CHARS:
+        return _first_match(text, include_self_auth=include_self_auth, shell=shell, queries=queries)
+    for piece in _pieces(text):
+        hit = _first_match(piece, include_self_auth=include_self_auth, shell=shell, queries=queries)
+        if hit is not None:
+            return replace(hit, subject=text)
     return None
+
+
+def _scan_command(command: str, shell: str) -> Match | None:
+    """A shell command line. Longer than CHUNK_CHARS, its heredoc bodies are
+    matched as content and the rest in pieces; longer than MAX_COMMAND_CHARS it
+    is denied unmatched (fail closed)."""
+    if len(command) > MAX_COMMAND_CHARS:
+        return _too_long(command, MAX_COMMAND_CHARS, command=True)
+    if len(command) <= CHUNK_CHARS:
+        return _first_match(command, shell=shell)
+    parts, last = [], 0
+    for start, end, to_shell in _heredocs(command):
+        # a data body (`cat > f.sql <<EOF`) is judged as on a short command
+        # line: the shell rules apply, the query rules do not
+        hit = _scan_content(command[start:end], shell=shell if to_shell else None, queries=to_shell)
+        if hit is not None:
+            return replace(hit, subject=command)
+        parts.append(command[last:start])
+        last = end
+    parts.append(command[last:])
+    hit = _scan_content("".join(parts), shell=shell)
+    return replace(hit, subject=command) if hit is not None else None
 
 
 def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = None) -> Match | None:
@@ -630,9 +802,10 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name in _SHELL_TOOLS:
         command = str(tool_input.get("command") or "")
-        if len(command) > MAX_SCAN_CHARS:
-            return _too_long(command)  # fail closed: the rules cannot be trusted to finish
-        return _first_match(command, shell=tool_name) or _scan_script_files(command, cwd)
+        hit = _scan_command(command, tool_name)
+        if hit is not None or len(command) > MAX_COMMAND_CHARS:
+            return hit
+        return _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         norm_target = _normalize_paths(normalize_command(target))
@@ -640,11 +813,12 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
             if rule.pattern.search(norm_target) and (tool_name in _WRITE_TOOLS or rule.rule_id == "guard.key-access"):
                 return Match(rule.rule_id, rule.description, target, self_auth=True)
         if tool_name in _WRITE_TOOLS and target.lower().endswith(_SCRIPT_EXT):
-            body = " ".join(str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source"))
-            for e in tool_input.get("edits") or []:
-                if isinstance(e, dict):
-                    body += " " + str(e.get("new_string") or "")
-            hit = _first_match_long(body, include_self_auth=False)
+            parts = [str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source")]
+            parts += [str(e.get("new_string") or "") for e in tool_input.get("edits") or [] if isinstance(e, dict)]
+            body = "\n".join(p for p in parts if p)
+            hit = _scan_content(body, include_self_auth=False)
+            if hit is not None and hit.rule_id == "guard.too-long":
+                return replace(hit, subject=target)
             if hit is not None:
                 return Match(f"write:{hit.rule_id}", f"writes a script containing a {hit.description}", target)
         return None
@@ -656,9 +830,10 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
         # shell server's `run`) can still carry a destructive command in its
         # arguments: scan every string argument with the shell/SQL rules.
         for text in _string_values(tool_input):
-            hit = _first_match_long(text)
+            hit = _scan_content(text)
             if hit is not None:
-                desc = hit.description if hit.self_auth else f"{hit.description} inside an MCP tool call"
+                desc = hit.description if hit.self_auth or hit.rule_id == "guard.too-long" else \
+                    f"{hit.description} inside an MCP tool call"
                 return Match(hit.rule_id, desc, subject, self_auth=hit.self_auth)
     return None
 
@@ -841,6 +1016,9 @@ def decide(tool_name: str, tool_input: Any, cwd: str | os.PathLike, *, trusted_k
         return Decision("deny", m.rule_id, None,
                         f"perathos guard: blocked ({m.description}). Preconditions must be created by a "
                         f"person outside the agent session.")
+    if m.rule_id == "guard.too-long":
+        # Not a destructive command, so a backup precondition is not the remedy.
+        return Decision("deny", m.rule_id, None, f"perathos guard: blocked: {m.description}.")
     hint = ('A person must first run, outside this agent session:\n'
             '  perathos precondition add --scope "<target name in the command>" --check "<command that '
             'proves a restorable backup exists>"\n'

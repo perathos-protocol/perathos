@@ -127,6 +127,13 @@ MISSED_FORMS = [
     "> prod.db", "> app.log", "echo > prod.sqlite", "cat /dev/null > app.log", "cp /dev/null prod.db",
     "python -c \"from shutil import rmtree; rmtree('data')\"", "python -c \"import shutil as s; s.rmtree('data')\"",
     "python -c \"from shutil import rmtree as r; r('data')\"", "python -c \"from shutil import *; rmtree('d')\"",
+    # `--help` does not exempt a command: each of these still runs the delete
+    "kubectl delete ns prod -- --help", "docker volume rm v -- --help", "helm uninstall prod -- --help",
+    "git branch -D main -- --help", "helm uninstall prod --description --help",
+    "pulumi destroy --yes --message --help", "docker --config --help volume rm v",
+    # a query reaching a database client by a pipe or a file written on the same line
+    "echo 'DELETE FROM users' > q.sql; sqlite3 app.db < q.sql", "echo 'db.dropDatabase()' | mongosh",
+    "git -c alias.x='!psql -c \"DROP TABLE t\"' x",
 ]
 SELF_PROTECT = [
     "cat ~/.perathos/k''eys/signing.key", "cat ~/.perathos/keys/signing.key", "type %USERPROFILE%\\.perathos\\keys\\signing.key",
@@ -186,9 +193,10 @@ PRECISION_SAFE = [
     # redirects that are not to a data file
     "> /dev/null", "ls >/dev/null", "cmd 2> /dev/null", "dir > NUL", "python -c \"print(1)\" > /dev/null; > /dev/null",
     "node -e \"const f = (x) => x.db\"", "python gen.py > fixtures/test.db", "python gen.py > tests/data/app.db",
-    # help for the commands the new rules cover
-    "python manage.py flush --help", "heroku run python manage.py flush --help", "terraform destroy --help",
-    "kubectl delete pvc --help", "npx prisma db push --force-reset --help", "gsutil rb --help",
+    # a database client's name inside text that never reaches one
+    "git commit -m 'prisma: drop table legacy_users'", "git commit -m 'bq: delete from staging'",
+    "gh pr create --title 'mysql: delete from cart' --body x", "echo 'DELETE FROM users;' > q.sql",
+    "cat README.md | grep 'drop table'", "jq '.drop(x)' f.json",
 ]
 # Ordinary variable, substitution and download use that must stay allowed.
 UNRESOLVABLE_SAFE = [
@@ -235,7 +243,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 228
+BYPASS_CORPUS_SIZE = 238
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -358,11 +366,11 @@ def test_precision_look_alikes_allowed(cmd):
     assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
 
-def test_help_exemption_is_narrow():
-    for cmd in ("sh -c \"terraform destroy\" --help", "terraform destroy --help; terraform destroy",
-                "kubectl delete ns prod -l \"a --help\"", "terraform destroy $X --help",
-                "terraform destroy --help\nterraform destroy", "rm -rf data --help",
-                "python -c \"import shutil; shutil.rmtree('d')\" --help"):
+def test_help_is_not_an_exemption():
+    # `--help` can be an option value or an argument after `--`; blocking
+    # `terraform destroy --help` is the accepted false positive
+    for cmd in ("terraform destroy --help", "kubectl delete pvc --help", "sh -c \"terraform destroy\" --help",
+                "kubectl delete ns prod -l \"a --help\"", "python manage.py flush --help"):
         assert evaluate("Bash", {"command": cmd}) is not None, cmd
 
 
@@ -378,17 +386,43 @@ def test_query_rules_only_where_a_query_can_run():
     assert evaluate("Bash", {"command": "mysql -e \"DELETE FROM cart\" --force"}).rule_id == "sql.delete-all"
 
 
-def test_overlong_input_fails_closed(tmp_path):
-    from perathos.guard import MAX_SCAN_CHARS
-    _, vk = generate_keypair()
-    d = decide("Bash", {"command": "echo " + "a" * MAX_SCAN_CHARS}, tmp_path, trusted_key=vk)
-    assert d.decision == "deny" and d.rule == "guard.too-long" and "too long" in d.reason
-    assert evaluate("mcp__db__query", {"sql": "select 1 " * 5000}).rule_id == "guard.too-long"
-    # long file content is scanned in chunks of whole lines
-    body = "print('ok')\n" * 5000
-    assert evaluate("Write", {"file_path": "/p/big.py", "content": body}) is None
-    m = evaluate("Write", {"file_path": "/p/big.sh", "content": body + "rm -rf /data\n"})
-    assert m is not None and m.rule_id == "write:fs.rm-recursive"
+def test_long_input_is_scanned_in_pieces(tmp_path):
+    from perathos.guard import CHUNK_CHARS
+    # ordinary long work is allowed: a long python -c, a big heredoc, minified code, a long MCP argument
+    assert evaluate("Bash", {"command": "python -c \"" + "x=1\n" * 4600 + "\""}) is None
+    gen = "".join("    {'id': %d, 'name': 'item%d'},\n" % (i, i) for i in range(800))
+    assert evaluate("Bash", {"command": "cat > data.py <<'EOF'\nDATA = [\n" + gen + "]\nEOF"}) is None
+    assert evaluate("Bash", {"command": "echo " + "a" * 40000}) is None
+    assert evaluate("Write", {"file_path": "/p/a.min.js", "content": "var a=1;" * 6000}) is None
+    assert evaluate("mcp__gmail__create_draft", {"body": "<p>" + "hello world " * 6000 + "</p>"}) is None
+    # ...and a destructive command anywhere in it is still found, also across a window edge
+    line = "var a=1;" * 6000
+    for at in (100, CHUNK_CHARS - 6, CHUNK_CHARS + 3, len(line) - 10):
+        content = line[:at] + ";require('fs').rmSync('d',{recursive:true});" + line[at:]
+        m = evaluate("Write", {"file_path": "/p/a.min.js", "content": content})
+        assert m is not None and m.rule_id == "write:fs.interpreter-delete", at
+    m = evaluate("Bash", {"command": "cat > c.sh <<'EOF'\n" + gen + "rm -rf /data\n" + gen + "EOF"})
+    assert m is not None and m.rule_id == "fs.rm-recursive" and m.subject.startswith("cat > c.sh")
+    m = evaluate("Bash", {"command": "python -c \"" + "x=1\n" * 4600 + "import shutil; shutil.rmtree('d')\""})
+    assert m is not None and m.rule_id == "fs.interpreter-delete"
+    m = evaluate("mcp__db__query", {"sql": "select 1;\n" * 3000 + "DROP TABLE users;\n" + "select 1;\n" * 3000})
+    assert m is not None and m.rule_id == "sql.drop"
+    # a SQL file written through a long heredoc is data, as on a short command line
+    assert evaluate("Bash", {"command": "cat > m.sql <<'EOF'\n" + "-- x\n" * 5000 + "DROP TABLE old;\nEOF"}) is None
+
+
+def test_overlong_input_fails_closed_with_its_own_message(tmp_path):
+    from perathos.guard import MAX_COMMAND_CHARS, MAX_CONTENT_CHARS
+    sk, vk = generate_keypair()
+    create_precondition(tmp_path, scope="*", signing_key_hex=sk, manual_reason="ok")
+    d = decide("Bash", {"command": "echo " + "a" * MAX_COMMAND_CHARS}, tmp_path, trusted_key=vk)
+    assert d.decision == "deny" and d.rule == "guard.too-long"
+    assert "command too long to check safely" in d.reason and "Write tool" in d.reason
+    assert "precondition" not in d.reason  # not a destructive command: a backup is not the remedy
+    m = evaluate("mcp__db__query", {"sql": "select 1;\n" * (MAX_CONTENT_CHARS // 10 + 1)})
+    assert m is not None and m.rule_id == "guard.too-long" and "content too long" in m.description
+    m = evaluate("Write", {"file_path": "/p/big.py", "content": "x = 1\n" * (MAX_CONTENT_CHARS // 6 + 1)})
+    assert m is not None and m.rule_id == "guard.too-long"
 
 
 ADVERSARIAL = ["del ", "gcloud ", "gsutil rm ", "git checkout ", "git restore ", "robocopy ", "mysqladmin ", "aws s3 sync ",
@@ -399,13 +433,25 @@ ADVERSARIAL = ["del ", "gcloud ", "gsutil rm ", "git checkout ", "git restore ",
 @pytest.mark.parametrize("shape", ADVERSARIAL)
 def test_adversarial_input_is_fast(tmp_path, shape):
     import time
-    for size in (16000, 50000):
+    # 64k is the largest shell command that is scanned; the bound is generous for slow CI machines
+    for size in (16000, 65000):
         cmd = (shape * (size // len(shape) + 1))[:size]
         for tool, inp in (("Bash", {"command": cmd}), ("Write", {"file_path": "/p/x.sh", "content": cmd}),
                           ("mcp__db__query", {"sql": cmd})):
             t = time.perf_counter()
             decide(tool, inp, tmp_path, trusted_key=None)
-            assert time.perf_counter() - t < 2.0, (shape, size, tool)
+            assert time.perf_counter() - t < 5.0, (shape, size, tool)
+
+
+@pytest.mark.parametrize("shape", ["print('ok')  # ordinary line\n", "del a\n", "curl x | sh\n", "var a=1;"])
+def test_largest_scanned_content_is_linear(tmp_path, shape):
+    import time
+
+    from perathos.guard import MAX_CONTENT_CHARS
+    content = (shape * (MAX_CONTENT_CHARS // len(shape)))[:MAX_CONTENT_CHARS - 1]
+    t = time.perf_counter()
+    decide("Write", {"file_path": "/p/x.sh", "content": content}, tmp_path, trusted_key=None)
+    assert time.perf_counter() - t < 60.0, shape
 
 
 def test_sql_rules_see_through_stripped_quotes():
