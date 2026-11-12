@@ -284,6 +284,12 @@ class _GitRestore:
 
 
 _DJANGO = r"manage\.py|django-admin|django"
+# `git push` force flags: `--force`, `--force-with-lease[=...]`, `--force-if-includes`,
+# `--mirror`, `-f` and combined short flags holding an f (`-uf`).
+_PUSH_FORCE = r"--force\b|--mirror\b|(?<![\w-])-[A-Za-z]*f[A-Za-z]*\b"
+_MAIN_BRANCH = r"\b(main|master|trunk|prod|production)\b"
+# `git push` after any global options (`-C dir`, `-c k=v`, `--git-dir=...`, `--no-pager`).
+_GIT_PUSH = rf"{_GIT}push\b"
 
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
@@ -329,13 +335,16 @@ SHELL_RULES: tuple[Rule, ...] = (
     _rs("git.destructive", rf"{_GIT}switch\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)",
         "git command that discards work", _WORDS),
     Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
-    _rc("git.force-push-main", r"\bgit\s+push\b", [r"--force\b|-f\b|--mirror\b", r"\b(main|master|prod|production)\b"],
-        "force push to a main branch"),
-    _r("git.force-push-main", r"\bgit\s+push\s+--mirror\b", "force push to a main branch"),
-    _rs("git.push-main-rewrite", r"\bgit\s+push\b",
+    # The force flag and the branch may come in either order, before or after the remote.
+    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch"),
+    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch"),
+    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mirror\b", "force push to a main branch"),
+    _rs("git.push-main-rewrite", _GIT_PUSH,
         r".*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
         "forced overwrite or delete of a main branch on the remote"),
-    _rc("git.push-main-rewrite", r"\bgit\s+push\b", [r"--delete\b|\s-d\b", r"\b(main|master|prod|production)\b"],
+    _rc("git.push-main-rewrite", _GIT_PUSH, [r"--delete\b|\s-d\b", _MAIN_BRANCH],
+        "forced overwrite or delete of a main branch on the remote"),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, r"--delete\b|\s-d\b"],
         "forced overwrite or delete of a main branch on the remote"),
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
@@ -477,6 +486,18 @@ _GIT_RUNS_OPTION = re.compile(r"(?-i:^-c$|^-o$|^-[A-Za-z]*S)|^--(?:config-env|ex
                               r"(?:=|$)", re.IGNORECASE)
 _GIT_ENV = re.compile(r"\bGIT_\w*=|\w*(?:PAGER|EDITOR)=", re.IGNORECASE)
 _GIT_PAGER_OPTION = re.compile(r"^(?:--open-files-in-pager(?:=|$)|-O)")
+# git accepts any unambiguous prefix of a long option (`--outp=q.sql`), so a
+# denied long option is matched by prefix too.
+_GIT_DENIED_LONG = ("config-env", "exec-path", "output", "ext-diff", "textconv", "gpg-sign", "open-files-in-pager")
+
+
+def _git_denied(arg: str) -> bool:
+    if _GIT_RUNS_OPTION.search(arg) or _GIT_PAGER_OPTION.search(arg):
+        return True
+    if arg.startswith("--") and len(arg) > 3:
+        name = arg[2:].partition("=")[0].lower()
+        return any(d.startswith(name) for d in _GIT_DENIED_LONG)
+    return False
 
 
 def _git_options(long: str, short: str) -> tuple[dict[str, bool], dict[str, bool]]:
@@ -550,13 +571,16 @@ def _git_options_safe(sub: str, args: list[str]) -> bool:
     while i < len(args):
         a = args[i]
         if a == "--":
-            break
+            # words after `--` are not options; one that looks like an option is not trusted
+            return not any(w.startswith("-") for w in args[i + 1:])
         if a.startswith("--"):
             name, eq, _ = a[2:].partition("=")
             if name not in longs:
                 return False
             if longs[name] and not eq:
                 i += 1  # the value is the next word
+                if i < len(args) and args[i].startswith("-"):
+                    return False  # an option where a value belongs: the parse is unsure
         elif a.startswith("-") and len(a) > 1:
             for j, c in enumerate(a[1:], 1):
                 if c not in shorts:
@@ -564,6 +588,8 @@ def _git_options_safe(sub: str, args: list[str]) -> bool:
                 if shorts[c]:
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
+                        if i < len(args) and args[i].startswith("-"):
+                            return False  # an option where a value belongs: the parse is unsure
                     break
         i += 1
     return True
@@ -583,7 +609,7 @@ def _text_only_call(prog: str, prefix: str, args: list[str]) -> bool:
     if prog == "git":
         i = 0
         while i < len(args) and args[i].startswith("-"):
-            if _GIT_RUNS_OPTION.search(args[i]):
+            if _git_denied(args[i]):
                 return False
             i += 2 if args[i] in _GIT_OPTIONS_WITH_VALUE else 1
         if i >= len(args) or args[i].lower() not in _GIT_TEXT_SUBCOMMANDS:
@@ -591,11 +617,11 @@ def _text_only_call(prog: str, prefix: str, args: list[str]) -> bool:
         sub, rest = args[i].lower(), args[i + 1:]
         if sub in _GIT_SAFE_OPTIONS:
             return _git_options_safe(sub, rest)
-        if any(_GIT_RUNS_OPTION.search(a) or _GIT_PAGER_OPTION.search(a) for a in rest):
+        if any(_git_denied(a) for a in rest):
             return False
         # `git config` only reads: `--get*`, `--list`, `-l`
         return sub != "config" or any(a in ("-l", "--list") or a.startswith("--get") for a in rest)
-    if any(_GIT_RUNS_OPTION.search(a) for a in args):
+    if any(_git_denied(a) for a in args):
         return False
     if any(a.startswith("--template") for a in args):
         return False
@@ -1009,7 +1035,13 @@ def _drop_data_heredocs(command: str) -> str:
     return "".join(parts)
 
 
-def _structure_view(command: str) -> str:
+# An empty or blank quoted word (`""`, `''`, `" "`) in the word view, so the
+# words of a command keep their positions: `git grep -e "" -O...` is not read
+# as `-e -O...`.
+_EMPTY_WORD = "\ue004"
+
+
+def _structure_view(command: str, keep_empty: bool = False) -> str:
     """The text the "unresolvable" rules are matched against.
 
     Like ``normalize_command`` it removes quote characters, but it keeps the
@@ -1061,6 +1093,8 @@ def _structure_view(command: str) -> str:
                 body = body.replace("$", " ").replace("`", " ").translate(_LITERAL_BRACKETS)
             else:
                 body = _blank_literal_parens(body)
+        if keep_empty and not body.strip():
+            body = _EMPTY_WORD
         out.append(body)
         segment.append(body)
         i = j
@@ -1265,8 +1299,10 @@ def _query_texts(text: str, norm: str, view: str | None, powershell: bool = Fals
     # | psql`), and a computed program can be one (`| & ("ps" + "ql")`).
     if view is None or client_anywhere or _unsure(text) or _computed_program(text):
         return full
-    bodies, balanced = _substitution_bodies(view)
-    if not balanced or not _text_only_line(view, bodies, powershell):
+    # The words of each command come from a view that keeps empty quoted words.
+    words = _structure_view(text, keep_empty=True)
+    bodies, balanced = _substitution_bodies(words)
+    if not balanced or not _text_only_line(words, bodies, powershell):
         return full
     return [], []
 

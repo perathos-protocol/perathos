@@ -321,6 +321,40 @@ GIT_OPTION_ESCAPES = [
     ('git submodule foreach "python run.py DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
     ('git bisect run python run.py "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
 ]
+# An empty quoted value (`-e ""`, `-o''`), an abbreviated long option (`--rece=`,
+# `--outp=`) or an option after `--`: the git option parse must not be fooled.
+GIT_PARSE_ESCAPES = [
+    'git grep -e "" -O"python run.py \'DROP TABLE t\'"',
+    'git grep -e "" --open-files-in-pager="python run.py \'DROP TABLE t\'"',
+    'git grep -e \'\' -O"python run.py \'DROP TABLE t\'"',
+    'git push -o "" --receive-pack="python run.py \'DROP TABLE t\'" origin',
+    'git clone -b "" -u "python run.py \'DROP TABLE t\'" src dst',
+    'git fetch --filter "" --upload-pack="python run.py \'DROP TABLE t\'" origin',
+    'git push --push-option "" --exec="python run.py \'DROP TABLE t\'" origin',
+    'git push --upload-p="python run.py \'DROP TABLE t\'" origin',
+    'git push --rece="python run.py \'DROP TABLE t\'" origin',
+    'git fetch --shallow-exclude "" --upload-pack="python run.py \'DROP TABLE t\'" origin',
+    'git rebase --exe="python run.py \'DROP TABLE t\'" main',
+    'git rebase -vx "python run.py \'DROP TABLE t\'" main',
+    'git grep -nO"python run.py \'DROP TABLE t\'" x',
+    'git fetch origin -- --upload-pack="python run.py \'DROP TABLE t\'"',
+    'git -c core.pager=x log --format="DROP TABLE t"',
+    'git push --push-option="" --exec="python run.py \'DROP TABLE t\'" origin',
+    'git push -o"" --exec="python run.py \'DROP TABLE t\'" origin',
+    'git clone -b"" -u "python run.py \'DROP TABLE t\'" src dst',
+    'git push -o \'\' --exec="python run.py \'DROP TABLE t\'" origin',
+    'git push -o " " --exec="python run.py \'DROP TABLE t\'" origin',
+    'git log -1 --outp=q.sql --format="DROP TABLE t"',
+]
+# A force push to a main branch with the flag after the branch or the remote.
+FORCE_PUSH_ANY_ORDER = ["git push origin main --force", "git push origin main -f",
+                        "git push origin HEAD:main --force-with-lease", "git push -u origin main -f",
+                        "git push origin --force main",
+                        # global options before `push`
+                        "git -C repo push -f origin main", "git -C repo push --force origin main",
+                        "git -c core.x=y push origin main --force", "git --git-dir=.git push -f origin main",
+                        "git --work-tree=. push origin main -f", "git --no-pager push --force origin main",
+                        "git --namespace=x push -f origin main", "git -C repo push origin --delete main"]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -331,6 +365,7 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
                 + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE
+                + FORCE_PUSH_ANY_ORDER + GIT_PARSE_ESCAPES
                 + [c for c, tools in TEXT_GOES_ON + TEXT_ESCAPES + TEXT_PROGRAM_ESCAPES + GIT_OPTION_ESCAPES
                    if "Bash" in tools] + [
     # options or switches where the rule did not expect them
@@ -393,7 +428,7 @@ SAFE = [
     "ls .perathos/sessions", "echo hello > out.txt", "python -c 'print(1)'", "node -e 'console.log(1)'",
     "find . -name '*.py'", "docker ps", "npm run build", "rm -i temp.txt", "git log --oneline",
     "truncate -s 100 file.bin", "dd if=disk.img of=/dev/null bs=1M count=1",
-    "docker compose down", "git push origin main", "git push origin feature/main-menu", "rsync -a src/ dst/",
+    "docker compose down", "git push origin main", "git push origin feature/main-menu", "git push origin feature/x --force", "rsync -a src/ dst/",
     "helm upgrade prod-db chart/",
 ]
 # Safe look-alikes of the MISSED_FORMS rules: precision matters as much as recall.
@@ -484,7 +519,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 452
+BYPASS_CORPUS_SIZE = 486
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -727,7 +762,8 @@ def test_no_regression_against_main_corpus(tmp_path):
 
 
 @pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT + PIPED_WITH_SUBSTITUTION
-                         + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE)
+                         + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE
+                         + FORCE_PUSH_ANY_ORDER + GIT_PARSE_ESCAPES)
 def test_blocked_through_every_tool(cmd):
     for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
                       ("Write", {"file_path": "/p/a.sh", "content": cmd})):
