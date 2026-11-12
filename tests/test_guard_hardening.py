@@ -137,6 +137,21 @@ POWERSHELL_CALLS = ["Write-Host a(psql -c \"drop table t\")", "echo hi; Write-Ho
 # The pipeline goes on after the heredoc terminator; a backslash-escaped client name.
 HEREDOC_CONTINUED = ["cat <<EOF |\nDROP TABLE t;\nEOF\npsql", "cat <<EOF |\nFLUSHALL\nEOF\nredis-cli",
                      "echo \"drop table t\" | p\\sql"]
+# Where the parser is unsure (escaped or ANSI-C quotes, a quote inside `$(...)`), a
+# pipeline that goes on past a heredoc in other ways, and a client name with `${x}`
+# spliced in: the guard falls back to reading all the text, as main does.
+UNSURE_PARSE = [
+    'echo \\\' $(psql -c "drop table t") \\\'',
+    'echo $\'\\\'\' $(psql -c "drop table t") $\'\\\'\'',
+    'echo $\'\\\'\' $(psql -c "drop table t") \'x\'',
+    'echo "$(psql -c "drop table t (x")"',
+    'echo "$(psql -c "drop table t; -- (")"',
+    'cat <<EOF |&\nDROP TABLE t;\nEOF\npsql',
+    'cat <<EOF | \\\npsql\nDROP TABLE t;\nEOF',
+    'cat <<EOF |\nDROP TABLE t;\nEOF\n\npsql',
+    'cat <<EOF |\nDROP TABLE t;\nEOF\n# c\npsql',
+    'echo "drop table t" | p${x}sql',
+]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -146,7 +161,7 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # subcommand, switches after the path, SQL whose quotes the normaliser strips,
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
-                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + [
+                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -299,7 +314,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 297
+BYPASS_CORPUS_SIZE = 307
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -542,7 +557,7 @@ def test_no_regression_against_main_corpus(tmp_path):
 
 
 @pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT + PIPED_WITH_SUBSTITUTION
-                         + POWERSHELL_CALLS + HEREDOC_CONTINUED)
+                         + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE)
 def test_blocked_through_every_tool(cmd):
     for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
                       ("Write", {"file_path": "/p/a.sh", "content": cmd})):
@@ -578,10 +593,13 @@ def test_two_gap_rules_are_fast_at_the_command_cap(tmp_path, prefix, rep, tail):
 def test_substitution_handling_keeps_text_quiet():
     # literal (quoted) parentheses and a heredoc inside a commit message's `$(...)` stay text
     for cmd in ("git commit -m 'fix (drop table) docs'", "git commit -m \"fix (drop table) docs\"",
-                "echo 'f(drop table x)'", "Write-Host \"(drop table t)\"", "cat <<EOF > m.sql\nDROP TABLE t;\nEOF",
-                "git commit -m \"$(cat <<'EOF'\nfix: drop table docs\nEOF\n)\""):
+                "echo 'f(drop table x)'", "Write-Host \"(drop table t)\"", "cat <<EOF > m.sql\nDROP TABLE t;\nEOF"):
         for tool in ("Bash", "PowerShell"):
             assert evaluate(tool, {"command": cmd}) is None, (tool, cmd)
+    # with a `$(...)` on the line the parse is not trusted and all the text counts, as on main:
+    # a commit message written through `$(cat <<'EOF' ...)` that names SQL is denied (accepted)
+    m = evaluate("Bash", {"command": "git commit -m \"$(cat <<'EOF'\nfix: drop table docs\nEOF\n)\""})
+    assert m is not None and m.rule_id == "sql.drop"
     # a call's parentheses are not a substitution: the query text keeps them
     assert evaluate("Bash", {"command": "ssh db mongosh -e 'db.users.drop()'"}).rule_id == "db.mongo-drop"
 

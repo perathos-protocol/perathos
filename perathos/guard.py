@@ -930,15 +930,28 @@ def _structure_view(command: str) -> str:
 _UNESCAPE = re.compile(r"\\([^\n])")
 
 
+_EXPANSION = re.compile(r"\$\{[^{}$\n]*\}|\$\w+")  # no `{` or `$` inside: unclosed `${` runs stay linear
+
+
+def _has_client(text: str) -> bool:
+    """A database client named in ``text``, also with backslash escapes
+    removed (`p\\sql`) and with `${...}` / `$name` cut out of words
+    (`p${x}sql`)."""
+    text = _UNESCAPE.sub(r"\1", text)
+    return _DB_CLIENT.search(text) is not None or _DB_CLIENT.search(_EXPANSION.sub("", text)) is not None
+
+
 def _command_kind(simple: str) -> str:
     """'client' (runs a database client), 'text' (only carries text) or 'other'.
-    Backslash escapes are removed first: `p\\sql` runs psql."""
-    simple = _UNESCAPE.sub(r"\1", simple)
-    m = _PROGRAM.match(simple)
-    prog = re.split(r"[/\\]", m.group(1))[-1].lower().removesuffix(".exe") if m else ""
-    if prog in _TEXT_ONLY_PROGRAMS and not _TEXT_PROGRAM_RUNS.search(simple):
+    Backslash escapes are removed first: `p\\sql` runs psql. A program word
+    holding a `$` is never text-only: it could expand to anything."""
+    unescaped = _UNESCAPE.sub(r"\1", simple)
+    m = _PROGRAM.match(unescaped)
+    word = m.group(1) if m else ""
+    prog = re.split(r"[/\\]", word)[-1].lower().removesuffix(".exe")
+    if prog in _TEXT_ONLY_PROGRAMS and "$" not in word and not _TEXT_PROGRAM_RUNS.search(unescaped):
         return "text"
-    return "client" if _DB_CLIENT.search(simple) else "other"
+    return "client" if _has_client(simple) else "other"
 
 
 _BRACKETS = re.compile(r"\$?[(){}]")
@@ -990,20 +1003,23 @@ def _blank_literal_parens(body: str) -> str:
 _SUBSTITUTION = re.compile(r"[$<>=@]?\(|\$\{(?=[ \t\n])|[{)}]")
 
 
-def _substitution_bodies(view: str) -> list[str]:
+def _substitution_bodies(view: str) -> tuple[list[str], bool]:
     """The contents of every `(...)` and `{...}` in the structure view, each
     with its own nested ones blanked (they are listed separately), so the
     total stays the size of the view. That is: `$(...)` (and backticks,
     which the view turned into `$(`), `<(...)`, `>(...)`, zsh `=(...)`,
     PowerShell `(...)`, `@(...)`, `a(...)` and `{...}`, a subshell, a brace
     group and bash 5.3 `${ ...; }`. Quoted brackets were marked literal by
-    the view, so only live ones count. One pass."""
+    the view, so only live ones count. One pass. The flag is False when a
+    bracket is left unmatched (the parse is unsure)."""
     bodies: list[str] = []
+    balanced = True
     stack: list[tuple[str, int, list[tuple[int, int]]]] = []  # (closer, content start, nested spans)
     for m in _SUBSTITUTION.finditer(view):
         tok = m.group()
         if tok in (")", "}"):
             if not stack or stack[-1][0] != tok:
+                balanced = False
                 continue
             _, begin, nested = stack.pop()
             parts, last = [], begin
@@ -1016,7 +1032,7 @@ def _substitution_bodies(view: str) -> list[str]:
                 stack[-1][2].append((begin, m.end()))
             continue
         stack.append(("}" if tok.endswith("{") else ")", m.end(), []))
-    return bodies
+    return bodies, balanced and not stack
 
 
 def _pipelines(line: str, base: list[str], client: list[str]) -> bool:
@@ -1039,7 +1055,14 @@ def _pipelines(line: str, base: list[str], client: list[str]) -> bool:
     return False
 
 
-_CONTINUES = re.compile(r"(?:\|\||&&|\|)\s*$")
+# Where the structure view's quote and bracket tracking may be wrong: then the
+# query rules read the whole line, as main does, instead of trusting the
+# text-only and heredoc-body exemptions.
+_UNSURE = re.compile(r"\$\(|`|[<>=]\(|\$\{|\$'|\\[\"'(){}]")
+
+
+def _unsure(text: str) -> bool:
+    return _UNSURE.search(text) is not None
 
 
 def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], list[str]]:
@@ -1047,33 +1070,26 @@ def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], lis
     rules). ``view`` is the structure view of a shell command line, or None
     for scripts, file content and MCP arguments (all the text counts).
 
-    Additive only: the command line is sorted exactly as written, and the
-    contents of each substitution are sorted again as command lines of their
-    own on top of that."""
-    if view is None:
-        return [norm], ([norm] if _DB_CLIENT.search(_UNESCAPE.sub(r"\1", norm)) else [])
-    # A heredoc body is data in the view, but a client in the command list
-    # that reads it (`cat <<EOF | psql`, `cat <<EOF |\n...\nEOF\npsql`) runs
-    # it as a query: then the whole line counts, body included.
-    for start, end, to_shell in _heredocs(text):
-        if to_shell:
-            continue
-        line = text[text.rfind("\n", 0, start - 1) + 1:start]
-        if _CONTINUES.search(line):  # the pipeline goes on after the terminator line
-            after = text.find("\n", end + 1)
-            if after >= 0:
-                nxt = text.find("\n", after + 1)
-                line += text[after + 1:nxt if nxt >= 0 else len(text)]
-        if _DB_CLIENT.search(_UNESCAPE.sub(r"\1", line)):
-            lview = _structure_view(line)
-            lines = [lview.translate(_REAL_BRACKETS)] + [b.translate(_REAL_BRACKETS) for b in _substitution_bodies(lview)]
-            if any(_command_kind(s) == "client" for ln in lines for s in re.split(r"\|\||&&|[;&|\n]", ln)):
-                return [norm], [norm]
+    The exemptions (text-only programs, heredoc bodies that are data) apply
+    only where the parse is sure; otherwise all the text counts, as on main.
+    Where they apply, the command line is sorted exactly as written and the
+    contents of each substitution are sorted again on top of that."""
+    client_anywhere = _has_client(norm)
+    full = [norm], ([norm] if client_anywhere else [])
+    if view is None or _unsure(text):
+        return full
+    # A client anywhere in a command with a data heredoc: the body may be its
+    # query (`cat <<EOF | psql`, a pipeline that goes on after the terminator).
+    if client_anywhere and any(not to_shell for _s, _e, to_shell in _heredocs(text)):
+        return full
+    bodies, balanced = _substitution_bodies(view)
+    if not balanced:
+        return full
     base: list[str] = []
     client: list[str] = []
-    for line in [view] + _substitution_bodies(view):
+    for line in [view] + bodies:
         if _pipelines(line.translate(_REAL_BRACKETS), base, client):
-            return [norm], [norm]  # `psql -f f.sql`: anything on the line may be the query
+            return full  # `psql -f f.sql`: anything on the line may be the query
     return base + client, client
 
 
@@ -1110,8 +1126,9 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     # The structure view is needed for redirects, shell command lines and downloads.
     need_view = shell is not None or ">" in text or _PREFILTER_REMOTE.search(text) is not None
     view = _structure_view(text) if need_view else ""
+    unsure = _unsure(text)
     for rule in REDIRECT_RULES:
-        if need_view and rule.pattern.search(view):
+        if (need_view and rule.pattern.search(view)) or (unsure and rule.pattern.search(norm)):
             return Match(rule.rule_id, rule.description, text)
     hit = _query_match(text, norm, view if shell is not None else None)
     if hit is not None:
@@ -1121,8 +1138,9 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     rules = REMOTE_SCRIPT_RULES
     if shell is not None:
         rules += INDIRECT_RULES + (() if shell == "PowerShell" else POSIX_INDIRECT_RULES)
+    views = [view, view.translate(_REAL_BRACKETS)] if unsure else [view]
     for rule in rules:
-        if rule.pattern.search(view):
+        if any(rule.pattern.search(v) for v in views):
             return Match(rule.rule_id, rule.description, text)
     return None
 
