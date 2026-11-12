@@ -1038,18 +1038,43 @@ def _substitution_bodies(view: str) -> tuple[list[str], bool]:
     return bodies, balanced and not stack
 
 
+# An output redirect to anything but the bit bucket: `> f`, `>> f`, `>| f`,
+# `&> f`, `1> f`, `*> f` (PowerShell). `2> f` and `2>&1` are not the text.
+_OUT_REDIRECT = re.compile(r"(?:^|[^\d<>&])(?:1|&)?>>?\|?\s*(?!(?:/dev/null|\$null|nul)(?![\w/.]))[^\s>&]",
+                           re.IGNORECASE)
+# Text-only programs that also store their text where a later command can
+# read it back (`git commit -m ... && git log | ...`).
+_TEXT_STORES = frozenset({"git", "gh", "glab", "hub", "hg", "svn", "jj"})
+
+
+def _program_name(simple: str) -> str:
+    m = _PROGRAM.match(_UNESCAPE.sub(r"\1", simple))
+    return re.split(r"[/\\]", m.group(1))[-1].lower().removesuffix(".exe") if m else ""
+
+
 def _pipelines(line: str, base: list[str], client: list[str], powershell: bool = False) -> bool:
     """Sort the simple commands of one command line into ``base`` (may hold a
     query) and ``client`` (runs a database client). True when a client reads
-    a file or redirect, so anything on the line may be its query."""
-    # In PowerShell a lone `&` is the call operator, not a separator.
-    for pipeline in re.split(r"\|\||&&|[;\n]" if powershell else r"\|\||&&|[;&\n]", line.replace("|&", "|")):
-        simples = pipeline.split("|")
+    a file or redirect, so anything on the line may be its query.
+
+    A text-only command's text is exempt only when its output goes nowhere:
+    not piped on and not redirected (except to /dev/null, $null, NUL), and
+    for a program that stores its text (git, gh...) only when nothing on the
+    line sends output anywhere."""
+    # In PowerShell a lone `&` is the call operator; in a shell `&>` and `2>&1` are redirects.
+    sep = r"\|\||&&|[;\n]" if powershell else r"\|\||&&|[;\n]|(?<![>&])&(?![>&])"
+    pipelines = [p.split("|") for p in re.split(sep, line.replace("|&", "|"))]
+    sends = [[i < len(simples) - 1 or _OUT_REDIRECT.search(s) is not None for i, s in enumerate(simples)]
+             for simples in pipelines]
+    line_sends = any(any(row) for row in sends)
+    for simples, send in zip(pipelines, sends):
         kinds = [_command_kind(s) for s in simples]
         if "client" in kinds[1:]:
-            client.append(normalize_command(pipeline))  # text piped into a client is a query
+            client.append(normalize_command("|".join(simples)))  # text piped into a client is a query
             continue
-        for simple, kind in zip(simples, kinds):
+        for simple, kind, out in zip(simples, kinds, send):
+            if kind == "text" and (out or (line_sends and _program_name(simple) in _TEXT_STORES)):
+                kind = "other"  # its text goes somewhere a query could run
             if kind == "client":
                 if _CLIENT_READS_INPUT.search(simple):
                     return True

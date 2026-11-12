@@ -169,6 +169,59 @@ CLIENT_ELSEWHERE = [
     'echo drop table t | p^sql',  # cmd-style escape
     'echo "drop table t" | psq\u217c',  # a compatibility form of `l`
 ]
+# Text from a text-only program whose output goes on (piped, redirected, or stored
+# in git and read back): its text counts, as on main. With the tools main denies it for.
+TEXT_GOES_ON = [
+    ('echo "DROP TABLE users" | python run_sql.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE users" | node db.js', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" > q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | ./run-query.sh', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | spark-sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | hive', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo FLUSHALL | keydb-cli', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('printf "FLUSHALL" | nc localhost 6379', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | curl -X POST --data-binary @- http://clickhouse:8123/', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | cypher-shell', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | influx', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | python -c "import sys,psycopg2; c=psycopg2.connect(); c.cursor().execute(sys.stdin.read())"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | make migrate', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | busybox sh', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo cHNxbA== | base64 -d > r; chmod +x r; echo "drop table t" | ./r', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | ruby -rpg -e x', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | java -jar sqlline.jar', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | dbt run-operation x', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | flyway migrate', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | tee /dev/tcp/db/5432', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" > /dev/tcp/db/5432', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo FLUSHALL > /dev/tcp/127.0.0.1/6379', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | ssh db "cat > /tmp/q.sql"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git commit -m "DROP TABLE t" && git log -1 --format=%B | python run.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('alias q=psql; echo "drop table t" | q', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('f(){ psql; }; echo "drop table t" | f', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | exec psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | command psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | builtin psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | time psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | nohup psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | stdbuf -o0 psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | busybox psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | docker compose exec -T db psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | kubectl exec -i pg -- psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | ssh host psql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | mysqlsh', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | clickhouse-client', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | cockroach sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | duckdb a.db', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | usql pg://', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | pgcli', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | mycli', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | litecli a.db', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | isql dsn', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | sqlcmd', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | bq query', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "drop table t" | snowsql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('printf \'#!/bin/sh\npsql\' > r.sh; chmod +x r.sh; echo "drop table t" | ./r.sh', ('Bash', 'PowerShell', 'mcp', 'Write')),
+]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -178,7 +231,8 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # subcommand, switches after the path, SQL whose quotes the normaliser strips,
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
-                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE + [
+                + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE
+                + [c for c, tools in TEXT_GOES_ON if "Bash" in tools] + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -270,7 +324,7 @@ PRECISION_SAFE = [
     # SQL words in text that never reaches a database
     "gh pr create --title 'delete from cart' --body x", "git commit -m \"feat: delete from queue -h flag\"",
     "git commit -m 'drop table users from docs; delete from t'", "grep -ri 'drop table' .",
-    "echo 'ALTER TABLE t DROP COLUMN c' >> migration.sql", "rg 'ALTER TABLE .* DROP' migrations",
+    "rg 'ALTER TABLE .* DROP' migrations",
     "terraform apply -var 'destroy=false'",
     # option values are whole words, never the resource type
     "kubectl delete -n deployments-test pod x", "kubectl delete --namespace ns-dev pod api", "kubectl -n all-apps delete pod x",
@@ -282,7 +336,7 @@ PRECISION_SAFE = [
     "> /dev/null", "ls >/dev/null", "cmd 2> /dev/null", "dir > NUL", "python -c \"print(1)\" > /dev/null; > /dev/null",
     "node -e \"const f = (x) => x.db\"", "python gen.py > fixtures/test.db", "python gen.py > tests/data/app.db",
     # a database client's name inside text that never reaches one
-    "echo 'DELETE FROM users;' > q.sql",
+    
     "cat README.md | grep 'drop table'", "jq '.drop(x)' f.json",
 ]
 # Ordinary variable, substitution and download use that must stay allowed.
@@ -330,7 +384,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 319
+BYPASS_CORPUS_SIZE = 368
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -628,6 +682,25 @@ def test_client_named_anywhere_reads_all_text():
         assert evaluate("Bash", {"command": cmd}) is not None, cmd
     # a client with no destructive query stays allowed
     for cmd in ("cat check.sql | psql -d app", "psql -c \"SELECT count(*) FROM users\"", "echo 'select 1' | psql"):
+        assert evaluate("Bash", {"command": cmd}) is None, cmd
+        assert evaluate("PowerShell", {"command": cmd}) is None, cmd
+
+
+@pytest.mark.parametrize("cmd, tools", TEXT_GOES_ON)
+def test_text_that_goes_on_counts(cmd, tools):
+    names = {"Bash": ("Bash", {"command": cmd}), "PowerShell": ("PowerShell", {"command": cmd}),
+             "mcp": ("mcp__x__run", {"cmd": cmd}), "Write": ("Write", {"file_path": "/p/a.sh", "content": cmd})}
+    for tool in tools:
+        assert evaluate(*names[tool]) is not None, (tool, cmd)
+
+
+def test_text_only_exemption_needs_output_to_go_nowhere():
+    # SQL text written to a file is denied, as on main (accepted)
+    for cmd in ("echo 'ALTER TABLE t DROP COLUMN c' >> migration.sql", "echo 'DELETE FROM users;' > q.sql"):
+        assert evaluate("Bash", {"command": cmd}) is not None, cmd
+    # text that goes nowhere (or only to the bit bucket) stays exempt
+    for cmd in ("git commit -m \"DROP TABLE t\"", "echo done", "grep -rn \"drop table\" src/",
+                "Write-Host \"DROP TABLE t\"", "echo \"drop table t\" > /dev/null", "grep \"drop table\" f 2> err.txt"):
         assert evaluate("Bash", {"command": cmd}) is None, cmd
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
