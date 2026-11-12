@@ -222,6 +222,55 @@ TEXT_GOES_ON = [
     ('echo "drop table t" | snowsql', ('Bash', 'PowerShell', 'mcp', 'Write')),
     ('printf \'#!/bin/sh\npsql\' > r.sh; chmod +x r.sh; echo "drop table t" | ./r.sh', ('Bash', 'PowerShell', 'mcp', 'Write')),
 ]
+# Text that leaves a text-only command another way: a numbered descriptor, a
+# brace group, `printf -v`, `sed -i` / `w`, a line that also runs another program.
+# With the tools main denies it for.
+TEXT_ESCAPES = [
+    ('exec 3>/dev/tcp/127.0.0.1/6379; echo FLUSHALL >&3', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('exec 3>q.sql; echo "DROP TABLE t" >&3; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('exec 3>q.sql; echo "DROP TABLE t" 1>&3; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" 3>q.sql >&3; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >/dev/stdout | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >/dev/fd/1', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >/proc/self/fd/1', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" > >(python x.py)', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('tee q.sql <<< "DROP TABLE t"; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" > q; psql < q', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('python x.py <<< "DROP TABLE t"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('$x = echo "DROP TABLE t"; $x | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Write-Output "DROP TABLE t" > $f; python apply.py $f', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Write-Output "DROP TABLE t" | Set-Variable q; $q | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('{ echo "DROP TABLE t"; } | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('( echo "DROP TABLE t" ) | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('{ echo "DROP TABLE t"; echo x; } > q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('for i in 1; do echo "DROP TABLE t"; done | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('if true; then echo "DROP TABLE t"; fi | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('f(){ echo "DROP TABLE t"; }; f | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('while false; do :; done; echo "DROP TABLE t" | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('coproc python x.py; echo "DROP TABLE t" >&${COPROC[1]}', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('cmd /c "echo DROP TABLE t | python x.py"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo DROP TABLE t > CON', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('printf -v X "DROP TABLE t"; python x.py "$X"', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('printf -v X "DROP TABLE t"; python x.py $X', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('sed -i "s/x/DROP TABLE t/" q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('sed -n "1w q.sql" <<< "DROP TABLE t"; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('yq -i ".sql = \\"DROP TABLE t\\"" c.yml; python apply.py c.yml', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('git commit -m "DROP TABLE t"; python run_from_git_log.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" &> q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >| q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >>q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('> q.sql echo "DROP TABLE t"; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" > /dev/null/../../tmp/q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('Write-Output "DROP TABLE t" *> q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" 1>q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >q.sql 2>&1; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" 2>&1 | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" |& python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" >&2 | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('grep -h "" <<< "DROP TABLE t" | python x.py', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('echo "DROP TABLE t" | python x.py > /dev/null', ('Bash', 'PowerShell', 'mcp', 'Write')),
+    ('awk "BEGIN{print \\"DROP TABLE t\\"}" > q.sql; python apply.py q.sql', ('Bash', 'PowerShell', 'mcp', 'Write')),
+]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -232,7 +281,7 @@ HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | ps
 # and tools that had no rule.
 MISSED_FORMS = (LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT
                 + PIPED_WITH_SUBSTITUTION + POWERSHELL_CALLS + HEREDOC_CONTINUED + UNSURE_PARSE + CLIENT_ELSEWHERE
-                + [c for c, tools in TEXT_GOES_ON if "Bash" in tools] + [
+                + [c for c, tools in TEXT_GOES_ON + TEXT_ESCAPES if "Bash" in tools] + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -337,7 +386,7 @@ PRECISION_SAFE = [
     "node -e \"const f = (x) => x.db\"", "python gen.py > fixtures/test.db", "python gen.py > tests/data/app.db",
     # a database client's name inside text that never reaches one
     
-    "cat README.md | grep 'drop table'", "jq '.drop(x)' f.json",
+    "jq '.drop(x)' f.json",
 ]
 # Ordinary variable, substitution and download use that must stay allowed.
 UNRESOLVABLE_SAFE = [
@@ -384,7 +433,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 368
+BYPASS_CORPUS_SIZE = 412
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -547,8 +596,8 @@ def test_long_input_is_scanned_whole(tmp_path):
     assert m is not None and m.rule_id == "fs.interpreter-delete"
     m = evaluate("mcp__db__query", {"sql": "select 1;\n" * 3000 + "DROP TABLE users;\n" + "select 1;\n" * 3000})
     assert m is not None and m.rule_id == "sql.drop"
-    # a SQL file written through a heredoc is data, long or short
-    assert evaluate("Bash", {"command": "cat > m.sql <<'EOF'\n" + "-- x\n" * 5000 + "DROP TABLE old;\nEOF"}) is None
+    # a SQL file written through a heredoc is read, as on main (`cat` is not a text-only program)
+    assert evaluate("Bash", {"command": "cat > m.sql <<'EOF'\n" + "-- x\n" * 5000 + "DROP TABLE old;\nEOF"}) is not None
 
 
 def test_overlong_input_fails_closed_with_its_own_message(tmp_path):
@@ -663,7 +712,7 @@ def test_two_gap_rules_are_fast_at_the_command_cap(tmp_path, prefix, rep, tail):
 def test_substitution_handling_keeps_text_quiet():
     # literal (quoted) parentheses and a heredoc inside a commit message's `$(...)` stay text
     for cmd in ("git commit -m 'fix (drop table) docs'", "git commit -m \"fix (drop table) docs\"",
-                "echo 'f(drop table x)'", "Write-Host \"(drop table t)\"", "cat <<EOF > m.sql\nDROP TABLE t;\nEOF"):
+                "echo 'f(drop table x)'", "Write-Host \"(drop table t)\""):
         for tool in ("Bash", "PowerShell"):
             assert evaluate(tool, {"command": cmd}) is None, (tool, cmd)
     # with a `$(...)` on the line the parse is not trusted and all the text counts, as on main:
@@ -686,7 +735,7 @@ def test_client_named_anywhere_reads_all_text():
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd
 
 
-@pytest.mark.parametrize("cmd, tools", TEXT_GOES_ON)
+@pytest.mark.parametrize("cmd, tools", TEXT_GOES_ON + TEXT_ESCAPES)
 def test_text_that_goes_on_counts(cmd, tools):
     names = {"Bash": ("Bash", {"command": cmd}), "PowerShell": ("PowerShell", {"command": cmd}),
              "mcp": ("mcp__x__run", {"cmd": cmd}), "Write": ("Write", {"file_path": "/p/a.sh", "content": cmd})}
@@ -700,6 +749,7 @@ def test_text_only_exemption_needs_output_to_go_nowhere():
         assert evaluate("Bash", {"command": cmd}) is not None, cmd
     # text that goes nowhere (or only to the bit bucket) stays exempt
     for cmd in ("git commit -m \"DROP TABLE t\"", "echo done", "grep -rn \"drop table\" src/",
+                "git commit -m \"fix: handle drop table in parser\" && git push", "cd src && grep -n \"drop table\" x.sql",
                 "Write-Host \"DROP TABLE t\"", "echo \"drop table t\" > /dev/null", "grep \"drop table\" f 2> err.txt"):
         assert evaluate("Bash", {"command": cmd}) is None, cmd
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd

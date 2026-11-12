@@ -457,17 +457,19 @@ _DB_CLIENT = re.compile(
     r"|vsql|beeline|impala-shell|dbshell|dbconsole|prisma|wrangler|turso|supabase|hdbsql|db2)(?:\.exe)?(?![\w-])",
     re.IGNORECASE)
 # Programs whose arguments are text, not a query: a commit message, a PR
-# title, an echoed or searched string.
+# title, an echoed or searched string. (sed and awk are not: they can write
+# files from inside their script, `sed -i`, `1w q.sql`, `print > "f"`.)
 _TEXT_ONLY_PROGRAMS = frozenset({
     "git", "gh", "glab", "hub", "hg", "svn", "jj", "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack",
-    "sed", "awk", "jq", "yq", "write-host", "write-output", "select-string", "sls",
+    "jq", "yq", "write-host", "write-output", "select-string", "sls",
 })
+# Commands that neither carry nor run text.
+_NEUTRAL_PROGRAMS = frozenset({"cd", "pwd", "true", "false", ":"})
 # ...unless the text-only program is told to run a command: `git -c
 # alias.x='!psql ...'`, `git -c core.sshCommand=...`, awk `system(...)`.
 _TEXT_PROGRAM_RUNS = re.compile(r"\s-c\s+\S*(?:alias|command|editor|pager|hook)|\bsystem\s*\(", re.IGNORECASE)
 _PROGRAM = re.compile(r"^[\s({!]*(?:(?:sudo|env|command|builtin|nohup|time|exec)\s+(?:-\S+\s+)*)*"
                       r"(?:[a-z_]\w*=\S*\s+)*([^\s]+)", re.IGNORECASE)
-_CLIENT_READS_INPUT = re.compile(r"\s(?:-f|--file|-i|--init-file|\.read|source)(?:\s|=)|<", re.IGNORECASE)
 
 # The whole text is matched, as before; input above these sizes is not
 # matched at all and is denied (fail closed): a shell command, or the total of
@@ -1038,50 +1040,46 @@ def _substitution_bodies(view: str) -> tuple[list[str], bool]:
     return bodies, balanced and not stack
 
 
-# An output redirect to anything but the bit bucket: `> f`, `>> f`, `>| f`,
-# `&> f`, `1> f`, `*> f` (PowerShell). `2> f` and `2>&1` are not the text.
-_OUT_REDIRECT = re.compile(r"(?:^|[^\d<>&])(?:1|&)?>>?\|?\s*(?!(?:/dev/null|\$null|nul)(?![\w/.]))[^\s>&]",
-                           re.IGNORECASE)
-# Text-only programs that also store their text where a later command can
-# read it back (`git commit -m ... && git log | ...`).
-_TEXT_STORES = frozenset({"git", "gh", "glab", "hub", "hg", "svn", "jj"})
+# Every output redirect: an optional descriptor (`2`, `&`, `*`), `>`, `>>` or
+# `>|`, and its target (`&N` or a word).
+_REDIRECT = re.compile(r"(\d+|&|\*)?(>>?\|?)\s*(&\d*|[^\s;&|<>]*)")
+_BIT_BUCKET = re.compile(r"(?:/dev/null|\$null|nul)$", re.IGNORECASE)
+# What can send text somewhere without a redirect or a pipe.
+_TEXT_ESCAPES = re.compile(r"[{|]|(?:^|[\s;&(])(?:exec|coproc)(?:\s|$)|\bprintf\s+(?:-\S+\s+)*-v\b", re.IGNORECASE)
 
 
-def _program_name(simple: str) -> str:
-    m = _PROGRAM.match(_UNESCAPE.sub(r"\1", simple))
-    return re.split(r"[/\\]", m.group(1))[-1].lower().removesuffix(".exe") if m else ""
+def _harmless_redirect(fd: str, op: str, target: str) -> bool:
+    """`>/dev/null`, `2>/dev/null`, `2>&1`, `>&2`, `1>&2`, `2>file`, `&>/dev/null`
+    and PowerShell `$null` / `NUL`: nothing a later command could read."""
+    if _BIT_BUCKET.match(target) and fd in ("", "1", "2", "&", "*"):
+        return True
+    if fd == "2" and (target == "&1" or not target.startswith("&")):
+        return True
+    return fd in ("", "1") and target == "&2"
 
 
-def _pipelines(line: str, base: list[str], client: list[str], powershell: bool = False) -> bool:
-    """Sort the simple commands of one command line into ``base`` (may hold a
-    query) and ``client`` (runs a database client). True when a client reads
-    a file or redirect, so anything on the line may be its query.
-
-    A text-only command's text is exempt only when its output goes nowhere:
-    not piped on and not redirected (except to /dev/null, $null, NUL), and
-    for a program that stores its text (git, gh...) only when nothing on the
-    line sends output anywhere."""
-    # In PowerShell a lone `&` is the call operator; in a shell `&>` and `2>&1` are redirects.
+def _text_only_line(view: str, bodies: list[str], powershell: bool) -> bool:
+    """True when the whole command line only carries text that stays put: every
+    command on it (and in its substitutions) is a text-only program or a
+    neutral one (`cd`, `true`...), there is no pipe, no output redirect beyond
+    the harmless ones, and no brace group, `exec`, `coproc` or `printf -v`.
+    Only then is its text exempt from the query rules."""
+    if _TEXT_ESCAPES.search(view):
+        return False
+    for m in _REDIRECT.finditer(view):
+        if not _harmless_redirect(m.group(1) or "", m.group(2), m.group(3)):
+            return False
     sep = r"\|\||&&|[;\n]" if powershell else r"\|\||&&|[;\n]|(?<![>&])&(?![>&])"
-    pipelines = [p.split("|") for p in re.split(sep, line.replace("|&", "|"))]
-    sends = [[i < len(simples) - 1 or _OUT_REDIRECT.search(s) is not None for i, s in enumerate(simples)]
-             for simples in pipelines]
-    line_sends = any(any(row) for row in sends)
-    for simples, send in zip(pipelines, sends):
-        kinds = [_command_kind(s) for s in simples]
-        if "client" in kinds[1:]:
-            client.append(normalize_command("|".join(simples)))  # text piped into a client is a query
-            continue
-        for simple, kind, out in zip(simples, kinds, send):
-            if kind == "text" and (out or (line_sends and _program_name(simple) in _TEXT_STORES)):
-                kind = "other"  # its text goes somewhere a query could run
-            if kind == "client":
-                if _CLIENT_READS_INPUT.search(simple):
-                    return True
-                client.append(normalize_command(simple))
-            elif kind == "other":
-                base.append(normalize_command(simple))
-    return False
+    for line in [view] + bodies:
+        for simple in re.split(sep, line.translate(_REAL_BRACKETS)):
+            if not simple.strip():
+                continue
+            m = _PROGRAM.match(_UNESCAPE.sub(r"\1", simple))
+            if m and m.group(1).lower() in _NEUTRAL_PROGRAMS:
+                continue
+            if _command_kind(simple) != "text":
+                return False
+    return True
 
 
 # Where the structure view's quote and bracket tracking may be wrong: then the
@@ -1117,10 +1115,9 @@ def _query_texts(text: str, norm: str, view: str | None, powershell: bool = Fals
     rules). ``view`` is the structure view of a shell command line, or None
     for scripts, file content and MCP arguments (all the text counts).
 
-    The exemptions (text-only programs, heredoc bodies that are data) apply
-    only where the parse is sure; otherwise all the text counts, as on main.
-    Where they apply, the command line is sorted exactly as written and the
-    contents of each substitution are sorted again on top of that."""
+    The only exemption: a command line made of text-only programs whose text
+    stays put (see ``_text_only_line``) is not read, where the parse is sure.
+    Everything else reads all the text, as main does."""
     client_anywhere = _has_client(norm)
     full = [norm], ([norm] if client_anywhere else [])
     # The exemptions only ever apply where no database client is named and no
@@ -1130,14 +1127,9 @@ def _query_texts(text: str, norm: str, view: str | None, powershell: bool = Fals
     if view is None or client_anywhere or _unsure(text) or _computed_program(text):
         return full
     bodies, balanced = _substitution_bodies(view)
-    if not balanced:
+    if not balanced or not _text_only_line(view, bodies, powershell):
         return full
-    base: list[str] = []
-    client: list[str] = []
-    for line in [view] + bodies:
-        if _pipelines(line.translate(_REAL_BRACKETS), base, client, powershell):
-            return full  # `psql -f f.sql`: anything on the line may be the query
-    return base + client, client
+    return [], []
 
 
 def _query_match(text: str, norm: str, view: str | None, powershell: bool = False) -> Match | None:
