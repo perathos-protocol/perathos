@@ -45,7 +45,6 @@ import json
 import os
 import re
 from bisect import bisect_left
-from dataclasses import replace
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -68,31 +67,48 @@ def _r(rule_id: str, regex: str, description: str) -> Rule:
     return Rule(rule_id, re.compile(regex, re.IGNORECASE), description)
 
 
+def _fold(s: str) -> str:
+    """Case folding as close to re.IGNORECASE as a string compare gets
+    (`ſ` folds to `s`; a character whose fold is longer keeps its lower case)."""
+    return "".join(c.casefold() if len(c.casefold()) == 1 else c.lower() for c in s)
+
+
 class _RmtreeImportedByName:
     """`from shutil import rmtree [as r]` (or `import *`) or `import shutil as
-    s`, followed anywhere later by a call through that name. A regex with a
-    lazy gap would be quadratic on repeated imports; this looks up each
-    distinct name once (at most 32 of them)."""
+    s`, followed anywhere later by a call through that name. One pass over the
+    imports and one over the calls, so repeated or many distinct imports stay
+    linear."""
 
-    _IMPORT = re.compile(r"\bfrom\s+shutil\s+import\b([^\n;]{0,256})|\bimport\s+shutil\s+as\s+(\w+)\b", re.IGNORECASE)
-    _NAMED = re.compile(r"\brmtree\b(?:\s+as\s+(\w+))?|(\*)", re.IGNORECASE)
+    _IMPORT = re.compile(r"\bfrom\s+shutil\s+import\b|\bimport\s+shutil\s+as\s+(\w+)\b", re.IGNORECASE)
+    _NAMED = re.compile(r"\brmtree\b(?:[^\S\n]+as[^\S\n]+(\w+))?|(\*)", re.IGNORECASE)
+    _STOP = re.compile(r"[\n;]")
+    _CALL = re.compile(r"\b(\w+)(\.rmtree)?\s*\(", re.IGNORECASE)
 
     def search(self, text: str) -> re.Match | None:
-        seen: set[str] = set()
+        after: dict[tuple[str, str], int] = {}  # call form -> earliest import end
+        named = list(self._NAMED.finditer(text))
+        named_starts = [m.start() for m in named]
+        stops = [m.start() for m in self._STOP.finditer(text)]
         for m in self._IMPORT.finditer(text):
-            if m.group(2) is not None:
-                call = rf"\b{re.escape(m.group(2))}\.rmtree\s*\("
+            if m.group(1) is not None:
+                key = ("mod", _fold(m.group(1)))
             else:
-                named = self._NAMED.search(m.group(1))
-                if named is None:
+                # the first `rmtree [as r]` or `*` in the rest of the import statement
+                k = bisect_left(named_starts, m.end())
+                s = bisect_left(stops, m.end())
+                stop = stops[s] if s < len(stops) else len(text)
+                if k == len(named) or named[k].end() > stop:
                     continue
-                call = rf"\b{re.escape(named.group(1) or 'rmtree')}\s*\("
-            if call in seen:
-                continue
-            seen.add(call)
-            hit = re.compile(call, re.IGNORECASE).search(text, m.end())
-            if hit is not None or len(seen) >= 32:
-                return hit
+                key = ("fn", _fold(named[k].group(1) or "rmtree"))
+            after.setdefault(key, m.end())
+        if not after:
+            return None
+        for c in self._CALL.finditer(text):
+            name = _fold(c.group(1))
+            keys = [(("mod", name), c.start()), (("fn", "rmtree"), c.start(2))] if c.group(2) else [(("fn", name), c.start())]
+            for key, at in keys:
+                if key in after and after[key] <= at:
+                    return c
         return None
 
 
@@ -102,18 +118,58 @@ class _RmtreeImportedByName:
 # Because quotes are gone, a rule cannot use a quote to find where an argument
 # ends: `psql -c "DELETE FROM t" -h db` arrives as `psql -c DELETE FROM t -h db`.
 #
-# Repetitions are bounded ({0,N}) so a long command made of repeated keywords
-# cannot make a rule take seconds; long input is matched in pieces (see
-# CHUNK_CHARS) and only input over a hard cap is denied unmatched.
+# Reach is never capped. Rules of the form "keyword, any gap, target" are
+# matched with ``_FirstStart`` (see there), which gives the same answer as the
+# plain regex search but tries only the first keyword in each stretch of text
+# the gap can span, so repeated keywords cannot make them quadratic.
 
-# Options before a subcommand or argument, each with an optional value:
-# `terraform -chdir=infra destroy`, `aws --profile p s3 rb`, `git -C repo reset`.
-_OPTS = r"(?:-[^\s;&|]+\s+(?:(?!-)[^\s;&|]+\s+)?){0,32}"
+
+class _FirstStart:
+    """``pattern`` (which begins with ``start``) searched by trying only the
+    first ``start`` match in each region; regions are separated by ``breaks``
+    (None: the whole text is one region).
+
+    Exact when the gap after ``start`` can absorb any text inside a region
+    (`.*` within a line, `(?:[^\\s;&|]+\\s+)*` within a simple command,
+    `(\\S+\\s+)*` anywhere): a match from a later start in the region is then
+    also a match from the first one, so the later starts need not be tried."""
+
+    def __init__(self, start: str, pattern: str, breaks: str | None):
+        self.start = re.compile(start, re.IGNORECASE)
+        self.full = re.compile(pattern, re.IGNORECASE)
+        self.breaks = re.compile(breaks) if breaks is not None else None
+
+    def search(self, text: str, pos: int = 0) -> re.Match | None:
+        while True:
+            m = self.start.search(text, pos)
+            if m is None:
+                return None
+            hit = self.full.match(text, m.start())
+            if hit is not None or self.breaks is None:
+                return hit
+            b = self.breaks.search(text, m.end())
+            if b is None:
+                return None
+            pos = b.end()
+
+
+def _rs(rule_id: str, start: str, rest: str, description: str, breaks: str | None = "\n") -> Rule:
+    """A "keyword, gap, target" rule matched with ``_FirstStart``."""
+    return Rule(rule_id, _FirstStart(start, start + rest, breaks), description)  # type: ignore[arg-type]
+
+
+def _opts(prog: str) -> str:
+    """Options before a subcommand, each with an optional value: `terraform
+    -chdir=infra destroy`, `aws --profile p s3 rb`, `git -C repo reset`. A
+    value is never the program's own name, so `prog -x prog -x ...` stays
+    linear (an option whose value is literally the program name is the only
+    form this leaves out)."""
+    return rf"(?:-[^\s;&|]+\s+(?:(?!-|(?:{prog})\b)[^\s;&|]+\s+)?)*"
+
+
 # Any words of the same simple command (no separator crossed).
-_ARGS = r"(?:[^\s;&|]+\s+){0,64}?"
-# The rest of the same simple command, and the rest of the line.
-_REST = r"[^;&|\n]{0,1024}"
-_ANY = r"[^\n]{0,1024}"
+_ARGS = r"(?:[^\s;&|]+\s+)*?"
+_WORDS = "[;&|]"  # what an _ARGS gap cannot cross (it can cross a newline)
 # The end of a word.
 _END = r"(?=$|[\s;&|)])"
 # A redirect target with a database-file extension. `.csv` and `.sql` are left
@@ -128,112 +184,168 @@ _NOT_A_FILE = r"(?!/dev/(?:null|stdout|stderr|tty)\b|nul\b|\$null\b)"
 # as the resource type; the resource type must be a whole word.
 _K8S_VALUE_OPT = (r"(?:-[nlofksc]|--(?:namespace|selector|context|cluster|user|kubeconfig|output|field-selector"
                   r"|filename|kustomize|grace-period|timeout|server|token|as|as-group|container))")
-_K8S_OPTS = rf"(?:{_K8S_VALUE_OPT}\s+[^\s;&|]+\s+|(?!{_K8S_VALUE_OPT}\s)-[^\s;&|]+\s+){{0,32}}"
+_K8S_OPTS = rf"(?:{_K8S_VALUE_OPT}\s+(?!kubectl\b)[^\s;&|]+\s+|(?!{_K8S_VALUE_OPT}\s)-[^\s;&|]+\s+)*"
 _K8S_STATEFUL = r"(?:ns|namespaces?|pv|pvc|persistentvolume\w*|statefulsets?|sts|deployments?|deploy|all)(?=$|[\s/,.;&|)])"
 # A git pathspec for the whole work tree: `.`, `./`, `:/`, `*`. (`--` with no
 # pathspec after it is a no-op for `checkout` and an error for `restore`.)
 _WHOLE_TREE = rf"(?::/\.?|\./?|\.?\*){_END}"
+_GIT = rf"\bgit\s+{_opts('git')}"
+_AWS = rf"\baws\s+{_opts('aws')}"
+_GSUTIL = rf"\bgsutil\s+{_opts('gsutil')}"
+_GCLOUD = rf"\bgcloud\s+{_opts('gcloud')}(?:(?:alpha|beta)\s+{_opts('gcloud')})?"
+_DOCKER = rf"\bdocker\s+{_opts('docker')}"
+_PODMAN = rf"\b(podman|nerdctl)\s+{_opts('podman|nerdctl')}"
+_TERRAGRUNT = rf"\bterragrunt\s+{_opts('terragrunt')}(?:(?:run-all|run)\s+{_opts('terragrunt')}(?:--\s+)?)?"
+
+
+class _GitRestore:
+    """`git restore` that discards work in the whole tree: a whole-tree
+    pathspec later in the same simple command, and `--worktree` / `-W` there or
+    no `--staged` / `-S` (which would only unstage). Named files and
+    directories (`git restore a.py`, `git restore src/`) are allowed. One pass
+    per simple command: the last position of each option is noted, then each
+    `git restore` start is checked against them."""
+
+    _START = re.compile(rf"{_GIT}restore\b", re.IGNORECASE)
+    _WHOLE = re.compile(rf"\s{_WHOLE_TREE}", re.IGNORECASE)
+    _WORKTREE = re.compile(r"\s(?:--worktree\b|(?-i:-[A-Za-z]*W[A-Za-z]*)\b)", re.IGNORECASE)
+    _STAGED = re.compile(r"\s(?:--staged\b|(?-i:-[A-Za-z]*S[A-Za-z]*)\b)", re.IGNORECASE)
+
+    @staticmethod
+    def _last(rx: re.Pattern, seg: str) -> int:
+        last = -1
+        for m in rx.finditer(seg):
+            last = m.start()
+        return last
+
+    def search(self, text: str) -> re.Match | None:
+        for seg in re.split(r"[;&|\n]", text):
+            starts = list(self._START.finditer(seg))
+            if not starts:
+                continue
+            whole, worktree, staged = (self._last(rx, seg) for rx in (self._WHOLE, self._WORKTREE, self._STAGED))
+            for m in starts:
+                if whole >= m.end() and (worktree >= m.end() or staged < m.end()):
+                    return m
+        return None
+
+
+_DJANGO = r"manage\.py|django-admin|django"
 
 SHELL_RULES: tuple[Rule, ...] = (
     _r("fs.rm-recursive",
-       r"\brm\s+(-\S+\s+){0,32}(-[a-z]*r|--recursive\b)|\brm\s+(-\S+\s+){0,32}-[a-z]*f[a-z]*r",
+       r"\brm\s+(-\S+\s+)*(-[a-z]*r|--recursive\b)|\brm\s+(-\S+\s+)*-[a-z]*f[a-z]*r",
        "recursive delete"),
     # cmd.exe takes switches anywhere on the line: `rmdir data /s /q`
-    _r("fs.win-delete",
-       rf"(^|[\s;&|(])(del|erase)\s+{_ARGS}/[sq]\b|(^|[\s;&|(])(rd|rmdir)\s+{_ARGS}/s\b|(^|[\s;&|(])format\s+[a-z]:",
-       "Windows recursive or quiet delete"),
-    _r("fs.ps-delete",
-       r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+(\S+\s+){0,64}-(r|recurse|rec|force)\b",
-       "PowerShell recursive delete"),
-    _r("fs.find-delete", rf"\bfind\b{_ANY}\s(-delete\b|-exec\s+rm\b)", "find -delete"),
-    _r("fs.truncate-or-overwrite",
-       rf"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bdd\s+{_ANY}\bof=(?!/dev/null)|\bshred\b|\bmv\s+\S+\s+/dev/null",
+    _rs("fs.win-delete", r"(^|[\s;&|(])(del|erase)\s+", rf"{_ARGS}/[sq]\b", "Windows recursive or quiet delete", _WORDS),
+    _rs("fs.win-delete", r"(^|[\s;&|(])(rd|rmdir)\s+", rf"{_ARGS}/s\b", "Windows recursive or quiet delete", _WORDS),
+    _r("fs.win-delete", r"(^|[\s;&|(])format\s+[a-z]:", "Windows recursive or quiet delete"),
+    _rs("fs.ps-delete", r"\b(remove-item|ri|del|erase|rd|rmdir|rm)\s+", r"(\S+\s+)*-(r|recurse|rec|force)\b",
+        "PowerShell recursive delete", None),
+    _rs("fs.find-delete", r"\bfind\b", r".*\s(-delete\b|-exec\s+rm\b)", "find -delete"),
+    _r("fs.truncate-or-overwrite", r"\btruncate\s+(-s\s*0|--size[= ]0)\b|\bshred\b|\bmv\s+\S+\s+/dev/null",
        "file truncated, overwritten or shredded"),
+    _rs("fs.truncate-or-overwrite", r"\bdd\s+", r".*\bof=(?!/dev/null)", "file truncated, overwritten or shredded"),
     # `cp /dev/null file`, `cat /dev/null > file` and PowerShell `Clear-Content`
     # empty any file. (Redirects are judged on the structure view: REDIRECT_RULES.)
     _r("fs.redirect-truncate",
-       rf"\bcp\s+(?:-\S+\s+){{0,8}}/dev/null\s+{_NOT_A_FILE}\S|\bcat\s+/dev/null\s*>(?!>)\|?\s*{_NOT_A_FILE}\S|\bclear-content\b",
+       rf"\bcp\s+(?:-\S+\s+)*/dev/null\s+{_NOT_A_FILE}\S|\bcat\s+/dev/null\s*>(?!>)\|?\s*{_NOT_A_FILE}\S|\bclear-content\b",
        "file emptied by a redirect"),
-    _r("fs.interpreter-delete",
-       rf"shutil\)?\.rmtree|\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\({_ANY}recursive|\brimraf\b|FileUtils\.rm_rf|\bos\.(remove|unlink|rmdir|removedirs)\s*\({_ANY}\*",
-       "delete through an interpreter one-liner"),
+    _r("fs.interpreter-delete", r"shutil\)?\.rmtree|\brimraf\b|FileUtils\.rm_rf", "delete through an interpreter one-liner"),
+    _rs("fs.interpreter-delete", r"\.(rm|rmSync|rmdir|rmdirSync|promises\.rm)\s*\(", r".*recursive",
+        "delete through an interpreter one-liner"),
+    _rs("fs.interpreter-delete", r"\bos\.(remove|unlink|rmdir|removedirs)\s*\(", r".*\*",
+        "delete through an interpreter one-liner"),
     # `from shutil import rmtree; rmtree(p)`, `... import rmtree as r; r(p)`,
     # `from shutil import *; rmtree(p)`, `import shutil as s; s.rmtree(p)`
     Rule("fs.python-rmtree", _RmtreeImportedByName(),  # type: ignore[arg-type]
          "delete through an interpreter one-liner (rmtree imported by name)"),
-    _r("fs.robocopy-mirror", rf"\brobocopy\b{_REST}\s/(mir|purge)\b",
-       "robocopy /MIR or /PURGE (deletes files missing from the source)"),
+    _rs("fs.robocopy-mirror", r"\brobocopy\b", r".*\s/(mir|purge)\b",
+        "robocopy /MIR or /PURGE (deletes files missing from the source)"),
     _r("fs.ps-format", r"\b(format-volume|clear-disk|remove-partition)\b", "PowerShell volume format or disk wipe"),
     # Discarding work in the whole tree is flagged: `checkout -f`, `checkout
     # [<tree>] [--] .`, `restore .` / `restore :/` unless it only unstages
     # (`--staged` without `--worktree`). Named files or directories
     # (`checkout -- a.py`, `checkout feature -- ci.yml`, `restore src/`) are not.
     _r("git.destructive",
-       rf"\bgit\s+{_OPTS}(reset\s+{_ARGS}--hard\b|clean\s+-\S*[fd]"
-       rf"|checkout\s+{_ARGS}(-f\b|--force(?![\w-])|(--\s+)?{_WHOLE_TREE})"
-       rf"|restore\b(?={_REST}\s{_WHOLE_TREE})"
-       rf"(?:(?={_REST}\s(--worktree\b|(?-i:-[A-Za-z]*W[A-Za-z]*)\b))|(?!{_REST}\s(--staged\b|(?-i:-[A-Za-z]*S[A-Za-z]*)\b)))"
-       rf"|switch\s+{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)"
-       r"|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
+       rf"{_GIT}(clean\s+-\S*[fd]|branch\s+(?-i:-D)\b|stash\s+(drop|clear)|filter-branch|reflog\s+expire|update-ref\s+-d)",
        "git command that discards work"),
-    _r("git.force-push-main",
-       rf"\bgit\s+push\b{_ANY}(--force\b|-f\b|--mirror\b){_ANY}\b(main|master|prod|production)\b|\bgit\s+push\s+--mirror\b",
-       "force push to a main branch"),
-    _r("git.push-main-rewrite",
-       rf"\bgit\s+push\b{_ANY}\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)"
-       rf"|\bgit\s+push\b{_ANY}(--delete\b|\s-d\b){_ANY}\b(main|master|prod|production)\b",
-       "forced overwrite or delete of a main branch on the remote"),
+    _rs("git.destructive", rf"{_GIT}reset\s+", rf"{_ARGS}--hard\b", "git command that discards work", _WORDS),
+    _rs("git.destructive", rf"{_GIT}checkout\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|(--\s+)?{_WHOLE_TREE})",
+        "git command that discards work", _WORDS),
+    _rs("git.destructive", rf"{_GIT}switch\s+", rf"{_ARGS}(-f\b|--force(?![\w-])|--discard-changes\b)",
+        "git command that discards work", _WORDS),
+    Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
+    _rs("git.force-push-main", r"\bgit\s+push\b", r".*(--force\b|-f\b|--mirror\b).*\b(main|master|prod|production)\b",
+        "force push to a main branch"),
+    _r("git.force-push-main", r"\bgit\s+push\s+--mirror\b", "force push to a main branch"),
+    _rs("git.push-main-rewrite", r"\bgit\s+push\b",
+        r".*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
+        "forced overwrite or delete of a main branch on the remote"),
+    _rs("git.push-main-rewrite", r"\bgit\s+push\b", r".*(--delete\b|\s-d\b).*\b(main|master|prod|production)\b",
+        "forced overwrite or delete of a main branch on the remote"),
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
-    _r("fs.rsync-delete", rf"\brsync\b{_ANY}\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
+    _rs("fs.rsync-delete", r"\brsync\b", r".*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
     _r("db.dropdb", r"\bdropdb\b", "PostgreSQL dropdb"),
-    _r("db.mysqladmin-drop", rf"\bmysqladmin\b{_REST}\sdrop\b", "mysqladmin drop"),
+    _rs("db.mysqladmin-drop", r"\bmysqladmin\b", r".*\sdrop\b", "mysqladmin drop"),
     _r("db.migrate-reset",
-       rf"\b(prisma\s+{_OPTS}migrate\s+{_OPTS}reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset|heroku\s+pg:reset)\b",
+       rf"\b(prisma\s+{_opts('prisma')}migrate\s+{_opts('prisma')}reset|rails\s+db:(drop|reset)|supabase\s+db\s+reset"
+       r"|heroku\s+pg:reset)\b",
        "database reset"),
-    _r("db.prisma-force-reset", rf"\bprisma\s+{_OPTS}db\s+push\b{_REST}\s--(force-reset|accept-data-loss)\b",
-       "prisma db push that drops data"),
-    _r("db.django-flush", rf"(?:\b(?:manage\.py|django-admin)|\s-m\s+django)\s+{_OPTS}(flush|reset_db)\b",
+    _rs("db.prisma-force-reset", rf"\bprisma\s+{_opts('prisma')}db\s+push\b", r".*\s--(force-reset|accept-data-loss)\b",
+        "prisma db push that drops data"),
+    _r("db.django-flush",
+       rf"(?:\b(?:manage\.py|django-admin)|\s-m\s+django)\s+{_opts(_DJANGO)}(flush|reset_db)\b",
        "Django flush (deletes every row)"),
-    _r("iac.terraform-destroy", rf"\bterraform\s+{_OPTS}(destroy|apply\b{_REST}\s--?destroy\b(?!=false))", "terraform destroy"),
-    _r("iac.tofu-destroy", rf"\btofu\s+{_OPTS}(destroy|apply\b{_REST}\s--?destroy\b(?!=false))", "OpenTofu destroy"),
-    _r("iac.terragrunt-destroy",
-       rf"\bterragrunt\s+{_OPTS}(?:(?:run-all|run)\s+{_OPTS}(?:--\s+)?)?(destroy|apply\b{_REST}\s--?destroy\b(?!=false))",
-       "terragrunt destroy"),
+    _r("iac.terraform-destroy", rf"\bterraform\s+{_opts('terraform')}destroy\b", "terraform destroy"),
+    _rs("iac.terraform-destroy", rf"\bterraform\s+{_opts('terraform')}apply\b", r".*-destroy\b", "terraform destroy"),
+    _r("iac.tofu-destroy", rf"\btofu\s+{_opts('tofu')}destroy\b", "OpenTofu destroy"),
+    _rs("iac.tofu-destroy", rf"\btofu\s+{_opts('tofu')}apply\b", r".*-destroy\b", "OpenTofu destroy"),
+    _r("iac.terragrunt-destroy", rf"{_TERRAGRUNT}destroy\b", "terragrunt destroy"),
+    _rs("iac.terragrunt-destroy", rf"{_TERRAGRUNT}apply\b", r".*-destroy\b", "terragrunt destroy"),
     _r("iac.pulumi-destroy", r"\bpulumi\s+destroy\b", "pulumi destroy"),
     _r("k8s.delete", rf"\bkubectl\s+{_K8S_OPTS}delete\s+{_K8S_OPTS}{_K8S_STATEFUL}",
        "kubectl delete of stateful resources"),
     _r("k8s.helm-uninstall", r"\bhelm\s+(uninstall|delete)\b", "helm uninstall"),
     _r("cloud.aws-delete",
-       rf"\baws\s+{_OPTS}(s3\s+rb\b|s3\s+rm\b{_REST}--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
+       rf"{_AWS}(s3\s+rb\b|s3\s+rm\s+--recursive|rds\s+delete-|dynamodb\s+delete-table|ec2\s+delete-(volume|snapshot)"
+       r"|backup\s+delete-|s3api\s+delete-bucket\b|cloudformation\s+delete-stack\b)",
        "AWS delete of storage or backups"),
-    _r("cloud.aws-s3-sync-delete", rf"\baws\s+{_OPTS}s3\s+sync\b{_REST}\s--delete\b",
-       "aws s3 sync --delete (deletes objects missing from the source)"),
+    _rs("cloud.aws-delete", rf"{_AWS}s3\s+rm\b", r".*--recursive", "AWS delete of storage or backups"),
+    _rs("cloud.aws-s3-sync-delete", rf"{_AWS}s3\s+sync\b", r".*\s--delete\b",
+        "aws s3 sync --delete (deletes objects missing from the source)"),
     # gcloud takes global options and release tracks (`alpha`, `beta`) before the group
     _r("cloud.gcloud-delete",
-       rf"\bgcloud\s+{_OPTS}(?:(?:alpha|beta)\s+{_OPTS})?(sql\s+(instances|databases|backups)|compute\s+(disks|snapshots)"
-       rf"|storage\s+buckets|firestore\s+databases|spanner\s+(instances|databases)|filestore\s+(instances|backups))\s+{_OPTS}delete\b"
-       rf"|\bgcloud\s+{_OPTS}(?:(?:alpha|beta)\s+{_OPTS})?(storage\s+{_OPTS}rm|projects\s+{_OPTS}delete)\b",
+       rf"{_GCLOUD}(sql\s+(instances|databases|backups)|compute\s+(disks|snapshots)|storage\s+buckets|firestore\s+databases"
+       rf"|spanner\s+(instances|databases)|filestore\s+(instances|backups))\s+{_opts('gcloud')}delete\b"
+       rf"|{_GCLOUD}(storage\s+{_opts('gcloud')}rm|projects\s+{_opts('gcloud')}delete)\b",
        "Google Cloud delete of storage or backups"),
-    _r("cloud.gsutil-delete",
-       rf"\bgsutil\s+{_OPTS}(rb\b|rm\b{_REST}\s-([a-z]*[ra][a-z]*|-recursive|-all-versions)\b|rm\b{_REST}\*)",
-       "gsutil bucket remove, recursive or wildcard delete"),
-    _r("cloud.rclone-delete", rf"\brclone\s+{_OPTS}(purge|delete)\b", "rclone purge / delete"),
-    _r("cloud.az-delete", rf"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b{_ANY}\bdelete\b", "Azure delete of storage or backups"),
+    _rs("cloud.gcloud-delete", r"\bgcloud\s+",
+        r".*\b(sql\s+instances|compute\s+disks|compute\s+snapshots|storage\s+(buckets\s+)?rm)\b.*\bdelete\b",
+        "Google Cloud delete of storage or backups"),
+    _r("cloud.gsutil-delete", rf"{_GSUTIL}rb\b", "gsutil bucket remove, recursive or wildcard delete"),
+    _rs("cloud.gsutil-delete", rf"{_GSUTIL}rm\b", r".*\s-([a-z]*[ra][a-z]*|-recursive|-all-versions)\b",
+        "gsutil bucket remove, recursive or wildcard delete"),
+    _rs("cloud.gsutil-delete", rf"{_GSUTIL}rm\b", r".*\*", "gsutil bucket remove, recursive or wildcard delete"),
+    _r("cloud.rclone-delete", rf"\brclone\s+{_opts('rclone')}(purge|delete)\b", "rclone purge / delete"),
+    _rs("cloud.az-delete", r"\baz\s+(sql|storage|disk|snapshot|backup|cosmosdb|group)\b", r".*\bdelete\b",
+        "Azure delete of storage or backups"),
     _r("paas.railway", r"\brailway\s+(down|volume\s+delete|delete)\b", "Railway delete"),
     _r("paas.vercel", r"\bvercel\s+(remove|rm)\b", "Vercel remove"),
     _r("paas.fly", r"\bfly(ctl)?\s+(volumes?\s+(destroy|delete)|apps?\s+destroy|postgres\s+destroy)\b", "Fly destroy"),
     _r("paas.neon", r"\bneon(ctl)?\s+(branches?|projects?|databases?)\s+delete\b", "Neon delete"),
-    _r("paas.firebase", rf"\bfirebase\s+{_OPTS}(firestore:delete|database:remove)\b", "Firebase data delete"),
-    _r("paas.heroku", rf"\bheroku\s+{_OPTS}(apps:destroy|destroy|pg:backups:delete|addons:destroy)\b", "Heroku destroy"),
-    _r("docker.volume",
-       rf"\bdocker\s+{_OPTS}(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes)|\bdocker([ -])compose\b{_ANY}\sdown\b{_ANY}\s(-v\b|--volumes\b)",
-       "Docker volume delete"),
+    _r("paas.firebase", rf"\bfirebase\s+{_opts('firebase')}(firestore:delete|database:remove)\b", "Firebase data delete"),
+    _r("paas.heroku", rf"\bheroku\s+{_opts('heroku')}(apps:destroy|destroy|pg:backups:delete|addons:destroy)\b",
+       "Heroku destroy"),
+    _r("docker.volume", rf"{_DOCKER}volume\s+(rm|prune)", "Docker volume delete"),
+    _rs("docker.volume", rf"{_DOCKER}system\s+prune\b", r".*--volumes", "Docker volume delete"),
+    _rs("docker.volume", r"\bdocker([ -])compose\b", r".*\sdown\b.*\s(-v\b|--volumes\b)", "Docker volume delete"),
     # podman and nerdctl take docker's volume commands; `system reset` wipes all storage
-    _r("container.volume",
-       rf"\b(podman|nerdctl)\s+{_OPTS}(volume\s+(rm|prune)|system\s+prune\b{_ANY}--volumes|system\s+reset\b)"
-       rf"|\b(podman|nerdctl)([ -])compose\b{_ANY}\sdown\b{_ANY}\s(-v\b|--volumes\b)",
-       "podman / nerdctl volume delete"),
+    _r("container.volume", rf"{_PODMAN}(volume\s+(rm|prune)|system\s+reset\b)", "podman / nerdctl volume delete"),
+    _rs("container.volume", rf"{_PODMAN}system\s+prune\b", r".*--volumes", "podman / nerdctl volume delete"),
+    _rs("container.volume", r"\b(podman|nerdctl)([ -])compose\b", r".*\sdown\b.*\s(-v\b|--volumes\b)",
+        "podman / nerdctl volume delete"),
 )
 
 # Redirects, matched against the structure view (quotes removed but a `;` or
@@ -258,6 +370,9 @@ REDIRECT_RULES: tuple[Rule, ...] = (
 # reads a file or stdin redirect (`psql -f f.sql`, `sqlite3 db < q.sql`) makes
 # the whole line count, since the file may have been written earlier on it.
 # In scripts, MCP arguments and file writes the rules apply to all the text.
+_ALTER_TABLE = r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?[\w.$\[\]]+\s+"
+_DROP_WHAT = (r"drop\s+(?:column\b|constraint\b"
+              r"|(?!index\b|key\b|primary\b|foreign\b|default\b|check\b|trigger\b|if\b)\w+)")
 QUERY_RULES: tuple[Rule, ...] = (
     _r("sql.drop", r"\bdrop\s+(database|schema|table)\b", "SQL DROP"),
     _r("sql.truncate", r"\btruncate\s+(table\s+)?[\w.$\[\]]+", "SQL TRUNCATE"),
@@ -267,10 +382,9 @@ QUERY_RULES: tuple[Rule, ...] = (
        r"\bdelete\s+from\s+[\w.$\[\]]+(?:\s+(?:as\s+)?(?!where\b|limit\b)\w+)?(?!\s*where\b)(?:\s+limit\s+\d+)?"
        r"\s*(?:$|[;)|&\n<>]|--\s)",
        "SQL DELETE without WHERE"),
-    _r("sql.alter-drop",
-       r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?[\w.$\[\]]+\s+(?:[^;\n]{0,1024}?,\s*)?drop\s+"
-       r"(?:column\b|constraint\b|(?!index\b|key\b|primary\b|foreign\b|default\b|check\b|trigger\b|if\b)\w+)",
-       "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT"),
+    _r("sql.alter-drop", _ALTER_TABLE + _DROP_WHAT, "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT"),
+    _rs("sql.alter-drop", _ALTER_TABLE, r"[^;\n]*?,\s*" + _DROP_WHAT, "SQL ALTER TABLE ... DROP COLUMN / CONSTRAINT",
+        "[;\n]"),
     _r("db.redis-flush", r"\bflush(all|db)\b", "Redis FLUSHALL / FLUSHDB"),
     _r("db.mongo-drop", r"\.drop(database)?\s*\(", "MongoDB drop"),
     _r("db.mongo-delete-all", r"\.(deleteMany|remove)\s*\(\s*\{\s*\}\s*[,)]|\.deleteMany\s*\(\s*\)",
@@ -302,15 +416,13 @@ _PROGRAM = re.compile(r"^[\s({!]*(?:(?:sudo|env|command|builtin|nohup|time|exec)
                       r"(?:[a-z_]\w*=\S*\s+)*([^\s]+)", re.IGNORECASE)
 _CLIENT_READS_INPUT = re.compile(r"\s(?:-f|--file|-i|--init-file|\.read|source)(?:\s|=)|<", re.IGNORECASE)
 
-# Long input is matched in pieces of at most CHUNK_CHARS: whole lines, with
-# the last WINDOW_OVERLAP characters' worth of lines repeated at the start of
-# the next piece, and a single longer line cut into overlapping windows. The
-# overlap is longer than any rule's reach, so a match is never cut in two.
-# Above the hard caps the input is not matched at all and is denied.
-CHUNK_CHARS = 16384
-WINDOW_OVERLAP = 4096
+# The whole text is matched, as before; input above these sizes is not
+# matched at all and is denied (fail closed): a shell command, or the total of
+# a script write's content or of an MCP call's string arguments. The content
+# cap keeps the worst case (repeated keywords make some rules quadratic) well
+# inside the hook's 10 s timeout.
 MAX_COMMAND_CHARS = 65536
-MAX_CONTENT_CHARS = 2_000_000
+MAX_CONTENT_CHARS = 1_000_000
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
 # above can judge it. They are treated like a destructive command (denied
@@ -327,8 +439,8 @@ _NOT_LITERAL_PATH = r"(?![/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))"
 # Where a command starts: line start, after a separator, inside `$(`, after a
 # shell keyword or `sh -c`; then any wrappers and `NAME=value` prefixes.
 _CP = (rf"(?:^|[;&|\n]|\$\(|\b(?:if|then|else|elif|do|while|until)\s|\b{_SH}\s+(?:-\w+\s+)*?-\w*c\s)\s*(?:!\s+)?"
-       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout[ \t]+[\d.]+\w?)[ \t]+){0,8}"
-       r"(?:[a-z_]\w*=\S*[ \t]+){0,16}")  # on one line: `x=1\nx=1\n...` must not chain
+       r"(?:(?:sudo|exec|command|builtin|nohup|time|env|xargs|nice|watch|timeout[^\S\n]+[\d.]+\w?)[^\S\n]+)*"
+       r"(?:[a-z_]\w*=\S*[^\S\n]+)*")  # `[^\S\n]`: a newline is itself a command start, so chaining across it adds nothing
 # An interpreter reading its program from the pipe: `| sh`, `| bash -s -- -y`,
 # `| python -`, `| iex`. `| python -m json.tool` and `| node x.js` are not.
 _STDIN_SINK = (rf"(?<!\|)\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:(?:{_INTERP}|iex|invoke-expression)"
@@ -342,47 +454,137 @@ _EVAL_OK = (r"\$\((?:ssh-agent(?:\s+-s)?|(?:\S*/)?brew\s+shellenv|(?:pyenv|rbenv
             r"\s+[\w .=-]*|minikube\s+(?:-p\s+\S+\s+)?docker-env|conda\s+shell\.\w+\s+hook|docker-machine\s+env[\w -]*)\)"
             r"\s*(?:$|[;&|\n])")
 
+class _DownloadThenRun:
+    """A download that names a file (`curl -o i.sh URL`, `wget URL/i.sh`),
+    ended by `&&`, `;` or a newline, and a later command that runs that name
+    (`bash i.sh`, `./i.sh`, `sudo /tmp/i.sh`, `& .\\i.ps1`). The regex form of
+    this (a backreference after two open gaps) is cubic; this finds the same
+    matches in linear time: every command start is parsed once into the names
+    it could run, and only the first download of each simple command is read,
+    because a later one in the same command can only name a subset."""
+
+    _DL_RX = re.compile(rf"\b{_DL}\b", re.IGNORECASE)
+    _SEP = re.compile(r"[\n;&|]")
+    _NAME = re.compile(r"(?<=[/\s=])[\w-][\w.-]*(?=[\s;&]|\Z)")
+    _RUN_SEP = re.compile(r"(?=&&|;|\n)")
+    _LEAD = re.compile(r"\s*")
+    _SUDO = re.compile(r"sudo\s+", re.IGNORECASE)
+    _AMP = re.compile(r"&\s*")
+    _INTERP_RX = re.compile(rf"(?:{_INTERP}|source)\s+", re.IGNORECASE)
+    _FLAG = re.compile(r"-\S+\s+")
+    _TOKEN = re.compile(rf"(?:[\w.~/\\-]*[/\\])?([\w-][\w.-]*){_WORD_END}", re.IGNORECASE)
+
+    def _names_run_at(self, text: str, t: int, seen_flags: set[int]) -> list[str]:
+        out: list[str] = []
+
+        def token(p: int) -> None:
+            m = self._TOKEN.match(text, p)
+            if m:
+                out.append(_fold(m.group(1)))
+
+        bases = [t]
+        s = self._SUDO.match(text, t)
+        if s:
+            bases.append(s.end())
+        for b in bases:
+            token(b)
+            a = self._AMP.match(text, b)
+            if a:
+                token(a.end())
+            i = self._INTERP_RX.match(text, b)
+            if i:
+                p = i.end()
+                while p not in seen_flags:  # a flag run already walked (for a later separator) adds nothing
+                    seen_flags.add(p)
+                    token(p)
+                    f = self._FLAG.match(text, p)
+                    if f is None:
+                        break
+                    p = f.end()
+        return out
+
+    def search(self, text: str) -> re.Match | None:
+        # name -> last separator (`&&`, `;`, newline) followed by a command that runs it.
+        # Separators are taken right to left so the first record is the last one,
+        # and whitespace runs and flag runs shared by several separators are walked once.
+        run_at: dict[str, int] = {}
+        n = len(text)
+        lead: dict[int, int] = {}
+        names_at: dict[int, list[str]] = {}
+        seen_flags: set[int] = set()
+        for r in reversed([m.start() for m in self._RUN_SEP.finditer(text)]):
+            q = r + (2 if text.startswith("&&", r) else 1)
+            j = q
+            while j < n and j not in lead and text[j].isspace():
+                j += 1
+            t = lead[q] = lead.get(j, j)
+            if t not in names_at:
+                names_at[t] = self._names_run_at(text, t, seen_flags)
+            for name in names_at[t]:
+                run_at.setdefault(name, r)
+        if not run_at:
+            return None
+        pos = 0
+        while True:
+            m = self._DL_RX.search(text, pos)
+            if m is None:
+                return None
+            sm = self._SEP.search(text, m.end())
+            if sm is None:
+                return None
+            s = sm.start()
+            if text[s] in "\n;" or text.startswith("&&", s):
+                for c in self._NAME.finditer(text[m.end():s]):
+                    if run_at.get(_fold(c.group()), -1) >= s:
+                        return m
+            pos = s + 1
+
+
 REMOTE_SCRIPT_RULES: tuple[Rule, ...] = (
-    _r("unresolvable.remote-script", rf"\b{_DL}\b[^;&\n]{{0,1024}}{_STDIN_SINK}",
-       "download piped into an interpreter (the guard cannot see what it would run)"),
+    _rs("unresolvable.remote-script", rf"\b{_DL}\b", rf"[^;&\n]*{_STDIN_SINK}",
+        "download piped into an interpreter (the guard cannot see what it would run)", "[;&\n]"),
     _r("unresolvable.remote-script",
        rf"(?:\b(?:{_INTERP}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(\s*(?:sudo\s+)?{_DL}\b",
        "download substituted into an interpreter (the guard cannot see what it would run)"),
-    _r("unresolvable.remote-script",
-       rf"\b(?:eval|iex|invoke-expression)\b[^;|\n]{{0,512}}\b{_DL}\b|\s(?:-\w*c|-e|-r|-command|/c)\s+\$\(\s*{_DL}\b"
-       rf"|{_CP}\$\(\s*{_DL}\b|\[scriptblock\]::create\([^\n]*\b{_DL}\b",
+    _rs("unresolvable.remote-script", r"\b(?:eval|iex|invoke-expression)\b", rf"[^;|\n]*\b{_DL}\b",
+        "download evaluated as a command (the guard cannot see what it would run)", "[;|\n]"),
+    _r("unresolvable.remote-script", rf"\s(?:-\w*c|-e|-r|-command|/c)\s+\$\(\s*{_DL}\b|{_CP}\$\(\s*{_DL}\b",
        "download evaluated as a command (the guard cannot see what it would run)"),
-    _r("unresolvable.remote-script",
-       rf"\b{_DL}\b(?=[^\n;&|]{{0,256}}+(?:&&|;|\n))[^\n;&|]{{0,256}}?[/\s=]([\w-][\w.-]*)(?=[\s;&])[^\n;&|]{{0,256}}+"
-       rf"(?:&&|;|\n)(?:[\s\S]{{0,2048}}?(?:&&|;|\n))??\s*"
-       rf"(?:sudo\s+)?(?:(?:{_INTERP}|source)\s+(?:-\S+\s+)*|&\s*)?(?:[\w.~/\\-]*[/\\])?\1{_WORD_END}",
-       "download saved and then run (the guard cannot see what it would run)"),
+    _rs("unresolvable.remote-script", r"\[scriptblock\]::create\(", rf"[^\n]*\b{_DL}\b",
+        "download evaluated as a command (the guard cannot see what it would run)"),
+    Rule("unresolvable.remote-script", _DownloadThenRun(),  # type: ignore[arg-type]
+         "download saved and then run (the guard cannot see what it would run)"),
 )
 
 INDIRECT_RULES: tuple[Rule, ...] = (
     _r("unresolvable.indirect", rf"{_CP}\$\((?![^()\n]*\)[/\\][^\s$`;&|()]*[^\s$`;&|()/\\](?:\s|$|[;&|)]))",
        "command produced by a command substitution (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect", rf"{_CP}eval\s+(?!{_EVAL_OK})[^;&|\n]*\$",
-       "eval of a variable or substitution (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect",
-       rf"\b(?:{_INTERP}|psql|mysql|su|wsl)\s+(?:[^\s;&|]+\s+){{0,64}}?(?:-\w*c|-e|-r|-command|--command|/c|/k)\s+"
-       r"(?:\$[\w{(]|[%!]\w+[%!])|\s-exec(?:dir)?\s+\$[\w{(]|\btrap\s+\$[\w{(]",
+    _rs("unresolvable.indirect", rf"{_CP}eval\s+(?!{_EVAL_OK})", r"[^;&|\n]*\$",
+        "eval of a variable or substitution (the guard cannot tell what would run)", "[;&|\n]"),
+    _rs("unresolvable.indirect", rf"\b(?:{_INTERP}|psql|mysql|su|wsl)\s+",
+        r"(?:[^\s;&|]+\s+)*?(?:-\w*c|-e|-r|-command|--command|/c|/k)\s+(?:\$[\w{(]|[%!]\w+[%!])",
+        "command string held in a variable (the guard cannot tell what would run)", _WORDS),
+    _r("unresolvable.indirect", r"\s-exec(?:dir)?\s+\$[\w{(]|\btrap\s+\$[\w{(]",
        "command string held in a variable (the guard cannot tell what would run)"),
     _r("unresolvable.indirect",
        rf"{_CP}(?:{_INTERP}|source|\.)\s+(?:-(?!c\b|e\b|r\b|command\b)\S+\s+)*{_VAR}{_WORD_END}",
        "script whose path is held in a variable (the guard cannot read it)"),
     _r("unresolvable.indirect", _STDIN_SINK,
        "text piped into an interpreter (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect",
-       rf"\b{_SH}\b[^;&|\n]*<<<[^;&|\n]*\$|(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
+    _rs("unresolvable.indirect", rf"\b{_SH}\b", r"[^;&|\n]*<<<[^;&|\n]*\$",
+        "substitution fed to a shell as its script (the guard cannot tell what would run)", "[;&|\n]"),
+    _r("unresolvable.indirect", rf"(?:\b(?:{_SH}|source)|(?:^|[\s;&|(])\.)\s+(?:-\S+\s+)*<?\s*<\(",
        "substitution fed to a shell as its script (the guard cannot tell what would run)"),
     _r("unresolvable.indirect",
        r"(?<![>\d&])&\s*\$[\w{(]|\b(?:iex|invoke-expression)\s+(?:-command\s+)?[$(@]"
-       r"|\[scriptblock\]::create\([^)\n]*\$|\b(?:start-process|saps)\s+(?:-filepath\s+)?\$"
-       r"|\b(?:invoke-command|icm)\b[^;|\n]*-scriptblock\s+\$",
+       r"|\b(?:start-process|saps)\s+(?:-filepath\s+)?\$",
        "PowerShell call of a variable or expression (the guard cannot tell what would run)"),
-    _r("unresolvable.indirect", r"\b(?:powershell|pwsh)(?:\.exe)?\b[^;|&\n]*\s-(?:e|ec|en\w*)\s+[a-z0-9+/=]{8,}",
-       "PowerShell encoded command (the guard cannot tell what would run)"),
+    _rs("unresolvable.indirect", r"\[scriptblock\]::create\(", r"[^)\n]*\$",
+        "PowerShell call of a variable or expression (the guard cannot tell what would run)", "[)\n]"),
+    _rs("unresolvable.indirect", r"\b(?:invoke-command|icm)\b", r"[^;|\n]*-scriptblock\s+\$",
+        "PowerShell call of a variable or expression (the guard cannot tell what would run)", "[;|\n]"),
+    _rs("unresolvable.indirect", r"\b(?:powershell|pwsh)(?:\.exe)?\b", r"[^;|&\n]*\s-(?:e|ec|en\w*)\s+[a-z0-9+/=]{8,}",
+        "PowerShell encoded command (the guard cannot tell what would run)", "[;|&\n]"),
     _r("unresolvable.indirect",
        r"(?:^|[&|(\n])\s*@?(?:call\s+|start\s+(?:/\w+\s+)*)?[%!]\w+[%!](?:\s|$|[&|)])"
        r"|\bdo\s+@?(?:call\s+)?%%?~?\w+%?(?:\s|$)",
@@ -408,37 +610,6 @@ SELF_AUTH_RULES: tuple[Rule, ...] = (
     _r("guard.self-disable", _ENFORCEMENT_PATHS,
        "agent tried to change the files that keep the recorder and guard running"),
 )
-# A rule can only match text that contains one of its words (lower case, after
-# normalising), so a rule whose words are all absent is skipped. This keeps
-# long ordinary content (a 2 MB file write) fast. Rules not listed always run.
-_NEEDLES: dict[str, tuple[str, ...]] = {
-    "fs.rm-recursive": ("rm",), "fs.win-delete": ("del", "erase", "rd", "rmdir", "format"), "fs.ps-delete": ("-r", "-f"),
-    "fs.find-delete": ("find",), "fs.truncate-or-overwrite": ("truncate", "dd", "shred", "/dev/null", ":"),
-    "fs.redirect-truncate": ("/dev/null", "clear-content", ">"), "fs.interpreter-delete": ("rm", "rimraf", "os."),
-    "fs.python-rmtree": ("shutil",), "fs.robocopy-mirror": ("robocopy",),
-    "fs.ps-format": ("format-volume", "clear-disk", "remove-partition"), "git.destructive": ("git",),
-    "git.force-push-main": ("git",), "git.push-main-rewrite": ("git",), "git.repo-delete": ("gh",), "fs.mkfs": ("mkfs",),
-    "fs.rsync-delete": ("rsync",), "db.dropdb": ("dropdb",), "db.mysqladmin-drop": ("mysqladmin",),
-    "db.migrate-reset": ("prisma", "rails", "supabase", "heroku"), "db.prisma-force-reset": ("prisma",),
-    "db.django-flush": ("manage.py", "django"), "iac.terraform-destroy": ("terraform",), "iac.tofu-destroy": ("tofu",),
-    "iac.terragrunt-destroy": ("terragrunt",), "iac.pulumi-destroy": ("pulumi",), "k8s.delete": ("kubectl",),
-    "k8s.helm-uninstall": ("helm",), "cloud.aws-delete": ("aws",), "cloud.aws-s3-sync-delete": ("aws",),
-    "cloud.gcloud-delete": ("gcloud",), "cloud.gsutil-delete": ("gsutil",), "cloud.rclone-delete": ("rclone",),
-    "cloud.az-delete": ("az",), "paas.railway": ("railway",), "paas.vercel": ("vercel",), "paas.fly": ("fly",),
-    "paas.neon": ("neon",), "paas.firebase": ("firebase",), "paas.heroku": ("heroku",), "docker.volume": ("docker",),
-    "container.volume": ("podman", "nerdctl"), "sql.drop": ("drop",), "sql.truncate": ("truncate",),
-    "sql.delete-all": ("delete",), "sql.alter-drop": ("alter",), "db.redis-flush": ("flush",), "db.mongo-drop": (".drop",),
-    "db.mongo-delete-all": ("deletemany", "remove"), "guard.self-authorize": ("perathos",),
-    "guard.key-access": (".perathos", "signing.key"),
-    "guard.self-disable": (".perathos", ".claude", ".cursor", "managed-settings", "claudecode"),
-}
-
-
-def _may_match(rule: Rule, low: str) -> bool:
-    needles = _NEEDLES.get(rule.rule_id)
-    return needles is None or any(n in low for n in needles)
-
-
 # Reading those files is fine; only commands that could write them are denied.
 _READ_ONLY_PREFIX = re.compile(r"^\s*(cat|type|ls|dir|head|tail|less|more|stat|get-content|gc|get-childitem|perathos|git\s+(status|diff|log|show))\b", re.I)
 
@@ -450,26 +621,44 @@ _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".bat", ".cmd", ".sql", ".rb", ".pl")
 # `bash x.sh`, `python x.py`, `psql -f x.sql`, `./x.sh`: scripts the command runs
 _SCRIPT_RUN = re.compile(
-    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+){0,16}"
-    r"|powershell\s+(?:-\S+\s+){0,16}|psql\b[^;&|\n]{0,1024}?\s-f\s+|mysql\b[^;&|\n]{0,1024}?<\s*|sqlite3\b[^;&|\n]{0,1024}?<\s*)"
+    r"(?:^|[\s;&|(])(?:\.?/|bash\s+|sh\s+|zsh\s+|source\s+|\.\s+|python3?\s+|node\s+|pwsh\s+(?:-\S+\s+)*|powershell\s+(?:-\S+\s+)*)"
     r"([^\s;&|)<>\"']+)", re.I)
+# `psql ... -f x.sql`, `mysql ... < x.sql`, `sqlite3 ... < x.sql` on the same line
+_SCRIPT_RUN_DB = (
+    (re.compile(r"(?:^|[\s;&|(])psql\b", re.I), re.compile(r"\s-f\s+([^\s;&|)<>\"']+)")),
+    (re.compile(r"(?:^|[\s;&|(])(?:mysql|sqlite3)\b", re.I), re.compile(r"<\s*([^\s;&|)<>\"']+)")),
+)
 _MAX_SCRIPT_BYTES = 1 << 20
 _CMD_NORMALISERS = (
     (re.compile(r"""['"`]"""), ""),            # r""m -rf, k''eys
     (re.compile(r"\\\r?\n"), " "),             # line continuations
-    (re.compile(r"/\*.*?\*/", re.S), " "),     # SQL block comments
-    (re.compile(r"[ \t]+"), " "),
 )
+_SPACES = re.compile(r"[ \t]+")
+
+
+def _drop_block_comments(command: str) -> str:
+    """`/* ... */` collapsed to a space, as `re.sub(r"/\*.*?\*/", " ", ..., re.S)`
+    would, but linear when a `/*` is never closed."""
+    out, i = [], 0
+    while True:
+        a = command.find("/*", i)
+        b = command.find("*/", a + 2) if a >= 0 else -1
+        if b < 0:
+            break
+        out += [command[i:a], " "]
+        i = b + 2
+    out.append(command[i:])
+    return "".join(out)
 
 
 def normalize_command(command: str) -> str:
     """The text rules are matched against: quotes stripped, comments collapsed."""
     for rx, rep in _CMD_NORMALISERS:
         command = rx.sub(rep, command)
-    return command
+    return _SPACES.sub(" ", _drop_block_comments(command))
 
 
-_PATH_WORD_SPLIT = re.compile(r"([\s=:]+)")
+_PATH_WORD = re.compile(r"(?<![^\s=:])[^\s=:/]*+/[^\s=:]*")  # a word (split at whitespace, `=`, `:`) with a `/`
 
 
 def _fold_path(word: str) -> str:
@@ -496,8 +685,7 @@ def _normalize_paths(text: str) -> str:
     `.claude/./settings.json`, `.claude\\x\\..\\settings.json` and
     `.claude//settings.json` all read `.claude/settings.json`. Linear in the
     length of the text."""
-    parts = _PATH_WORD_SPLIT.split(text.replace("\\", "/"))
-    return "".join(p if i % 2 else _fold_path(p) for i, p in enumerate(parts))
+    return _PATH_WORD.sub(lambda m: _fold_path(m.group()), text.replace("\\", "/"))
 
 
 @dataclass(frozen=True)
@@ -508,44 +696,82 @@ class Match:
     self_auth: bool = False
 
 
-_HEREDOC_TO_SHELL = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b[^|;&]*$", re.I)
+_SHELL_WORD = re.compile(rf"(?:^|[\s;&|(])(?:{_SH}|pwsh|powershell)\b", re.I)
+
+
+def _feeds_shell(before: str) -> bool:
+    """Whether the text before `<<` on its line ends in a shell's simple
+    command (`bash <<EOF`): a shell word after the last `|`, `;` or `&`."""
+    k = max(before.rfind("|"), before.rfind(";"), before.rfind("&"))
+    return _SHELL_WORD.search(before[max(k, 0):]) is not None
 # Programs whose quoted argument is itself a shell command line.
 _SHELL_STRING_RUNNER = re.compile(
     rf"(?:^|[\s(])(?:{_SH}|su|sudo|ssh|eval|iex|invoke-expression|pwsh|powershell|cmd|wsl|watch|xargs|env|exec"
     r"|(?:docker|podman|kubectl)\s+exec)(?:\.exe)?(?:\s|$)", re.I)
+_VIEW_SCAN = re.compile(r"['\";|&\n(]")
 _QUOTED_SEPARATORS = str.maketrans(dict.fromkeys(";|&<>\r\n", " "))
 _BACKTICKS = re.compile(r"`([^`\n]*)`")
 
 
+_HEREDOC_SCAN = re.compile(r"['\"#]|<<")
+_DOUBLE_QUOTED = re.compile(r'"[^"\\]*(?:\\[\s\S][^"\\]*)*"')
+
+
+def _end_of_double_quote(command: str, i: int) -> int:
+    """Index after the `"` that closes the one at ``i`` (a backslash escapes
+    the next character), or 0 when it is never closed."""
+    m = _DOUBLE_QUOTED.match(command, i)
+    return m.end() if m else 0
+
+
 _HEREDOC_START = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n")
+_HEREDOC_END = re.compile(r"[ \t]*([A-Za-z_]\w*)[ \t]*(?:\)|$)")
 
 
 def _heredocs(command: str) -> list[tuple[int, int, bool]]:
     """(body start, body end, body is a shell script) for each heredoc.
 
-    One pass over the lines and a lookup per `<<WORD`, so it stays linear on a
-    long command (a regex with a lazy body search is quadratic when the
-    terminator is missing). The terminator is a line holding only the word,
-    optionally followed by `)`."""
-    lines: dict[str, list[int]] = {}
+    One pass over the command: a `<<WORD` inside quotes or a `#` comment is
+    not a heredoc (`echo "<<EOF"`), and quotes inside a body do not count.
+    The terminator is the first later line holding only the word, optionally
+    followed by `)`; it is looked up, not searched for, so the pass stays
+    linear when a terminator is missing."""
+    ends: dict[str, list[int]] = {}
     pos = 0
     for line in command.split("\n"):
-        lines.setdefault(line.strip(" \t\r").rstrip(")").rstrip(" \t"), []).append(pos)
+        m = _HEREDOC_END.match(line)
+        if m:
+            ends.setdefault(m.group(1), []).append(pos)
         pos += len(line) + 1
     out: list[tuple[int, int, bool]] = []
-    end = 0
-    for m in _HEREDOC_START.finditer(command):
-        if m.start() < end:
-            continue  # inside an earlier body
-        starts = lines.get(m.group(2), [])
-        k = bisect_left(starts, m.end())
-        if k == len(starts):
-            continue  # unterminated: not a heredoc body we can delimit
-        body_end = max(m.end(), starts[k] - 1)
-        line_start = command.rfind("\n", 0, m.start()) + 1
-        out.append((m.end(), body_end, _HEREDOC_TO_SHELL.search(command[line_start:m.start()]) is not None))
-        end = starts[k]
-    return out
+    i, n = 0, len(command)
+    while True:
+        sp = _HEREDOC_SCAN.search(command, i)
+        if sp is None:
+            return out
+        i = sp.start()
+        ch = command[i]
+        if ch in "'\"":
+            j = command.find("'", i + 1) + 1 if ch == "'" else _end_of_double_quote(command, i)
+            i = j if j > 0 else i + 1  # an unbalanced quote is dropped, as in _structure_view
+            continue
+        if ch == "#":
+            if i == 0 or command[i - 1] in " \t\n;&|(":
+                j = command.find("\n", i)
+                i = n if j < 0 else j
+            else:
+                i += 1
+            continue
+        m = _HEREDOC_START.match(command, i)
+        if m:
+            starts = ends.get(m.group(2), [])
+            k = bisect_left(starts, m.end() + 1)
+            if k < len(starts):
+                line_start = command.rfind("\n", 0, i) + 1
+                out.append((m.end(), starts[k] - 1, _feeds_shell(command[line_start:i])))
+                i = starts[k]
+                continue
+        i += 2
 
 
 def _drop_data_heredocs(command: str) -> str:
@@ -574,41 +800,44 @@ def _structure_view(command: str) -> str:
     command = _drop_data_heredocs(command)
     out: list[str] = []
     segment: list[str] = []  # the simple command being read, to spot a runner
-    # The segment is checked for a runner incrementally (new text plus a short
-    # overlap), so a long command with many quotes stays linear.
+    # The segment is checked for a runner incrementally: the text added since
+    # the last check plus the end of what was checked, with whitespace runs
+    # collapsed (the runner pattern only asks whether there is whitespace), so
+    # a long command with many quotes stays linear and nothing is missed.
     checked, tail, runner = 0, "", False
     i, n = 0, len(command)
     while i < n:
-        ch = command[i]
-        if ch in "'\"":
-            j = i + 1
-            while j < n and command[j] != ch:
-                if ch == '"' and command[j] == "\\" and j + 1 < n:
-                    j += 1
-                j += 1
-            if j < n:
-                body = command[i + 1:j]
-                if not runner:
-                    window = tail + "".join(segment[checked:])
-                    runner = _SHELL_STRING_RUNNER.search(window) is not None
-                    checked, tail = len(segment), "x" + window[-64:]
-                if not runner:
-                    body = body.translate(_QUOTED_SEPARATORS)
-                    if ch == "'":
-                        body = body.replace("$", " ").replace("`", " ")
-                out.append(body)
-                segment.append(body)
-                i = j + 1
-                continue
-            i += 1  # unbalanced quote: drop the character
-            continue
-        if ch in ";|&\n(":
+        sp = _VIEW_SCAN.search(command, i)
+        k = sp.start() if sp else n
+        if k > i:
+            out.append(command[i:k])
+            segment.append(command[i:k])
+        if sp is None:
+            break
+        ch = command[k]
+        if ch not in "'\"":
             segment.clear()
             checked, tail, runner = 0, "", False
-        else:
-            segment.append(ch)
-        out.append(ch)
-        i += 1
+            out.append(ch)
+            i = k + 1
+            continue
+        j = command.find("'", k + 1) + 1 if ch == "'" else _end_of_double_quote(command, k)
+        if j == 0:
+            i = k + 1  # unbalanced quote: drop the character
+            continue
+        body = command[k + 1:j - 1]
+        if not runner:
+            window = re.sub(r"\s+", " ", tail + "".join(segment[checked:]))
+            runner = _SHELL_STRING_RUNNER.search(window) is not None
+            checked = len(segment)
+            tail = window if len(window) <= 64 else "x" + window[-64:]
+        if not runner:
+            body = body.translate(_QUOTED_SEPARATORS)
+            if ch == "'":
+                body = body.replace("$", " ").replace("`", " ")
+        out.append(body)
+        segment.append(body)
+        i = j
     view = _BACKTICKS.sub(r"$(\1)", "".join(out))
     return re.sub(r"[ \t]+", " ", re.sub(r"['\"]", "", view))
 
@@ -653,37 +882,29 @@ def _query_match(text: str, norm: str, view: str | None) -> Match | None:
     for rules, ts in ((QUERY_RULES, texts), (CLIENT_QUERY_RULES, client_texts)):
         for rule in rules:
             for t in ts:
-                if _may_match(rule, t.lower()) and rule.pattern.search(t):
+                if rule.pattern.search(t):
                     return Match(rule.rule_id, rule.description, text)
     return None
 
 
-def _too_long(text: str, limit: int, *, command: bool) -> Match:
-    if command:
-        desc = (f"command too long to check safely ({len(text)} chars > {limit}); split it or write the "
-                f"content with the Write tool")
-    else:
-        desc = f"content too long to check safely ({len(text)} chars > {limit}); split it into smaller pieces"
-    return Match("guard.too-long", desc, text)
+def _too_long(subject: str, size: int, limit: int, what: str) -> Match:
+    return Match("guard.too-long",
+                 f"{what} too long to check safely ({size} chars > {limit}); split it or write it in parts", subject)
 
 
-def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None,
-                 queries: bool = True) -> Match | None:
+def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None = None) -> Match | None:
     """``shell`` is the shell tool's name when ``text`` is a command line typed
-    into a shell; only then are the variable-indirection rules applied.
-    ``queries=False`` skips the query-language rules (a data heredoc body)."""
+    into a shell; only then are the variable-indirection rules applied."""
     norm = normalize_command(text)
-    low = norm.lower()
     if include_self_auth:
         paths = _normalize_paths(norm)
-        low_paths = paths.lower()
         for rule in SELF_AUTH_RULES:
-            if _may_match(rule, low_paths) and rule.pattern.search(paths):
+            if rule.pattern.search(paths):
                 if rule.rule_id == "guard.self-disable" and _READ_ONLY_PREFIX.match(paths):
                     continue
                 return Match(rule.rule_id, rule.description, text, self_auth=True)
     for rule in SHELL_RULES:
-        if _may_match(rule, low) and rule.pattern.search(norm):
+        if rule.pattern.search(norm):
             return Match(rule.rule_id, rule.description, text)
     # The structure view is needed for redirects, shell command lines and downloads.
     need_view = shell is not None or ">" in text or _PREFILTER_REMOTE.search(text) is not None
@@ -691,7 +912,7 @@ def _first_match(text: str, *, include_self_auth: bool = True, shell: str | None
     for rule in REDIRECT_RULES:
         if need_view and rule.pattern.search(view):
             return Match(rule.rule_id, rule.description, text)
-    hit = _query_match(text, norm, view if shell is not None else None) if queries else None
+    hit = _query_match(text, norm, view if shell is not None else None)
     if hit is not None:
         return hit
     if shell is None and not _PREFILTER_REMOTE.search(text):
@@ -709,8 +930,13 @@ def _scan_script_files(command: str, cwd: str | os.PathLike | None) -> Match | N
     """If the command runs a script file that exists, scan the script's content too."""
     if cwd is None:
         return None
-    for m in _SCRIPT_RUN.finditer(command):
-        name = m.group(1)
+    names = [m.group(1) for m in _SCRIPT_RUN.finditer(command)]
+    for line in command.split("\n"):
+        for prog, arg in _SCRIPT_RUN_DB:
+            p = prog.search(line)
+            if p:
+                names += [m.group(1) for m in arg.finditer(line, p.end())]
+    for name in names:
         if not name or name.startswith("-"):
             continue
         path = Path(name) if os.path.isabs(name) else Path(cwd) / name
@@ -720,78 +946,10 @@ def _scan_script_files(command: str, cwd: str | os.PathLike | None) -> Match | N
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hit = _scan_content(content)
+        hit = _first_match(content)
         if hit is not None:
             return Match(f"script:{hit.rule_id}", f"{hit.description} inside {name}", command, self_auth=hit.self_auth)
     return None
-
-
-def _pieces(text: str):
-    """``text`` in pieces of at most CHUNK_CHARS (see CHUNK_CHARS)."""
-    step = CHUNK_CHARS - WINDOW_OVERLAP
-    chunk: list[str] = []
-    size = 0
-    for line in text.splitlines(keepends=True):
-        if len(line) > CHUNK_CHARS:
-            if chunk:
-                yield "".join(chunk)
-                chunk, size = [], 0
-            for start in range(0, len(line) - WINDOW_OVERLAP, step):
-                # a window that starts mid-line must not look like a command start
-                yield line[start:start + CHUNK_CHARS] if start == 0 else "x " + line[start:start + CHUNK_CHARS]
-            continue
-        if chunk and size + len(line) > CHUNK_CHARS:
-            yield "".join(chunk)
-            keep: list[str] = []  # repeat the last lines, up to the overlap
-            kept = 0
-            for prev in reversed(chunk):
-                if kept + len(prev) > WINDOW_OVERLAP:
-                    break
-                keep.insert(0, prev)
-                kept += len(prev)
-            chunk, size = keep, kept
-        chunk.append(line)
-        size += len(line)
-    if chunk:
-        yield "".join(chunk)
-
-
-def _scan_content(text: str, *, include_self_auth: bool = True, shell: str | None = None,
-                  queries: bool = True) -> Match | None:
-    """``_first_match`` for file content, script files, MCP arguments and
-    heredoc bodies, which may be long: matched in pieces (see CHUNK_CHARS);
-    denied unmatched only above MAX_CONTENT_CHARS."""
-    if len(text) > MAX_CONTENT_CHARS:
-        return _too_long(text, MAX_CONTENT_CHARS, command=False)
-    if len(text) <= CHUNK_CHARS:
-        return _first_match(text, include_self_auth=include_self_auth, shell=shell, queries=queries)
-    for piece in _pieces(text):
-        hit = _first_match(piece, include_self_auth=include_self_auth, shell=shell, queries=queries)
-        if hit is not None:
-            return replace(hit, subject=text)
-    return None
-
-
-def _scan_command(command: str, shell: str) -> Match | None:
-    """A shell command line. Longer than CHUNK_CHARS, its heredoc bodies are
-    matched as content and the rest in pieces; longer than MAX_COMMAND_CHARS it
-    is denied unmatched (fail closed)."""
-    if len(command) > MAX_COMMAND_CHARS:
-        return _too_long(command, MAX_COMMAND_CHARS, command=True)
-    if len(command) <= CHUNK_CHARS:
-        return _first_match(command, shell=shell)
-    parts, last = [], 0
-    for start, end, to_shell in _heredocs(command):
-        # a data body (`cat > f.sql <<EOF`) is judged as on a short command
-        # line: the shell rules apply, the query rules do not
-        hit = _scan_content(command[start:end], shell=shell if to_shell else None, queries=to_shell)
-        if hit is not None:
-            return replace(hit, subject=command)
-        parts.append(command[last:start])
-        last = end
-    parts.append(command[last:])
-    hit = _scan_content("".join(parts), shell=shell)
-    return replace(hit, subject=command) if hit is not None else None
 
 
 def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = None) -> Match | None:
@@ -802,10 +960,9 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name in _SHELL_TOOLS:
         command = str(tool_input.get("command") or "")
-        hit = _scan_command(command, tool_name)
-        if hit is not None or len(command) > MAX_COMMAND_CHARS:
-            return hit
-        return _scan_script_files(command, cwd)
+        if len(command) > MAX_COMMAND_CHARS:
+            return _too_long(command, len(command), MAX_COMMAND_CHARS, "command")
+        return _first_match(command, shell=tool_name) or _scan_script_files(command, cwd)
     if tool_name in _FILE_TOOLS_WITH_PATH:
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         norm_target = _normalize_paths(normalize_command(target))
@@ -813,12 +970,13 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
             if rule.pattern.search(norm_target) and (tool_name in _WRITE_TOOLS or rule.rule_id == "guard.key-access"):
                 return Match(rule.rule_id, rule.description, target, self_auth=True)
         if tool_name in _WRITE_TOOLS and target.lower().endswith(_SCRIPT_EXT):
-            parts = [str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source")]
-            parts += [str(e.get("new_string") or "") for e in tool_input.get("edits") or [] if isinstance(e, dict)]
-            body = "\n".join(p for p in parts if p)
-            hit = _scan_content(body, include_self_auth=False)
-            if hit is not None and hit.rule_id == "guard.too-long":
-                return replace(hit, subject=target)
+            body = " ".join(str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source"))
+            for e in tool_input.get("edits") or []:
+                if isinstance(e, dict):
+                    body += " " + str(e.get("new_string") or "")
+            if len(body) > MAX_CONTENT_CHARS:
+                return _too_long(target, len(body), MAX_CONTENT_CHARS, "content")
+            hit = _first_match(body, include_self_auth=False)
             if hit is not None:
                 return Match(f"write:{hit.rule_id}", f"writes a script containing a {hit.description}", target)
         return None
@@ -829,11 +987,14 @@ def evaluate(tool_name: str, tool_input: Any, cwd: str | os.PathLike | None = No
         # A generic tool (e.g. a database server's `query` / `execute_sql`, or a
         # shell server's `run`) can still carry a destructive command in its
         # arguments: scan every string argument with the shell/SQL rules.
-        for text in _string_values(tool_input):
-            hit = _scan_content(text)
+        texts = _string_values(tool_input)
+        total = sum(len(t) for t in texts)
+        if total > MAX_CONTENT_CHARS:
+            return _too_long(subject, total, MAX_CONTENT_CHARS, "MCP arguments")
+        for text in texts:
+            hit = _first_match(text)
             if hit is not None:
-                desc = hit.description if hit.self_auth or hit.rule_id == "guard.too-long" else \
-                    f"{hit.description} inside an MCP tool call"
+                desc = hit.description if hit.self_auth else f"{hit.description} inside an MCP tool call"
                 return Match(hit.rule_id, desc, subject, self_auth=hit.self_auth)
     return None
 
