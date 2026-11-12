@@ -119,11 +119,20 @@ EVAL_AFTER_SEPARATOR = ["eval x; eval $y", "eval x;eval $y", "eval x\neval $y"]
 # A database client inside a command substitution under a text-only program.
 IN_SUBSTITUTION = ["echo $(psql -c \"drop table users\")", "echo `psql -c \"drop table users\"`",
                    "git commit -m \"$(psql -c 'drop table t')\"", "grep x <(psql -c \"drop table users\")",
-                   "printf %s $(redis-cli flushall)", "jq . $(psql -c \"drop table x\")"]
+                   "printf %s $(redis-cli flushall)", "jq . $(psql -c \"drop table x\")",
+                   # PowerShell grouping, bash 5.3 `${ ...; }`, zsh `=(...)`
+                   "Write-Host (psql -c \"drop table t\")", "Write-Output @(psql -c \"drop table t\")",
+                   "Write-Host (\"x\" + (psql -c \"drop table t\"))", "Write-Host ([string](psql -c \"drop table t\"))",
+                   "echo ${ psql -c \"drop table t\"; }", "sed p =(psql -c \"drop table t\")"]
+# A heredoc piped into a client: the body is the query.
+HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
+                       "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
+                       "cat <<EOF | sqlite3 a.db\nDROP TABLE t;\nEOF", "cat <<EOF | redis-cli\nFLUSHALL\nEOF",
+                       "tee /dev/stderr <<EOF | psql\nDROP TABLE t;\nEOF"]
 # Common destructive forms the rules used to miss: options before the
 # subcommand, switches after the path, SQL whose quotes the normaliser strips,
 # and tools that had no rule.
-MISSED_FORMS = LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + [
+MISSED_FORMS = LONG_REACH + AFTER_SEPARATOR + EVAL_AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT + [
     # options or switches where the rule did not expect them
     "terraform -chdir=infra destroy", "terraform -chdir=infra apply -destroy -auto-approve",
     "terraform apply --destroy", "terraform apply -auto-approve -destroy=true", "kubectl delete ns/prod",
@@ -276,7 +285,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 268
+BYPASS_CORPUS_SIZE = 281
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -485,7 +494,7 @@ def test_adversarial_input_is_fast(tmp_path, shape):
 @pytest.mark.parametrize("shape", ["print('ok')  # ordinary line\n", "del a\n", "curl x | sh\n", "var a=1;", "rm x\n",
                                    "> ", "x=1\n", "rm git find del aws gcloud kubectl drop delete alter > : ",
                                    "docker compose down ", "podman compose down ", "git push -f ", "git push -d ",
-                                   "curl -o x x\n", "; del ", "<("])
+                                   "curl -o x x\n", "; del ", "<(", "${ x; }", "(", "=("])
 def test_largest_scanned_content_is_linear(tmp_path, shape):
     import time
 
@@ -518,7 +527,7 @@ def test_no_regression_against_main_corpus(tmp_path):
         assert decide("Bash", {"command": cmd}, tmp_path, trusted_key=None) is None, cmd
 
 
-@pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION)
+@pytest.mark.parametrize("cmd", AFTER_SEPARATOR + IN_SUBSTITUTION + HEREDOC_INTO_CLIENT)
 def test_blocked_through_every_tool(cmd):
     for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
                       ("Write", {"file_path": "/p/a.sh", "content": cmd})):
@@ -533,7 +542,9 @@ def test_eval_after_separator_blocked_in_shells(cmd):
         assert m is not None and m.rule_id == "unresolvable.indirect", (tool, cmd)
 
 
-@pytest.mark.parametrize("prefix, rep, tail", [("git push ", "-f ", "\nkubectl delete ns prod"),
+@pytest.mark.parametrize("prefix, rep, tail", [("echo ", "(", ""), ("echo ", "${ ", ""), ("sed p ", "=(", ""),
+                                               ("", "cat <<E | psql\nx\nE\n", ""), ("", "\"$(", ""),
+                                               ("git push ", "-f ", "\nkubectl delete ns prod"),
                                                ("git push ", "-d ", "\nkubectl delete ns prod"),
                                                ("docker compose ", "down ", ""), ("gcloud sql instances ", "x ", "")])
 def test_two_gap_rules_are_fast_at_the_command_cap(tmp_path, prefix, rep, tail):
@@ -544,6 +555,17 @@ def test_two_gap_rules_are_fast_at_the_command_cap(tmp_path, prefix, rep, tail):
     t = time.perf_counter()
     decide("Bash", {"command": cmd}, tmp_path, trusted_key=None)
     assert time.perf_counter() - t < 5.0
+
+
+def test_substitution_handling_keeps_text_quiet():
+    # literal (quoted) parentheses and a heredoc inside a commit message's `$(...)` stay text
+    for cmd in ("git commit -m 'fix (drop table) docs'", "git commit -m \"fix (drop table) docs\"",
+                "echo 'f(drop table x)'", "Write-Host \"(drop table t)\"", "cat <<EOF > m.sql\nDROP TABLE t;\nEOF",
+                "git commit -m \"$(cat <<'EOF'\nfix: drop table docs\nEOF\n)\""):
+        for tool in ("Bash", "PowerShell"):
+            assert evaluate(tool, {"command": cmd}) is None, (tool, cmd)
+    # a call's parentheses are not a substitution: the query text keeps them
+    assert evaluate("Bash", {"command": "ssh db mongosh -e 'db.users.drop()'"}).rule_id == "db.mongo-drop"
 
 
 def test_sql_rules_see_through_stripped_quotes():

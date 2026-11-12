@@ -474,7 +474,7 @@ _CLIENT_READS_INPUT = re.compile(r"\s(?:-f|--file|-i|--init-file|\.read|source)(
 # cap keeps the worst case (repeated keywords make some rules quadratic) well
 # inside the hook's 10 s timeout.
 MAX_COMMAND_CHARS = 65536
-MAX_CONTENT_CHARS = 800_000
+MAX_CONTENT_CHARS = 700_000
 
 # "Unresolvable" commands: the text does not say what will run, so no pattern
 # above can judge it. They are treated like a destructive command (denied
@@ -814,6 +814,8 @@ def _heredocs(command: str) -> list[tuple[int, int, bool]]:
         ch = command[i]
         if ch in "'\"":
             j = command.find("'", i + 1) + 1 if ch == "'" else _end_of_double_quote(command, i)
+            if ch == '"' and j > 0 and ("$(" in command[i:j] or "`" in command[i:j]):
+                j = i + 1  # a command substitution inside double quotes is a command: read on inside it
             i = j if j > 0 else i + 1  # an unbalanced quote is dropped, as in _structure_view
             continue
         if ch == "#":
@@ -895,7 +897,9 @@ def _structure_view(command: str) -> str:
         if not runner:
             body = body.translate(_QUOTED_SEPARATORS)
             if ch == "'":
-                body = body.replace("$", " ").replace("`", " ")
+                body = body.replace("$", " ").replace("`", " ").translate(_LITERAL_PARENS)
+            else:
+                body = _blank_literal_parens(body)
         out.append(body)
         segment.append(body)
         i = j
@@ -912,26 +916,80 @@ def _command_kind(simple: str) -> str:
     return "client" if _DB_CLIENT.search(simple) else "other"
 
 
-_SUBSTITUTION = re.compile(r"[$<>]\(|[()]")
+_PARENS = re.compile(r"\$?[()]")
+# Quoted (literal) parentheses are written into the structure view as these
+# private-use characters, so they never open or close a substitution; the
+# query rules get real parentheses back (`db.users.drop()`).
+_LITERAL_PARENS = str.maketrans("()", "\ue000\ue001")
+_REAL_PARENS = str.maketrans("\ue000\ue001", "()")
+
+
+def _blank_literal_parens(body: str) -> str:
+    """A double-quoted argument with its literal parentheses marked (see
+    _LITERAL_PARENS). Inside a live `$(...)` everything is command text, so
+    parentheses there stay real (`"$(iex (Get-Content x))"`)."""
+    if "(" not in body and ")" not in body:
+        return body
+    out: list[str] = []
+    stack: list[str] = []  # "$": a live `$(`; "L": a `(` inside one; "-": a literal `(`
+    live = 0
+    last = 0
+    for m in _PARENS.finditer(body):
+        tok = m.group()
+        if tok == "$(":
+            stack.append("$")
+            live += 1
+            continue
+        if tok == "(":
+            stack.append("L" if live else "-")
+            if live:
+                continue
+        else:
+            kind = stack.pop() if stack else "u"  # an unmatched `)` opens nothing: left real
+            if kind == "$":
+                live -= 1
+            if kind != "-":
+                continue
+        out += [body[last:m.start()], tok.translate(_LITERAL_PARENS)]
+        last = m.end()
+    out.append(body[last:])
+    return "".join(out)
+
+
+_SUBSTITUTION = re.compile(r"[$<>=@]?\(|\)|\$\{(?=[ \t\n])|[{}]")
 
 
 def _split_substitutions(view: str) -> str:
-    """The structure view with each `$(...)`, `<(...)` and `>(...)` (and
-    backticks, which the view already turned into `$(`) opened and closed by
-    a newline, so its contents count as their own command: `echo $(psql -c
-    ...)` runs psql. Plain parentheses are left alone. One pass."""
+    """The structure view with every command substitution opened and closed
+    by a newline, so its contents count as their own command for the query
+    rules: `$(...)` (and backticks, which the view already turned into `$(`),
+    `<(...)`, `>(...)`, zsh `=(...)`, PowerShell `(...)` and `@(...)`, a
+    subshell `(...)` (a real command anyway) and bash 5.3 `${ ...; }`.
+    Quoted parentheses were blanked by the view, so only live ones remain.
+    One pass."""
     out: list[str] = []
-    stack: list[bool] = []
+    stack: list[str] = []
     last = 0
     for m in _SUBSTITUTION.finditer(view):
         tok = m.group()
-        if tok == "(":
-            stack.append(False)
+        if tok == "{":
+            stack.append("{")
             continue
-        if tok == ")" and not (stack and stack.pop()):
+        if tok == "}":
+            if not stack or stack[-1] not in "{B":
+                continue
+            if stack.pop() == "{":
+                continue
+        elif tok == ")":
+            if not stack or stack[-1] not in "(c":
+                continue
+            if stack.pop() == "c":
+                continue
+        elif tok == "(" and m.start() > 0 and (view[m.start() - 1].isalnum() or view[m.start() - 1] in "_."):
+            stack.append("c")  # a call, `db.users.drop()`: not a command of its own
             continue
-        if tok != ")":
-            stack.append(True)
+        else:
+            stack.append("B" if tok.startswith("${") else "(")
         out += [view[last:m.start()], "\n"]
         last = m.end()
     out.append(view[last:])
@@ -944,10 +1002,19 @@ def _query_texts(text: str, norm: str, view: str | None) -> tuple[list[str], lis
     for scripts, file content and MCP arguments (all the text counts)."""
     if view is None:
         return [norm], ([norm] if _DB_CLIENT.search(norm) else [])
+    # A heredoc body is data in the view, but a client in the command list
+    # that reads it (`cat <<EOF | psql`, `tee x <<EOF | redis-cli`) runs it as
+    # a query: then the whole line counts, body included.
+    for start, _end, to_shell in _heredocs(text):
+        if not to_shell:
+            line = text[text.rfind("\n", 0, start - 1) + 1:start]
+            if _DB_CLIENT.search(line) and any(_command_kind(s) == "client" for s in re.split(
+                    r"\|\||&&|[;&|\n]", _split_substitutions(_structure_view(line)))):
+                return [norm], [norm]
     base: list[str] = []
     client: list[str] = []
-    # Plain parentheses are not split on: quoted code (`db.users.drop()`) keeps them.
-    for pipeline in re.split(r"\|\||&&|[;&\n]", _split_substitutions(view).replace("|&", "|")):
+    split = _split_substitutions(view).replace("|&", "|").translate(_REAL_PARENS)
+    for pipeline in re.split(r"\|\||&&|[;&\n]", split):
         simples = pipeline.split("|")
         kinds = [_command_kind(s) for s in simples]
         if "client" in kinds[1:]:
