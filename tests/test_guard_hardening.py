@@ -354,7 +354,10 @@ FORCE_PUSH_ANY_ORDER = ["git push origin main --force", "git push origin main -f
                         "git -C repo push -f origin main", "git -C repo push --force origin main",
                         "git -c core.x=y push origin main --force", "git --git-dir=.git push -f origin main",
                         "git --work-tree=. push origin main -f", "git --no-pager push --force origin main",
-                        "git --namespace=x push -f origin main", "git -C repo push origin --delete main"]
+                        "git --namespace=x push -f origin main", "git -C repo push origin --delete main",
+                        # abbreviated `--delete` / `--mirror`, either order
+                        "git push --del origin main", "git push origin main --del", "git push origin --dele main",
+                        "git push --mir origin", "git push origin main --mirr", "git push --mirro origin main"]
 # A heredoc piped into a client: the body is the query.
 HEREDOC_INTO_CLIENT = ["cat <<EOF | psql\nDROP TABLE t;\nEOF", "cat <<'EOF' | psql\nDROP TABLE t;\nEOF",
                        "cat << EOF | psql\nDROP TABLE t;\nEOF", "cat <<-EOF | psql\nDROP TABLE t;\nEOF",
@@ -519,7 +522,7 @@ POWERSHELL_SAFE = [
 # The bypass corpus: every command here must be blocked. The count is quoted
 # in the docs (README, SECURITY_ASSESSMENT, ROADMAP_2.0); keep them in step.
 BYPASS_CORPUS = DESTRUCTIVE + MISSED_FORMS + SELF_PROTECT + UNRESOLVABLE_INDIRECT + UNRESOLVABLE_REMOTE
-BYPASS_CORPUS_SIZE = 486
+BYPASS_CORPUS_SIZE = 492
 
 
 def test_bypass_corpus_size_and_all_blocked():
@@ -848,6 +851,20 @@ def test_text_only_exemption_needs_output_to_go_nowhere():
                 "Write-Host \"DROP TABLE t\"", "echo \"drop table t\" > /dev/null", "grep \"drop table\" f 2> err.txt"):
         assert evaluate("Bash", {"command": cmd}) is None, cmd
         assert evaluate("PowerShell", {"command": cmd}) is None, cmd
+
+
+# A push of main followed by another command with its own `-f` / `--force`.
+PUSH_THEN_OTHER = ["git push origin main && rm -f build.log", "git push origin main; tail -f log",
+                   "git push -u origin main 2>&1 | grep -F rejected", "git push origin main && npm run build -- --force"]
+
+
+@pytest.mark.parametrize("cmd", PUSH_THEN_OTHER)
+def test_push_flag_must_be_in_the_same_command(cmd):
+    for tool, inp in (("Bash", {"command": cmd}), ("PowerShell", {"command": cmd}), ("mcp__x__run", {"cmd": cmd}),
+                      ("Write", {"file_path": "/p/a.sh", "content": cmd})):
+        assert evaluate(tool, inp) is None, (tool, cmd)
+    for cmd in ("git push origin main --force", "git push -f origin main"):
+        assert evaluate("Bash", {"command": cmd}).rule_id == "git.force-push-main"
 
 
 def test_sql_rules_see_through_stripped_quotes():

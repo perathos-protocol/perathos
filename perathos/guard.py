@@ -286,7 +286,13 @@ class _GitRestore:
 _DJANGO = r"manage\.py|django-admin|django"
 # `git push` force flags: `--force`, `--force-with-lease[=...]`, `--force-if-includes`,
 # `--mirror`, `-f` and combined short flags holding an f (`-uf`).
-_PUSH_FORCE = r"--force\b|--mirror\b|(?<![\w-])-[A-Za-z]*f[A-Za-z]*\b"
+# git accepts unique prefixes of long options: `--mir`, `--del`.
+_PUSH_FORCE = r"--force\b|--mir(?:r|ro|ror)?\b|(?-i:(?<![\w-])-[A-Za-z]*f[A-Za-z]*\b)"
+_PUSH_DELETE = r"--del(?:e|et|ete)?\b|\s-d\b"
+# The flag and the branch must be in the same simple command: `git push origin
+# main && rm -f x` is not a force push.
+_PUSH_GAP = r"[^;&|\n]"
+_PUSH_BREAKS = "[;&|\n]"
 _MAIN_BRANCH = r"\b(main|master|trunk|prod|production)\b"
 # `git push` after any global options (`-C dir`, `-c k=v`, `--git-dir=...`, `--no-pager`).
 _GIT_PUSH = rf"{_GIT}push\b"
@@ -336,16 +342,18 @@ SHELL_RULES: tuple[Rule, ...] = (
         "git command that discards work", _WORDS),
     Rule("git.destructive", _GitRestore(), "git command that discards work"),  # type: ignore[arg-type]
     # The force flag and the branch may come in either order, before or after the remote.
-    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch"),
-    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch"),
-    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mirror\b", "force push to a main branch"),
+    _rc("git.force-push-main", _GIT_PUSH, [_PUSH_FORCE, _MAIN_BRANCH], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.force-push-main", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_FORCE], "force push to a main branch",
+        _PUSH_GAP, _PUSH_BREAKS),
+    _r("git.force-push-main", rf"{_GIT_PUSH}\s+--mir(?:r|ro|ror)?\b", "force push to a main branch"),
     _rs("git.push-main-rewrite", _GIT_PUSH,
-        r".*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
-        "forced overwrite or delete of a main branch on the remote"),
-    _rc("git.push-main-rewrite", _GIT_PUSH, [r"--delete\b|\s-d\b", _MAIN_BRANCH],
-        "forced overwrite or delete of a main branch on the remote"),
-    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, r"--delete\b|\s-d\b"],
-        "forced overwrite or delete of a main branch on the remote"),
+        r"[^;&|\n]*\s(\+\S*\b(main|master|prod|production)\b|:(refs/heads/)?(main|master|prod|production)\b)",
+        "forced overwrite or delete of a main branch on the remote", _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_PUSH_DELETE, _MAIN_BRANCH],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
+    _rc("git.push-main-rewrite", _GIT_PUSH, [_MAIN_BRANCH, _PUSH_DELETE],
+        "forced overwrite or delete of a main branch on the remote", _PUSH_GAP, _PUSH_BREAKS),
     _r("git.repo-delete", r"\bgh\s+repo\s+delete\b", "GitHub repository delete"),
     _r("fs.mkfs", r"(^|[\s;&|(])mkfs(\.\w+)?\s", "filesystem format"),
     _rs("fs.rsync-delete", r"\brsync\b", r".*\s--(delete(-\w+)*|remove-source-files)\b", "rsync that deletes files"),
