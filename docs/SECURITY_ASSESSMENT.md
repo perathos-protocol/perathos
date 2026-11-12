@@ -9,7 +9,7 @@ so. File references are to this repository.
 | | |
 |---|---|
 | Product | Perathos, open-source flight recorder for coding agents (`pip install perathos`) |
-| Version assessed | 1.1.0 (PyPI), plus the unreleased changes on `main` listed in [CHANGELOG.md](../CHANGELOG.md) |
+| Version assessed | 1.1.0 (PyPI), with later changes listed per release in [CHANGELOG.md](../CHANGELOG.md) |
 | Licence | MIT ([LICENSE](../LICENSE)) |
 | Source | <https://github.com/perathos-protocol/perathos> (public) |
 | Security contact | hello@perathos.com, subject starting `SECURITY:` ([SECURITY.md](../SECURITY.md)) |
