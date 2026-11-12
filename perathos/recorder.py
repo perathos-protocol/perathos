@@ -577,20 +577,25 @@ def verify_session(
     if check_head and path.name.endswith(".jsonl"):
         hp = head_path_for(path)
         if hp.exists():
+            # RECEIPT_V1 rule 9: a head witness that is present must name a checkpoint in the
+            # log. One that cannot (unreadable, or no integer seq / string receipt_hash) fails.
             try:
                 head = json.loads(hp.read_text(encoding="utf-8"))
-                hseq, hhash = int(head["seq"]), str(head["receipt_hash"])
-            except (OSError, ValueError, KeyError, TypeError):
-                report.warnings.append("head witness file is unreadable")
-            else:
-                if checkpoint_hashes.get(hseq) != hhash:
-                    if hseq > report.sealed_through:
-                        report.fail(
-                            f"ERR_TRUNCATED: the head witness records checkpoint seq {hseq}, "
-                            f"but the log is sealed only through seq {report.sealed_through}"
-                        )
-                    else:
-                        report.fail(f"ERR_HEAD_MISMATCH: checkpoint seq {hseq} differs from the head witness")
+            except (OSError, ValueError):
+                head = None
+            hseq = head.get("seq") if isinstance(head, dict) else None
+            hhash = head.get("receipt_hash") if isinstance(head, dict) else None
+            if not isinstance(hseq, int) or isinstance(hseq, bool):
+                hseq = None
+            if hseq is not None and hseq > report.sealed_through:
+                report.fail(
+                    f"ERR_TRUNCATED: the head witness records checkpoint seq {hseq}, "
+                    f"but the log is sealed only through seq {report.sealed_through}"
+                )
+            elif hseq is None or not isinstance(hhash, str):
+                report.fail("ERR_HEAD_MISMATCH: the head witness has no usable seq and receipt_hash")
+            elif checkpoint_hashes.get(hseq) != hhash:
+                report.fail(f"ERR_HEAD_MISMATCH: checkpoint seq {hseq} differs from the head witness")
 
     if anchors_path is not None and Path(anchors_path).exists():
         from .anchor import check_anchors, load_roots

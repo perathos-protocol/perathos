@@ -202,6 +202,10 @@ function parseJson(text) {
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const pyStr = (v) => (v === undefined || v === null ? "None" : String(v));
+// Python truthiness of a JSON value: null, false, 0, "", [] and {} are all false.
+const pyTruthy = (v) =>
+  !(v === undefined || v === null || v === false || v === 0 || v === "" ||
+    (Array.isArray(v) && v.length === 0) || (isObj(v) && Object.keys(v).length === 0));
 
 // --------------------------------------------------------------------------- //
 // Verification
@@ -235,7 +239,7 @@ export async function verifyPack(files, opts = {}) {
   const cSigner = check("signer", expectedKey ? "Signed by the expected key" : "Signed by the expected key (no key given)");
   const cHead = check("head", "Head witness matches the log (no truncation)");
   const cAnch = check("anchors", "Timestamp anchors point at checkpoints in the log");
-  const cPre = check("preconditions", "Safety checks (preconditions) are intact and signed");
+  const cPre = check("preconditions", "Safety checks (preconditions) are in the pack, intact and signed");
 
   // ---- Manifest ----------------------------------------------------------
   let manifest = null;
@@ -424,12 +428,12 @@ export async function verifyPack(files, opts = {}) {
     } catch {
       head = undefined;
     }
-    const hseq = isObj(head) ? head.seq : undefined;
-    if (!isObj(head) || !Number.isInteger(hseq)) {
-      warnings.push("head witness file is unreadable");
-      cHead.skipped = true;
-    } else if (hseq > stats.sealed_through) {
+    // RECEIPT_V1 rule 9: a head witness that is present must name a checkpoint in the log.
+    const hseq = isObj(head) && Number.isInteger(head.seq) ? head.seq : undefined;
+    if (hseq !== undefined && hseq > stats.sealed_through) {
       cHead.errors.push(`ERR_TRUNCATED: head witness records seq ${hseq}, log sealed through ${stats.sealed_through}`);
+    } else if (hseq === undefined || typeof head.receipt_hash !== "string") {
+      cHead.errors.push("ERR_HEAD_MISMATCH: the head witness has no usable seq and receipt_hash");
     } else {
       const cp = checkpointIndex.get(hseq);
       if (!cp || cp.receipt_hash !== head.receipt_hash) {
@@ -530,7 +534,7 @@ export async function verifyPack(files, opts = {}) {
     if (r.kind !== "pre" || !isObj(g)) continue;
     const item = { seq: r.seq, ts: r.ts, tool: r.tool, rule: g.rule ?? null, decision: g.decision === "deny" ? "blocked" : "allowed" };
     if (item.decision === "allowed") {
-      const found = preconditions.get(pyStr(g.precondition));
+      const found = pyTruthy(g.precondition) ? preconditions.get(pyStr(g.precondition)) : undefined;
       if (found) {
         const pc = found.pc;
         item.precondition = {
@@ -539,12 +543,17 @@ export async function verifyPack(files, opts = {}) {
         };
       } else {
         item.precondition = { hash: g.precondition ?? null, missing: true };
-        if (g.precondition) warnings.push(`precondition ${g.precondition} used at seq ${pyStr(r.seq)} is not in the pack`);
+        if (pyTruthy(g.precondition)) {
+          cPre.errors.push(
+            `ERR_PRECONDITION_MISSING: receipt ${pyStr(r.seq)} cites precondition ` +
+              `${pyStr(g.precondition).slice(0, 16)}..., which is not in the pack`,
+          );
+        }
       }
     }
     destructive.push(item);
   }
-  if (!pcFiles.length) {
+  if (!pcFiles.length && !cPre.errors.length) {
     cPre.skipped = true;
     cPre.notes.push("no preconditions in this pack");
   } else if (!cPre.errors.length) {

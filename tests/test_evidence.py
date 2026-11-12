@@ -156,3 +156,121 @@ def test_tampered_precondition_in_pack_detected(pack):
     (res["dir"] / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
     out = verify_evidence_pack(res["dir"])
     assert any("ERR_PRECONDITION_MODIFIED" in e for e in out["errors"])
+
+
+def _resign_manifest(d: Path) -> None:
+    """Re-hash every file into MANIFEST.json and sign it with a fresh key (an attacker re-packing)."""
+    import hashlib
+
+    from perathos.canonical import canonical_bytes
+    from perathos.evidence import _sha256_file
+    from perathos.signing import sign_hash
+    m = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
+    m["files"] = {f.relative_to(d).as_posix(): _sha256_file(f) for f in sorted(d.rglob("*"))
+                  if f.is_file() and f.name != "MANIFEST.json"}
+    body = {k: v for k, v in m.items() if k not in ("manifest_hash", "signature")}
+    m["manifest_hash"] = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    m["signature"] = sign_hash(m["manifest_hash"], generate_keypair()[0])
+    (d / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
+
+
+def test_cited_precondition_missing_from_pack_fails(tmp_path):
+    """An allowed call cites a precondition the pack does not carry: not VALID."""
+    import shutil
+
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    log = _session(project, sk, vk)
+    shutil.rmtree(project / ".perathos" / "preconditions")
+    res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, expected_verify_key=vk)
+    assert not (res["dir"] / "preconditions").exists()
+    out = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    assert not out["valid"]
+    assert len(out["errors"]) == 1, out["errors"]
+    assert out["errors"][0].startswith("ERR_PRECONDITION_MISSING: receipt 2 cites precondition ")
+    assert out["preconditions"] == {"cited": 1, "in_pack": 0}
+
+
+def test_cited_precondition_in_pack_is_valid(pack):
+    res, vk = pack
+    out = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    assert out["valid"], out["errors"]
+    assert out["preconditions"] == {"cited": 1, "in_pack": 1}
+
+
+def test_head_witness_hash_mismatch_detected(pack):
+    """Same checkpoint seq, different hash in the head witness: ERR_HEAD_MISMATCH, as in session verify."""
+    from perathos.recorder import verify_session
+    res, _ = pack
+    d = res["dir"]
+    head = json.loads((d / "session.head.json").read_text(encoding="utf-8"))
+    head["receipt_hash"] = "0" * 64
+    (d / "session.head.json").write_text(json.dumps(head), encoding="utf-8")
+    _resign_manifest(d)
+    out = verify_evidence_pack(d)
+    assert not out["valid"]
+    assert any(e.startswith("ERR_HEAD_MISMATCH") for e in out["errors"]), out["errors"]
+    assert any(e.startswith("ERR_HEAD_MISMATCH") for e in verify_session(d / "session.jsonl").errors)
+
+
+def test_export_report_not_verified_when_cited_precondition_missing(tmp_path):
+    """The exporter's own report must not say VERIFIED for a pack `evidence verify` rejects."""
+    import shutil
+
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    log = _session(project, sk, vk)
+    shutil.rmtree(project / ".perathos" / "preconditions")
+    res = export_evidence_pack(log, tmp_path / "pack", signing_key_hex=sk, expected_verify_key=vk)
+    assert not res["valid"]
+    v = json.loads((res["dir"] / "verification.json").read_text(encoding="utf-8"))
+    assert v["valid"] is False
+    assert any(e.startswith("ERR_PRECONDITION_MISSING: receipt 2") for e in v["errors"]), v["errors"]
+    html = (res["dir"] / "REPORT.html").read_text(encoding="utf-8")
+    assert "VERIFICATION FAILED" in html and ">VERIFIED<" not in html
+    assert "**Verification: INVALID**" in (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+
+
+def test_export_report_not_verified_when_cited_approval_missing(tmp_path):
+    sk, _ = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                       "tool_name": "Bash", "tool_use_id": "a1", "tool_input": {"command": "terraform destroy"}},
+                      guard_decision={"decision": "allow", "rule": "terraform.destroy", "approval": "ab" * 32})
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    res = export_evidence_pack(session_log_path(project, SID), tmp_path / "pack", signing_key_hex=sk)
+    assert not res["valid"]
+    v = json.loads((res["dir"] / "verification.json").read_text(encoding="utf-8"))
+    assert any(e.startswith("ERR_APPROVAL_MISSING: receipt 1") for e in v["errors"]), v["errors"]
+    assert "VERIFICATION FAILED" in (res["dir"] / "REPORT.html").read_text(encoding="utf-8")
+    out = verify_evidence_pack(res["dir"], use_local_pins=False)
+    assert any(e.startswith("ERR_APPROVAL_MISSING") for e in out["errors"])
+
+
+def test_export_report_verified_for_complete_pack(pack):
+    res, _ = pack
+    assert res["valid"]
+    v = json.loads((res["dir"] / "verification.json").read_text(encoding="utf-8"))
+    assert v["valid"] is True and v["errors"] == []
+
+
+@pytest.mark.parametrize("head, code", [
+    ({"seq": 4}, "ERR_HEAD_MISMATCH"),                      # no receipt_hash
+    ({"receipt_hash": "0" * 64}, "ERR_HEAD_MISMATCH"),      # no seq
+    ({"seq": "5", "receipt_hash": "0" * 64}, "ERR_HEAD_MISMATCH"),  # seq not an integer
+    ("not json", "ERR_HEAD_MISMATCH"),
+    ({"seq": 999}, "ERR_TRUNCATED"),                        # past the end stays a truncation
+])
+def test_unusable_head_witness_fails(pack, head, code):
+    from perathos.recorder import verify_session
+    res, _ = pack
+    d = res["dir"]
+    (d / "session.head.json").write_text(head if isinstance(head, str) else json.dumps(head), encoding="utf-8")
+    errs = verify_session(d / "session.jsonl").errors
+    assert [e for e in errs if e.startswith(("ERR_HEAD_MISMATCH", "ERR_TRUNCATED"))][0].startswith(code), errs
+    _resign_manifest(d)
+    out = verify_evidence_pack(d)
+    assert not out["valid"] and any(e.startswith(code) for e in out["errors"]), out["errors"]
