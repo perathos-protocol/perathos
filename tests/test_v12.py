@@ -253,6 +253,56 @@ def test_precondition_list_with_no_key_at_all(home, tmp_path, monkeypatch):
     assert "VALID" not in line and "no approver key exists" in line and f"signer={vk[:16]}..." in line
 
 
+def test_precondition_list_shows_the_key_that_signed_not_the_claim(home, tmp_path, monkeypatch):
+    from perathos.guard import precondition_hash
+    from perathos.signing import sign_hash
+    _, alice_vk = generate_keypair()
+    mallory_sk, mallory_vk = generate_keypair()
+    assert CliRunner().invoke(cli, ["approvers", "add", "--name", "alice", "--key", alice_vk]).exit_code == 0
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=mallory_sk, manual_reason="ok")
+    pc["signer"] = alice_vk  # claims alice, signed (validly) by mallory
+    pc["precondition_hash"] = precondition_hash(pc)
+    pc["signature"] = sign_hash(pc["precondition_hash"], mallory_sk)
+    (project / ".perathos" / "preconditions" / f"{pc['id']}.json").write_text(json.dumps(pc), encoding="utf-8")
+    assert not _guard_allows(project)
+    line = _list_preconditions(project, monkeypatch)[pc["id"][:8]]
+    assert f"signer=alice (claimed) key={mallory_vk[:16]}..." in line
+    assert "not in approvers.json" in line and "VALID" not in line
+
+
+def test_precondition_list_strips_control_characters(home, tmp_path, monkeypatch):
+    assert CliRunner().invoke(cli, ["keygen"]).exit_code == 0
+    recorder_sk = (home / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=recorder_sk, manual_reason="ok")
+    evil = "\x1b[2K\rVALIDxx"
+    path = project / ".perathos" / "preconditions" / f"{pc['id']}.json"
+    pc.update({"id": evil, "expires": evil, "signer": evil})
+    path.write_text(json.dumps(pc), encoding="utf-8")
+    monkeypatch.chdir(project)
+    r = CliRunner().invoke(cli, ["precondition", "list"])
+    assert r.exit_code == 0, r.output
+    assert not any(c in r.output for c in "\x1b\r\x07\x9b")
+    assert "precondition was modified" in r.output and "?[2K?VALIDxx" in r.output
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[]", '{"approvers": "x"}', '{"approvers": []}',
+                                     '{"approvers": [{"name": "bad", "verify_key": "abc"}]}'])
+def test_precondition_list_with_malformed_approvers_json_matches_guard(home, tmp_path, monkeypatch, content):
+    assert CliRunner().invoke(cli, ["keygen"]).exit_code == 0
+    recorder_sk = (home / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
+    (home / ".perathos" / "approvers.json").write_text(content, encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=recorder_sk, manual_reason="ok")
+    # no usable approver listed: the guard falls back to the recorder key, and so must the list
+    assert _guard_allows(project)
+    assert _list_preconditions(project, monkeypatch)[pc["id"][:8]].endswith("VALID")
+
+
 def test_precondition_add_with_remote_signer_and_warning(home, tmp_path, monkeypatch):
     runner = CliRunner()
     assert runner.invoke(cli, ["keygen"]).exit_code == 0
