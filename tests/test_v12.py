@@ -184,6 +184,75 @@ def test_listed_approvers_replace_the_recorder_key(home, tmp_path):
     assert runner.invoke(cli, ["approvers", "remove", "alice"]).exit_code == 0
 
 
+def _list_preconditions(project, monkeypatch) -> dict[str, str]:
+    """`perathos precondition list` output, keyed by precondition id prefix."""
+    monkeypatch.chdir(project)
+    r = CliRunner().invoke(cli, ["precondition", "list"])
+    assert r.exit_code == 0, r.output
+    return {line.split()[0]: line for line in r.output.splitlines() if line.strip()}
+
+
+def _guard_allows(project) -> bool:
+    from perathos.approvers import trusted_approver_keys
+    return decide("Bash", {"command": "dropdb prod"}, project, trusted_key=trusted_approver_keys()).decision == "allow"
+
+
+def test_precondition_list_no_approvers_trusts_recorder_key(home, tmp_path, monkeypatch):
+    assert CliRunner().invoke(cli, ["keygen"]).exit_code == 0
+    recorder_sk = (home / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
+    recorder_vk = (home / ".perathos" / "keys" / "verify.key").read_text(encoding="utf-8").strip()
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=recorder_sk, manual_reason="ok")
+    line = _list_preconditions(project, monkeypatch)[pc["id"][:8]]
+    assert line.endswith("VALID") and f"signer={recorder_vk[:16]}..." in line
+    assert _guard_allows(project)
+
+
+def test_precondition_list_uses_listed_approvers_like_the_guard(home, tmp_path, monkeypatch):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["keygen"]).exit_code == 0
+    recorder_sk = (home / ".perathos" / "keys" / "signing.key").read_text(encoding="utf-8").strip()
+    approver_sk, approver_vk = generate_keypair()
+    assert runner.invoke(cli, ["approvers", "add", "--name", "alice", "--key", approver_vk]).exit_code == 0
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    # recorder-signed: the guard rejects it, so the list must not call it VALID
+    by_recorder, _ = create_precondition(project, scope="*", signing_key_hex=recorder_sk, manual_reason="ok")
+    assert not _guard_allows(project)
+    line = _list_preconditions(project, monkeypatch)[by_recorder["id"][:8]]
+    assert "VALID" not in line
+    assert "signed by a key that is not a trusted approver (not in approvers.json)" in line
+
+    # approver-signed: the guard accepts it, so the list must call it VALID
+    by_alice, _ = create_precondition(project, scope="*", signing_key_hex=approver_sk, manual_reason="checked")
+    assert _guard_allows(project)
+    lines = _list_preconditions(project, monkeypatch)
+    assert lines[by_alice["id"][:8]].endswith("VALID") and "signer=alice" in lines[by_alice["id"][:8]]
+    assert "not in approvers.json" in lines[by_recorder["id"][:8]]
+
+
+def test_precondition_list_approver_valid_without_local_key(home, tmp_path, monkeypatch):
+    approver_sk, approver_vk = generate_keypair()
+    assert CliRunner().invoke(cli, ["approvers", "add", "--name", "alice", "--key", approver_vk]).exit_code == 0
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=approver_sk, manual_reason="checked")
+    assert _guard_allows(project)
+    assert _list_preconditions(project, monkeypatch)[pc["id"][:8]].endswith("VALID")
+
+
+def test_precondition_list_with_no_key_at_all(home, tmp_path, monkeypatch):
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    pc, _ = create_precondition(project, scope="*", signing_key_hex=sk, manual_reason="ok")
+    assert not _guard_allows(project)
+    line = _list_preconditions(project, monkeypatch)[pc["id"][:8]]
+    assert "VALID" not in line and "no approver key exists" in line and f"signer={vk[:16]}..." in line
+
+
 def test_precondition_add_with_remote_signer_and_warning(home, tmp_path, monkeypatch):
     runner = CliRunner()
     assert runner.invoke(cli, ["keygen"]).exit_code == 0

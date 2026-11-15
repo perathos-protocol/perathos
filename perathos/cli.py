@@ -960,15 +960,6 @@ def _install_cursor(scope: str, force: bool, guard: bool, anchor: bool) -> None:
         click.echo("[WARN] No signing key yet: run 'perathos keygen' or checkpoints will be unsigned.")
 
 
-def _local_verify_key() -> str | None:
-    """The local public key (from 'perathos keygen'), or None if there is none."""
-    try:
-        vk = (keys_dir() / "verify.key").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return vk if len(vk) == 64 else None
-
-
 @hooks.command(name="record")
 @click.option("--guard", is_flag=True,
               help="Also block destructive commands that have no signed safety precondition.")
@@ -1351,7 +1342,12 @@ def precondition_add(scope: str, check_cmd: str, manual_reason: str, ttl_minutes
 
 @precondition.command(name="list")
 def precondition_list():
-    """List preconditions in ./.perathos/preconditions/ and whether each is usable now."""
+    """List preconditions in ./.perathos/preconditions/ and whether each is usable now.
+
+    Each is judged against the keys the guard trusts: the approvers in
+    approvers.json, or the local recorder key when none are listed.
+    """
+    from .approvers import approver_name, trusted_keys_with_source
     from .guard import check_precondition, preconditions_dir
 
     d = preconditions_dir(".")
@@ -1359,16 +1355,30 @@ def precondition_list():
     if not files:
         click.echo("No preconditions.")
         return
-    vk = _local_verify_key()
+    trusted, source = trusted_keys_with_source()
+    untrusted_why = {"approvers": "not in approvers.json",
+                     "recorder": "no approvers are listed and it is not the local recorder key"}.get(source)
     for f in files:
         try:
             pc = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            pc = None
+        if not isinstance(pc, dict):
             click.echo(f"?  {f.name}  unreadable")
             continue
-        problem = check_precondition(pc, trusted_key=vk) if vk else "no local key"
+        signer = pc.get("signer")
+        signer = (approver_name(signer) or f"{signer[:16]}...") if isinstance(signer, str) and signer else "?"
+        if not trusted:
+            problem = "no approver key exists (run 'perathos keygen' or 'perathos approvers add')"
+        else:
+            problem = check_precondition(pc, trusted_key=trusted)
+            sig = pc.get("signature")
+            if problem and "not a trusted approver" in problem and isinstance(sig, dict) \
+                    and sig.get("verify_key") not in trusted:
+                problem = f"{problem} ({untrusted_why})"
         status = "VALID" if problem is None else problem
-        click.echo(f"{pc.get('id', f.stem)[:8]}  scope={pc.get('scope')!r}  expires={pc.get('expires')}  {status}")
+        click.echo(f"{str(pc.get('id', f.stem))[:8]}  scope={pc.get('scope')!r}  expires={pc.get('expires')}  "
+                   f"signer={signer}  {status}")
 
 
 @session.command(name="export")

@@ -99,13 +99,23 @@ def local_verify_key() -> str | None:
     return vk if _valid_key(vk) else None
 
 
-def trusted_approver_keys() -> set[str] | None:
-    """Keys whose preconditions the guard accepts; None if there are none at all."""
+def trusted_keys_with_source() -> tuple[set[str] | None, str | None]:
+    """The guard's trust decision and where it came from.
+
+    ``(keys, "approvers")`` when approvers.json lists any, ``({recorder key},
+    "recorder")`` when it lists none and a local key exists, ``(None, None)``
+    when there is no key at all.
+    """
     listed = {a["verify_key"] for a in list_approvers() if _valid_key(a["verify_key"])}
     if listed:
-        return listed
+        return listed, "approvers"
     vk = local_verify_key()
-    return {vk} if vk else None
+    return ({vk}, "recorder") if vk else (None, None)
+
+
+def trusted_approver_keys() -> set[str] | None:
+    """Keys whose preconditions the guard accepts; None if there are none at all."""
+    return trusted_keys_with_source()[0]
 
 
 def approver_name(verify_key: str) -> str | None:
