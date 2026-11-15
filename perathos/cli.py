@@ -1444,7 +1444,8 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, gate_
     receipt chain and checkpoint signatures, every independent timestamp,
     and every Perathos Gate approval: each receipt's signatures, and that
     every approval the log cites is in the pack, is an approve decision and
-    was given for the same arguments as the call.
+    was given for the same arguments as the call. Gate denials the log cites
+    are checked the same way (in the pack, a deny decision, same arguments).
 
     A pack checked without --verify-key prints VALID_UNCONFIRMED_SIGNER. A
     pack with approvals checked without a Gate key prints
@@ -1472,7 +1473,8 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, gate_
     else:
         s = res["session"]
         ap = res["approvals"]
-        has_approvals = bool(ap["cited"] or ap["in_pack"])
+        gr = res["gate_receipts"]
+        has_approvals = bool(ap["cited"] or ap["in_pack"] or gr["cited"])
         pinned = expected_verify_key is not None
         if not res["valid"]:
             status = "INVALID"
@@ -1490,12 +1492,18 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, gate_
         click.echo(f"  sealed       through receipt {s.get('sealed_through')}, signer {', '.join(s.get('signers') or []) or 'none'}")
         if s.get("anchors"):
             click.echo(f"  timestamped  through receipt {s.get('anchored_through')} at {s.get('anchored_time')}")
+        if gr["outcomes"]:
+            click.echo("  asked Gate   " + ", ".join(f"{n} {k}" for k, n in sorted(gr["outcomes"].items()))
+                       + " (calls that did not run)")
         if has_approvals:
             gate_txt = (f"Gate key confirmed ({ap['gate_key_source']})" if ap["gate_key_confirmed"]
                         else "Gate key UNCONFIRMED")
             pins_txt = (f"approvers pinned ({ap['approvers_source']})" if ap["approvers_pinned"]
                         else "approvers NOT PINNED")
             click.echo(f"  approvals    {ap['cited']} cited, {ap['verified']} verified, {gate_txt}, {pins_txt}")
+            if gr["cited"]:
+                click.echo(f"  Gate denials {gr['cited']} receipt(s) cited, {gr['in_pack']} in pack, "
+                           f"{gr['verified']} verified")
             if not ap["gate_key_confirmed"]:
                 click.echo(f"  NOTE         approvals are signed by Gate key {', '.join(ap['gate_keys']) or '(none verified)'}; "
                            "anyone can run a Gate, so")

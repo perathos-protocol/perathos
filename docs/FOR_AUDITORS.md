@@ -44,6 +44,30 @@ everything can be re-checked from the files.
    shows who approved which request; it does not show which run or arguments the approval was
    then used for. Only `evidence verify` on a full pack checks that.
 4. Read `REPORT.html` (one page) for the summary, and `verification.json` for the details.
+   `REPORT.html` and `verification.json` are the exporter's statements; step 2 is your check.
+
+## Reading the guard's outcomes
+
+Each destructive call the guard matched is listed in the report with how it ended:
+
+| Report says | Log (`guard` in the `pre` receipt) | Meaning |
+|---|---|---|
+| allowed under a signed safety check | `decision: allow`, `precondition: <hash>` | A precondition in `preconditions/` covered it |
+| approved by *name* with a passkey at *time* (Gate receipt *hash*) | `decision: allow`, `approval: <hash>` | A person approved this exact call through Perathos Gate; the receipt is in `approvals/` |
+| blocked by rule *rule* | `decision: deny`, no `gate` | Blocked by the rule; no person was asked (or the log predates the `gate` field) |
+| denied by *name* with a passkey | `decision: deny`, `gate.outcome: denied`, `gate.receipt: <hash>` | A person said no; the signed denial is in `approvals/` |
+| no decision before the wait ended | `gate.outcome: timeout` | A person was asked and nobody answered in time |
+| request expired | `gate.outcome: expired` | The request lapsed before anyone decided |
+| Gate unreachable | `gate.outcome: unreachable` | The guard could not reach the Gate, so nobody was asked |
+| an approval came back but failed the guard's checks | `gate.outcome: rejected` | Gate returned an approval the guard did not accept (for example an approver you had not pinned) |
+
+In each of the `deny` rows the call did not run. The report also says, for each Gate receipt,
+whether it is in the pack and whether it verified at export, and against which Gate key and
+approver pins; re-check that yourself with step 3. `evidence verify` prints the outcomes
+(`asked Gate   1 denied, 1 timeout`) and a `Gate denials` line with how many denial receipts
+were cited, found and verified. Only `denied` (and `rejected`) carry a signed receipt: a
+`timeout`, `expired` or `unreachable` outcome is the recorder's own statement, sealed in the
+log like any other field but with nothing from the Gate behind it.
 
 ## What a VALID pack establishes
 
@@ -65,6 +89,10 @@ everything can be re-checked from the files.
   `ERR_APPROVAL_ARGS_MISMATCH` otherwise). Each receipt's Gate signature and passkey signature
   verify. That the Gate and the approver are the ones you expect is established only for the
   keys you supplied (step 3).
+- **Denials by a person (if any, CLI only):** every call the log records as denied through the
+  Gate with a receipt points at a receipt that is in the pack, is a deny decision, and was given
+  for the same arguments hash (`ERR_GATE_RECEIPT_MISSING`, `ERR_GATE_RECEIPT_NOT_DENIED`,
+  `ERR_GATE_RECEIPT_ARGS_MISMATCH` otherwise), with the same signature checks as approvals.
 
 ## What it does not establish
 
@@ -125,5 +153,6 @@ Receipts, anchors and preconditions: [specs/RECEIPT_V1.md](specs/RECEIPT_V1.md).
 layout: `perathos/evidence.py`. Everything is JSON, SHA-256, Ed25519 and RFC 3161, so it can be
 re-implemented independently; the browser verifier (`site/verify/core.js`) is a second
 implementation of the manifest, receipt-chain, checkpoint-signature, head-witness and
-precondition checks. It does not verify RFC 3161 token signatures or Gate approval receipts
-([specs/GATE_V1.md](specs/GATE_V1.md)); the CLI does.
+precondition checks. It does not verify RFC 3161 token signatures or Gate approval and denial
+receipts ([specs/GATE_V1.md](specs/GATE_V1.md)); the CLI does. It lists the Gate outcomes the
+log records, naming the approver from the receipt files as they stand, marked not verified.

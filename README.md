@@ -319,13 +319,19 @@ perathos gate trust first-receipt.json                                  # option
   `perathos gate request --no-link` hides it from that command's output; error messages never
   include it.
 - Each approval is bound to the exact arguments (`args_hash`), valid for 10 minutes after the
-  decision, and used once (the client marks a used receipt on disk). Denials are recorded too.
+  decision, and used once (the client marks a used receipt on disk).
 - The approval receipt's hash is written into the action's record (`guard.approval`) and the
   receipt itself into `.perathos/approvals/` and every evidence pack. `perathos evidence verify`
   and `perathos gate verify receipt.json --gate-key <hex> --approver-key <key>` check both
   signatures offline. `evidence verify` also checks that every approval the log cites is in
   the pack, approved, and for the same arguments, and prints whether the Gate key was confirmed and the approvers pinned
   (`--gate-key`, `--approver-key`); a reviewer's machine has neither unless they pass them.
+- When a call the guard sent to the Gate does not run, the record says why (`guard.gate`):
+  `denied`, `timeout` (no decision before the wait ended), `expired`, `unreachable` or
+  `rejected`. A denial's signed receipt goes into `.perathos/approvals/` and the evidence pack,
+  and `evidence verify` checks it like an approval (in the pack, a deny decision, same
+  arguments). The pack's report names who approved or denied each call. Records made before
+  this field existed show a Gate denial as a plain block.
 - **Any script or agent framework**, not just coding agents:
 
 ```bash

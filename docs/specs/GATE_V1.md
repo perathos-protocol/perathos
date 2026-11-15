@@ -125,6 +125,10 @@ A verifier MUST check, in order:
    `args_hash` equals the hash of the arguments about to run, and the receipt has not been used
    before. Single use is enforced by the client, with a marker file beside the receipt in
    `.perathos/approvals/`; the guard also records the receipt hash in its action receipt.
+   When the call does not run after the guard asked the Gate (denied, no decision in time,
+   expired, Gate unreachable, or an approval that failed these checks), the guard records that
+   outcome in `guard.gate` instead, with the denial receipt's hash when there is one
+   ([RECEIPT_V1.md](RECEIPT_V1.md), "The `guard` field").
 
 ## HTTP API (server)
 

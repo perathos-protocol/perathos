@@ -33,7 +33,7 @@ session name `mcp-<name>-<UTC timestamp>`).
 | `signer_error` | string | unsigned checkpoint (optional) | Present only when the recorder's configured signer failed, so the checkpoint was written without `signer` and `signature`. The value is the error's class name (for example `SignerError`). See "Signer failures" |
 | `receipt_hash` | hex string | all | See below |
 | `signature` | object | signed checkpoint | `{algorithm: "ed25519", verify_key, signature}`; not hashed |
-| `guard` | object | pre (optional) | The guard's decision on this call: `{decision, rule, precondition, approval?}`. See "The `guard` field" |
+| `guard` | object | pre (optional) | The guard's decision on this call: `{decision, rule, precondition, approval?, gate?}`. See "The `guard` field" |
 
 Receipts written by Cursor may also carry `result_from: "payload"` on a `post`
 receipt (the result hash was taken over the hook payload because Cursor sent
@@ -52,8 +52,19 @@ the guard itself failed). It is inside the hashed body.
 | `precondition` | hex string or null | `precondition_hash` of the signed precondition the guard relied on to allow the call; null when there was none |
 | `approval` | hex string (optional) | `receipt_hash` of the Perathos Gate receipt ([GATE_V1.md](GATE_V1.md)) when a person approved the call with a passkey. The receipt's `request.args_hash` equals this receipt's `args_hash`; `perathos evidence verify` checks that, and that the receipt is in the pack and is an approve decision. (Approvals of Cursor shell commands made by perathos 1.4.1 or earlier were bound to the hash of `{"command": ...}` and not to the receipt's hash of the command string, so they fail this check) |
 
+| `gate` | object (optional) | Present on a `deny` when the guard asked a person through Perathos Gate about this call and the call still did not run: `{approval_id, outcome, receipt}`. Absent on a call that matched only a rule (a plain block) and on a call a person approved (`approval` covers that) |
+| `gate.approval_id` | string or null | Id of the Gate request (`apr_...`); null when the request could not be created |
+| `gate.outcome` | string | `denied` (a person denied it), `timeout` (no decision before the guard's wait ended; the request may still be decided later), `expired` (the request expired before anyone decided), `unreachable` (the Gate could not be reached), or `rejected` (Gate returned an approval that failed the guard's checks, for example an unpinned Gate key or approver) |
+| `gate.receipt` | hex string or null | `receipt_hash` of the signed Gate receipt the guard saved in `.perathos/approvals/`: the denial for `denied` (set only when it verified as a Gate receipt denying exactly this call's `args_hash`), or the refused approval for `rejected`; null otherwise. `perathos session export` puts it in the pack and `perathos evidence verify` checks it: it must be in the pack (`ERR_GATE_RECEIPT_MISSING`), verify as a Gate receipt, and, for `denied`, be a deny decision (`ERR_GATE_RECEIPT_NOT_DENIED`) for this receipt's `args_hash` (`ERR_GATE_RECEIPT_ARGS_MISMATCH`). For `rejected`, a failed check is reported as a warning: the guard already refused that receipt |
+
 An `allow` written by `perathos` always names its authority: a `precondition`
 or an `approval`. A call that matched no rule has no `guard` field.
+
+`gate` is optional and additive (added after 1.4.5): hash rules are unchanged,
+logs written before it existed verify as before, and on those logs a Gate
+denial or timeout looks like a plain block. The guard's reason text, which can
+carry the approve link, is never written to a receipt. A verifier that does
+not know `gate` still hashes it like any other field.
 
 ## Hashing
 

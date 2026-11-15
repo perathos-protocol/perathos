@@ -274,3 +274,21 @@ def test_unusable_head_witness_fails(pack, head, code):
     _resign_manifest(d)
     out = verify_evidence_pack(d)
     assert not out["valid"] and any(e.startswith(code) for e in out["errors"]), out["errors"]
+
+
+def test_old_log_without_gate_field_still_verifies(tmp_path):
+    """A log written before guard.gate existed: a deny reads as a plain block, and the pack is valid."""
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                       "tool_name": "Bash", "tool_use_id": "k1", "tool_input": {"command": "kubectl delete ns prod"}},
+                      guard_decision={"decision": "deny", "rule": "k8s.delete", "precondition": None})
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    res = export_evidence_pack(session_log_path(project, SID), tmp_path / "pack", signing_key_hex=sk)
+    assert res["valid"], res["report"]["errors"]
+    assert res["report"]["blocked_calls"][0]["gate"] is None
+    assert "Bash blocked by rule `k8s.delete`" in (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    out = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    assert out["valid"], out["errors"]
+    assert out["gate_receipts"] == {"cited": 0, "in_pack": 0, "verified": 0, "outcomes": {}}
