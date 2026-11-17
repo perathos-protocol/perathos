@@ -278,9 +278,15 @@ def show_approve_link() -> bool:
     return not any(os.environ.get(v, "").strip().lower() in ("true", "1") for v in _CI_ENV)
 
 
+class GateConfigError(GateError):
+    """The environment tried to replace the Gate pinned by `perathos gate login`."""
+
+
 class GateClient:
-    """Agent-side client. Configure with `perathos gate login` or env vars
-    PERATHOS_GATE_URL / PERATHOS_GATE_API_KEY / PERATHOS_GATE_KEY."""
+    """Agent-side client. Configure with `perathos gate login`, or, on a machine with no
+    pinned Gate (a CI runner), with env vars PERATHOS_GATE_URL / PERATHOS_GATE_API_KEY /
+    PERATHOS_GATE_KEY. A Gate URL or key pinned in the config is never replaced by the
+    environment: an environment value that differs from the pin is refused."""
 
     def __init__(self, url: str, api_key: str, *, gate_key: str | None = None, timeout: float = 15.0):
         self.url = url.rstrip("/")
@@ -290,13 +296,39 @@ class GateClient:
 
     @classmethod
     def from_config(cls) -> GateClient | None:
+        """Build the client from the pinned config, falling back to env vars only where nothing is pinned.
+
+        The Gate key decides which approvals the guard accepts, so an agent that can set its own
+        environment must not be able to swap it (or the URL) for a Gate it controls. Raises
+        GateConfigError when PERATHOS_GATE_URL or PERATHOS_GATE_KEY differs from the pinned value.
+        """
         from .approvers import get_config
         cfg = get_config()
-        url = os.environ.get("PERATHOS_GATE_URL") or cfg.get("gate_url")
+        pinned_url = str(cfg.get("gate_url") or "").strip().rstrip("/")
+        pinned_key = str(cfg.get("gate_key") or "").strip().lower()
+        env_url = os.environ.get("PERATHOS_GATE_URL", "").strip().rstrip("/")
+        env_key = os.environ.get("PERATHOS_GATE_KEY", "").strip().lower()
+        if pinned_key and env_key and env_key != pinned_key:
+            raise GateConfigError(
+                "ERR_GATE_ENV_KEY: PERATHOS_GATE_KEY differs from the Gate key pinned by 'perathos gate login'; "
+                "the environment cannot replace a pinned Gate key. Unset PERATHOS_GATE_KEY, or run "
+                "'perathos gate login' to change Gate.")
+        if pinned_url and env_url and env_url != pinned_url:
+            raise GateConfigError(
+                "ERR_GATE_ENV_URL: PERATHOS_GATE_URL differs from the Gate URL pinned by 'perathos gate login'; "
+                "the environment cannot replace a pinned Gate URL. Unset PERATHOS_GATE_URL, or run "
+                "'perathos gate login' to change Gate.")
+        # A pinned key with no pinned URL (only by hand-editing the config) is treated as not configured,
+        # so the stored API key is never sent to a host named only by the environment.
+        url = pinned_url or ("" if pinned_key else env_url)
+        # The API key is a credential for the Gate, not a trust anchor: the environment may supply it.
         key = os.environ.get("PERATHOS_GATE_API_KEY") or cfg.get("gate_api_key")
         if not url or not key:
             return None
-        return cls(url, key, gate_key=os.environ.get("PERATHOS_GATE_KEY") or cfg.get("gate_key"))
+        # With a Gate pinned in the config, only the config's key counts: an env key cannot stand in
+        # for a missing pin. The env key is used only on a machine with no pinned Gate at all.
+        gate_key = pinned_key or (None if pinned_url else env_key) or None
+        return cls(url, key, gate_key=gate_key)
 
     def _call(self, method: str, path: str, body: dict | None = None, *, timeout: float | None = None, auth: bool = True) -> dict:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -421,7 +453,12 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
 
     if decision is None or decision.decision != "deny" or str(decision.rule or "").startswith("guard."):
         return decision
-    client = client if client is not None else GateClient.from_config()
+    if client is None:
+        try:
+            client = GateClient.from_config()
+        except GateConfigError as exc:
+            first = (decision.reason or "").splitlines()[0] if decision.reason else "perathos guard: blocked"
+            return Decision("deny", decision.rule, None, f"{first}. {exc}")
     if client is None:
         return decision
     first = (decision.reason or "").splitlines()[0] if decision.reason else "perathos guard: blocked"
