@@ -391,6 +391,13 @@ def _set_pending(cwd, args_hash: str, entry: dict | None) -> None:
     (d / "pending.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _gate_ref(approval_id, outcome: str, receipt_hash=None) -> dict:
+    """The ``guard.gate`` field: which Gate request the guard asked about, and what came of it.
+    ``receipt`` names a signed Gate receipt saved in .perathos/approvals/, or is None."""
+    rh = receipt_hash if isinstance(receipt_hash, str) and len(receipt_hash) == 64 else None
+    return {"approval_id": str(approval_id)[:100] if approval_id else None, "outcome": outcome, "receipt": rh}
+
+
 def summarise_action(tool: str, args) -> str:
     """The text an approver reads: the real command or target, not the agent's description."""
     if isinstance(args, dict):
@@ -431,6 +438,7 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
                         f"perathos guard: allowed, approved by {rec['approver'].get('name')} with a passkey at "
                         f"{rec['decided_at']}", approval=rec["receipt_hash"])
 
+    approval_id = None
     try:
         pend = _pending(cwd).get(ah)
         if pend and parse_iso(pend["expires_at"]) > datetime.now(timezone.utc):
@@ -446,7 +454,8 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
             _set_pending(cwd, ah, {"id": approval_id, "approve_url": approve_url, "expires_at": created["expires_at"]})
         st = client.wait_for_decision(approval_id, wait_seconds) if wait_seconds > 0 else client.status(approval_id, 0)
     except GateError as exc:
-        return Decision("deny", decision.rule, None, f"{first}. Perathos Gate unreachable ({exc}).")
+        return Decision("deny", decision.rule, None, f"{first}. Perathos Gate unreachable ({exc}).",
+                        gate=_gate_ref(approval_id, "unreachable"))
 
     status = st.get("status")
     receipt = st.get("receipt")
@@ -455,20 +464,35 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
         _set_pending(cwd, ah, None)
         if not chk:
             _save_receipt(cwd, receipt, used=True)
-            return Decision("deny", decision.rule, None, f"{first}. Approval receipt rejected: {chk.error}")
+            # Cite the refused approval only when it is an intact Gate receipt for this call (it may
+            # have failed only a pin, or expired); anything else is not evidence of this call.
+            intact = (verify_receipt(receipt, gate_key=None) and isinstance(receipt.get("request"), dict)
+                      and receipt["request"].get("args_hash") == ah)
+            return Decision("deny", decision.rule, None, f"{first}. Approval receipt rejected: {chk.error}",
+                            gate=_gate_ref(approval_id, "rejected", receipt.get("receipt_hash") if intact else None))
         _save_receipt(cwd, receipt, used=True)
         return Decision("allow", decision.rule, None,
                         f"perathos guard: allowed, approved by {receipt['approver'].get('name')} with a passkey",
                         approval=receipt["receipt_hash"])
-    if status == "denied" and isinstance(receipt, dict):
+    if status == "denied":
         _set_pending(cwd, ah, None)
-        if verify_receipt(receipt, gate_key=client.gate_key):
+        receipt = receipt if isinstance(receipt, dict) else {}
+        cited = None
+        if receipt and verify_receipt(receipt, gate_key=client.gate_key):
             _save_receipt(cwd, receipt, used=True)
-        who = receipt.get("approver", {}).get("name", "the approver")
-        return Decision("deny", decision.rule, None, f"{first}. {who} denied this action.")
+            # Cite the denial in the record only when it denies exactly this call.
+            if (receipt.get("decision") == "deny" and isinstance(receipt.get("request"), dict)
+                    and receipt["request"].get("args_hash") == ah):
+                cited = receipt["receipt_hash"]
+        approver = receipt.get("approver") if isinstance(receipt.get("approver"), dict) else {}
+        who = approver.get("name") or "the approver"
+        return Decision("deny", decision.rule, None, f"{first}. {who} denied this action.",
+                        gate=_gate_ref(approval_id, "denied", cited))
     if status == "expired":
         _set_pending(cwd, ah, None)
-        return Decision("deny", decision.rule, None, f"{first}. The approval request expired; retry to ask again.")
+        return Decision("deny", decision.rule, None, f"{first}. The approval request expired; retry to ask again.",
+                        gate=_gate_ref(approval_id, "expired"))
+    gate_ref = _gate_ref(approval_id, "timeout")  # still pending when the wait ended
     # The link is intended here: this reason goes back to the agent and the person at the keyboard
     # (Claude Code / Cursor / MCP client), who may be the approver and needs it to approve. It is
     # never written to a receipt (Decision.receipt_field leaves the reason out). In CI the reason
@@ -476,10 +500,11 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
     if not show_approve_link():
         return Decision("deny", decision.rule, None,
                         f"{first}. Approval {approval_id} requested from a person; approvers are notified by "
-                        f"the Gate (link not shown in CI). Retry this exact command after it is approved.")
+                        f"the Gate (link not shown in CI). Retry this exact command after it is approved.",
+                        gate=gate_ref)
     return Decision("deny", decision.rule, None,
                     f"{first}. Approval requested from a person: {approve_url} . Retry this exact command "
-                    f"after it is approved.")
+                    f"after it is approved.", gate=gate_ref)
 
 
 # --------------------------------------------------------------------------- #

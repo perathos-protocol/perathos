@@ -1,0 +1,19 @@
+{
+  "check": null,
+  "check_exit_code": null,
+  "check_output_hash": null,
+  "created": "2026-11-15T15:53:58Z",
+  "expires": "2026-11-15T16:23:58Z",
+  "id": "642d1e1b-c434-4acb-beb4-033262d19ab6",
+  "kind": "safety-check",
+  "manual_reason": "snapshot checked",
+  "precondition_hash": "fe10c0b77c3841d0959c9948e209e23b5096c6f5ee457563858f3de21da48162",
+  "scope": "*",
+  "signature": {
+    "algorithm": "ed25519",
+    "signature": "a35e6b82e54c8abf9f2914be8b002c94e7e45978e436817ce7f20b6e8eb540e165b9410bf56f9b2af0acea961806ad86e49e344982d5926fa364a6145936d806",
+    "verify_key": "97e5968c36625a65e75a3c9c1b14f04023924a18daf0061c0411669f49732204"
+  },
+  "signer": "97e5968c36625a65e75a3c9c1b14f04023924a18daf0061c0411669f49732204",
+  "v": "perathos.precondition/v1"
+}

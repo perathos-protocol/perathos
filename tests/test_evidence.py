@@ -274,3 +274,56 @@ def test_unusable_head_witness_fails(pack, head, code):
     _resign_manifest(d)
     out = verify_evidence_pack(d)
     assert not out["valid"] and any(e.startswith(code) for e in out["errors"]), out["errors"]
+
+
+def test_old_log_without_gate_field_still_verifies(tmp_path):
+    """A log written before guard.gate existed: a deny reads as a plain block, and the pack is valid."""
+    sk, vk = generate_keypair()
+    project = tmp_path / "proj"
+    project.mkdir()
+    record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                       "tool_name": "Bash", "tool_use_id": "k1", "tool_input": {"command": "kubectl delete ns prod"}},
+                      guard_decision={"decision": "deny", "rule": "k8s.delete", "precondition": None})
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    res = export_evidence_pack(session_log_path(project, SID), tmp_path / "pack", signing_key_hex=sk)
+    assert res["valid"], res["report"]["errors"]
+    assert res["report"]["blocked_calls"][0]["gate"] is None
+    assert "Bash blocked by rule `k8s.delete`" in (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    out = verify_evidence_pack(res["zip"], expected_verify_key=vk)
+    assert out["valid"], out["errors"]
+    assert out["gate_receipts"] == {"cited": 0, "in_pack": 0, "verified": 0, "outcomes": {}, "pin_mismatches": 0}
+
+
+FIXTURE_145 = REPO / "tests" / "fixtures" / "pack_v1_4_5"
+
+
+def test_pack_exported_by_1_4_5_still_verifies(tmp_path, monkeypatch):
+    """A pack made by real perathos 1.4.5 code (a plain block, a precondition allow, a Gate
+    request left pending, a Gate denial and a Gate approval, none with guard.gate) verifies
+    with this code, and re-exporting its log gives the same verdict and counts."""
+    import shutil
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))  # no local pins
+    for v in ("PERATHOS_GATE_KEY", "PERATHOS_GATE_APPROVERS"):
+        monkeypatch.delenv(v, raising=False)
+    keys = json.loads((FIXTURE_145 / "keys.json").read_text(encoding="utf-8"))
+    out = verify_evidence_pack(FIXTURE_145 / "evidence-pack.zip", expected_verify_key=keys["signer_verify_key"],
+                               gate_key=keys["gate_key"], approver_keys=[keys["approver_public_key"]])
+    assert out["valid"], out["errors"]
+    assert out["approvals"]["cited"] == out["approvals"]["verified"] == 1
+    assert out["gate_receipts"] == {"cited": 0, "in_pack": 0, "verified": 0, "outcomes": {}, "pin_mismatches": 0}
+
+    project = tmp_path / "proj"
+    shutil.copytree(FIXTURE_145 / "project", project)
+    sk, _ = generate_keypair()
+    res = export_evidence_pack(session_log_path(project, keys["session_id"]), tmp_path / "pack", signing_key_hex=sk,
+                               expected_verify_key=keys["signer_verify_key"])
+    rep = res["report"]
+    assert res["valid"] is keys["report_1_4_5"]["valid"] is True, rep["errors"]
+    assert (rep["blocked"], rep["tool_calls"]) == (keys["report_1_4_5"]["blocked"], keys["report_1_4_5"]["tool_calls"])
+    assert all(b["gate"] is None for b in rep["blocked_calls"])  # 1.4.5 wrote no guard.gate
+    assert not [w for w in rep["warnings"] if "Gate" in w or "ERR_" in w], rep["warnings"]
+    assert len(rep["allowed_under_precondition"]) == 1 and len(rep["approved_by_person"]) == 1
+    md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    assert "precondition missing from pack" not in md and "approved by Alice Moyo with a passkey" in md
+    assert "Gate key UNCONFIRMED, approver NOT PINNED" in md

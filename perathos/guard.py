@@ -1611,11 +1611,18 @@ class Decision:
     precondition: str | None = None  # precondition_hash used
     reason: str = ""
     approval: str | None = None  # Gate receipt_hash, when a person approved with a passkey
+    # Set when the guard asked Perathos Gate and the call still did not run:
+    # {"approval_id", "outcome", "receipt"} (RECEIPT_V1.md, "The guard field").
+    gate: dict | None = None
 
     def receipt_field(self) -> dict:
+        # The reason (it can carry the approve link) is never written to a receipt.
         out = {"decision": self.decision, "rule": self.rule, "precondition": self.precondition}
         if self.approval:
             out["approval"] = self.approval
+        if self.gate:
+            out["gate"] = {"approval_id": self.gate.get("approval_id"), "outcome": self.gate.get("outcome"),
+                           "receipt": self.gate.get("receipt")}
         return out
 
 

@@ -333,3 +333,98 @@ def test_float_head_seq_known_difference(tmp_path):
     assert js["valid"], js["errors"]
     py = verify_evidence_pack(d, expected_verify_key=vk)
     assert any(e.startswith("ERR_HEAD_MISMATCH") for e in py["errors"]), py["errors"]
+
+
+# --------------------------------------------------------------------------- #
+# Gate outcomes (guard.approval, guard.gate): reported, not verified, in the browser
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def stub_gate(tmp_path, monkeypatch):
+    from tests.test_gate import StubGate
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    for v in ("PERATHOS_GATE_URL", "PERATHOS_GATE_API_KEY", "PERATHOS_GATE_KEY", "PERATHOS_SIGNER", "CI",
+              "GITHUB_ACTIONS", "PERATHOS_GATE_SHOW_LINK", "PERATHOS_GATE_APPROVERS"):
+        monkeypatch.delenv(v, raising=False)
+    g = StubGate()
+    yield g
+    g.close()
+
+
+def _gate_pack(g, tmp_path: Path):
+    """A session with an approved call, a denied call, a timeout and a plain block (old format)."""
+    from tests.test_gate import ARGS, DENY, _login
+
+    from perathos.gate import apply_gate
+    project = tmp_path / "proj"
+    project.mkdir()
+    sk, vk = generate_keypair()
+    _login(g)
+
+    def pre(tid, guard, args=ARGS):
+        record_hook_event({"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(project),
+                           "tool_name": "Bash", "tool_use_id": tid, "tool_input": args}, guard_decision=guard)
+
+    pre("p1", {"decision": "deny", "rule": "db.dropdb", "precondition": None})  # no gate field
+    pre("p2", apply_gate(DENY, tool="Bash", args=ARGS, cwd=project, wait_seconds=0).receipt_field())  # timeout
+    g.decide(g.only_pending(), "deny")
+    pre("p3", apply_gate(DENY, tool="Bash", args=ARGS, cwd=project, wait_seconds=0).receipt_field())  # denied
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=project, wait_seconds=0)
+    g.decide(g.only_pending(), "approve")
+    pre("p4", apply_gate(DENY, tool="Bash", args=ARGS, cwd=project, wait_seconds=0).receipt_field())  # approved
+    record_hook_event({"hook_event_name": "Stop", "session_id": SID, "cwd": str(project)}, signing_key_hex=sk)
+    res = export_evidence_pack(session_log_path(project, SID), tmp_path / "pack", signing_key_hex=sk, make_zip=False)
+    return res, sk, vk
+
+
+def test_gate_outcomes_agree_with_python(stub_gate, tmp_path):
+    res, _, vk = _gate_pack(stub_gate, tmp_path)
+    assert res["valid"], res["report"]["errors"]
+    py = verify_evidence_pack(res["dir"], expected_verify_key=vk)
+    assert py["valid"], py["errors"]
+    js = _verify_dir(res["dir"], vk)
+    assert js["valid"], js["errors"]
+    rep = res["report"]
+    js_blocked = [(d["seq"], d["gate"] and (d["gate"]["outcome"], d["gate"]["approval_id"], d["gate"]["receipt"]))
+                  for d in js["destructive"] if d["decision"] == "blocked"]
+    py_blocked = [(b["seq"], b["gate"] and (b["gate"]["outcome"], b["gate"]["approval_id"], b["gate"]["receipt"]))
+                  for b in rep["blocked_calls"]]
+    assert js_blocked == py_blocked
+    assert [o and o[0] for _, o in js_blocked] == [None, "timeout", "denied"]
+    denied = next(d for d in js["destructive"] if d["gate"] and d["gate"]["outcome"] == "denied")
+    assert denied["gate"]["approver"] == "Alice Moyo" and denied["gate"]["receipt_in_pack"]
+    assert denied["gate"]["receipt_verified"] is False  # the browser does not verify Gate receipts
+    approved = [d for d in js["destructive"] if d["decision"] == "allowed"]
+    assert len(approved) == 1 and "precondition" not in approved[0]
+    a, pa = approved[0]["approval"], rep["approved_by_person"][0]
+    assert (a["receipt"], a["approver"], a["decided_at"]) == (pa["receipt"], pa["approver"], pa["decided_at"])
+    assert a["receipt_in_pack"] and a["receipt_verified"] is False
+
+
+def test_gate_receipts_removed_known_difference(stub_gate, tmp_path):
+    """Documented difference (THREAT_MODEL 5.6): the browser does not cross-check Gate receipts, so a
+    pack whose cited receipts were removed fails in the CLI and passes in the browser, which
+    reports them as missing."""
+    res, sk, vk = _gate_pack(stub_gate, tmp_path)
+    d = res["dir"]
+    for f in (d / "approvals").glob("*.json"):
+        f.unlink()
+    import hashlib
+
+    from perathos.canonical import canonical_bytes
+    from perathos.evidence import _sha256_file
+    from perathos.signing import sign_hash
+    m = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
+    m["files"] = {f.relative_to(d).as_posix(): _sha256_file(f) for f in sorted(d.rglob("*"))
+                  if f.is_file() and f.name != "MANIFEST.json"}
+    body = {k: v for k, v in m.items() if k not in ("manifest_hash", "signature")}
+    m["manifest_hash"] = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    m["signature"] = sign_hash(m["manifest_hash"], sk)
+    (d / "MANIFEST.json").write_text(json.dumps(m), encoding="utf-8")
+    py = verify_evidence_pack(d, expected_verify_key=vk)
+    assert {e.split(":")[0] for e in py["errors"]} == {"ERR_GATE_RECEIPT_MISSING", "ERR_APPROVAL_MISSING"}
+    js = _verify_dir(d, vk)
+    assert js["valid"], js["errors"]
+    cited = [x["gate"] if x["decision"] == "blocked" else x["approval"] for x in js["destructive"]
+             if x.get("approval") or (x.get("gate") and x["gate"]["receipt"])]
+    assert len(cited) == 2 and not any(c["receipt_in_pack"] for c in cited)

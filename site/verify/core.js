@@ -4,9 +4,11 @@
 // runs (perathos/evidence.py, perathos/recorder.py, docs/specs/RECEIPT_V1.md):
 // the signed MANIFEST.json, the hash-chained receipt log, checkpoint signatures,
 // the head witness, and the anchors' link to the log. RFC 3161 timestamp tokens
-// are NOT cryptographically verified here, and Perathos Gate approval receipts
+// are NOT cryptographically verified here, and Perathos Gate receipts
 // (approvals/*.json) are NOT checked at all beyond the manifest hash (no
 // signature check, no cross-check against the log); use the CLI for both.
+// The destructive-action summary names who approved or denied a call from
+// those files as they stand (reported as unverified).
 //
 // Works in browsers and in Node 18+ (both expose WebCrypto as globalThis.crypto).
 
@@ -528,12 +530,40 @@ export async function verifyPack(files, opts = {}) {
     preconditions.set(pyStr(pc.precondition_hash), { pc, ok });
   }
 
+  // Gate receipts, read as they stand for the summary only: NOT verified here (see top of file).
+  const gateFiles = new Map(); // declared receipt_hash -> receipt
+  for (const name of [...files.keys()].filter((n) => n.startsWith("approvals/") && n.endsWith(".json"))) {
+    let g;
+    try {
+      g = JSON.parse(decodeUtf8(files.get(name)));
+    } catch {
+      g = undefined;
+    }
+    if (isObj(g) && typeof g.receipt_hash === "string") gateFiles.set(g.receipt_hash, g);
+  }
+  const gateInfo = (h) => {
+    const g = pyTruthy(h) ? gateFiles.get(pyStr(h)) : undefined;
+    const approver = g && isObj(g.approver) ? g.approver : {};
+    return {
+      receipt: pyTruthy(h) ? pyStr(h) : null, receipt_in_pack: Boolean(g), receipt_verified: false,
+      approver: approver.name ?? null, decided_at: g ? g.decided_at ?? null : null,
+    };
+  };
+
   const destructive = [];
   for (const r of receipts) {
     const g = r.guard;
     if (r.kind !== "pre" || !isObj(g)) continue;
     const item = { seq: r.seq, ts: r.ts, tool: r.tool, rule: g.rule ?? null, decision: g.decision === "deny" ? "blocked" : "allowed" };
-    if (item.decision === "allowed") {
+    if (item.decision === "blocked") {
+      // guard.gate (optional): the guard asked a person through Perathos Gate and the call did not run.
+      item.gate = isObj(g.gate)
+        ? { approval_id: g.gate.approval_id ?? null, outcome: g.gate.outcome ?? null, ...gateInfo(g.gate.receipt) }
+        : null;
+    } else if (pyTruthy(g.approval)) {
+      // Allowed because a person approved it with a passkey: not a precondition allow.
+      item.approval = gateInfo(g.approval);
+    } else {
       const found = pyTruthy(g.precondition) ? preconditions.get(pyStr(g.precondition)) : undefined;
       if (found) {
         const pc = found.pc;

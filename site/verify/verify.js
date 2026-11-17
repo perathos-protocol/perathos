@@ -142,12 +142,45 @@ function render(r, backend) {
   }
   resultEl.append(el("h2", {}, "Checks"), ul);
 
+  function gateOutcomeText(gt) {
+    const req = gt.approval_id ? `Gate request ${gt.approval_id}` : "Gate request";
+    const rc = gt.receipt
+      ? ` (Gate receipt ${String(gt.receipt).slice(0, 16)}...${gt.receipt_in_pack ? ", not verified in the browser" : ", MISSING from the pack"})`
+      : "";
+    switch (gt.outcome) {
+      case "denied":
+        return gt.receipt
+          ? `denied by ${gt.approver ?? "an approver not named in the pack"} with a passkey${gt.decided_at ? ` at ${gt.decided_at}` : ""}${rc}`
+          : `the Gate reported a denial; no verified denial receipt recorded (${req})`;
+      case "timeout":
+        return `sent to a person (${req}); no decision before the wait ended`;
+      case "expired":
+        return `sent to a person (${req}); request expired`;
+      case "unreachable":
+        return gt.approval_id ? `Gate unreachable (${req})` : "Gate unreachable, so no person was asked";
+      case "rejected":
+        return `an approval came back but failed the guard's checks (${req})${rc}`;
+      default:
+        return `Gate outcome ${JSON.stringify(gt.outcome)} (${req})`;
+    }
+  }
+
   if (r.destructive.length) {
     const dul = el("ul", { class: "events" });
     for (const d of r.destructive) {
       if (d.decision === "blocked") {
-        dul.append(el("li", { class: "deny" },
-          el("strong", {}, "Blocked"), ` receipt ${d.seq} at ${d.ts}: ${d.tool} matched rule `, code(d.rule)));
+        const li = el("li", { class: "deny" },
+          el("strong", {}, "Blocked"), ` receipt ${d.seq} at ${d.ts}: ${d.tool} matched rule `, code(d.rule));
+        if (d.gate) li.append(el("div", { class: "small" }, gateOutcomeText(d.gate)));
+        dul.append(li);
+      } else if (d.approval) {
+        const a = d.approval;
+        dul.append(el("li", { class: "allow" },
+          el("strong", {}, "Approved by a person"), ` receipt ${d.seq} at ${d.ts}: rule `, code(d.rule),
+          el("div", { class: "small" },
+            `approved by ${a.approver ?? "an approver not named in the pack"} with a passkey`,
+            a.decided_at ? ` at ${a.decided_at}` : "", " (Gate receipt ", code(String(a.receipt).slice(0, 16) + "..."),
+            a.receipt_in_pack ? "; not verified in the browser: use perathos evidence verify)" : "; MISSING from the pack)")));
       } else {
         const pc = d.precondition || {};
         const li = el("li", { class: "allow" },
