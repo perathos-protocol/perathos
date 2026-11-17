@@ -59,7 +59,7 @@ the guard itself failed). It is inside the hashed body.
 An `allow` written by `perathos` always names its authority: a `precondition`
 or an `approval`. A call that matched no rule has no `guard` field.
 
-`gate` is optional and additive (added after 1.4.5): hash rules are unchanged,
+`gate` is optional and additive (added in 1.4.6): hash rules are unchanged,
 logs written before it existed verify as before, and on those logs a Gate
 denial or timeout looks like a plain block. The guard's reason text, which can
 carry the approve link, is never written to a receipt. A verifier that does
