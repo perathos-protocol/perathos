@@ -1,6 +1,7 @@
 # Perathos Threat Model
 
-_Last updated: 2026-11-12 (the destructive-command guard rows, for 1.4.5). The rest covers
+_Last updated: 2026-11-17 (sections 5.6 and 5.7, for 1.4.6; the destructive-command guard rows
+were last updated for 1.4.5). The rest covers
 `perathos` after 1.4.1 and the Perathos Gate server (`perathos-protocol/perathos-gate`) as read
 on 2026-11-10._
 
