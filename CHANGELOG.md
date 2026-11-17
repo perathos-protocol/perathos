@@ -5,6 +5,97 @@ This project aims to follow [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-11-17
+
+Gate approvals and denials in the evidence record, and two trust fixes. All three came from the
+internal evaluation (AI-simulated users) and a reviewer's probe of 1.4.5. Logs and packs made by
+earlier versions verify unchanged.
+
+### Security
+- **A pinned Gate can no longer be replaced through `PERATHOS_GATE_URL` or `PERATHOS_GATE_KEY`.** With a Gate pinned by
+  `perathos gate login`, a `PERATHOS_GATE_KEY` or `PERATHOS_GATE_URL` that differs from the pin is
+  refused (`ERR_GATE_ENV_KEY`, `ERR_GATE_ENV_URL`): the guard keeps the call blocked,
+  `require_approval` raises `GateConfigError`, and `perathos gate status` exits 1. Before, the
+  environment won, so an agent that could set its own environment could point the guard at a Gate
+  it controlled. With only a URL pinned, an environment Gate key is ignored and the guard reports
+  the key as not pinned. With only a key pinned, an environment URL is ignored and Gate counts as
+  not configured. With nothing pinned
+  (CI runners, `gate-action`) environment values are used as before, and `PERATHOS_GATE_API_KEY`
+  is still read from the environment. Not covered: an agent that controls the guard's whole
+  environment can still point `HOME`/`USERPROFILE` at an empty folder or use `PYTHONPATH` to
+  change the guard's code. `PERATHOS_GATE_APPROVERS` still replaces approver pins, and an agent
+  that can write `~/.perathos/config.json` can still pin its own Gate (THREAT_MODEL 5.7).
+  `GateConfigError` is a subclass of `GateError`, so callers that catch `GateError` keep working.
+- **`perathos precondition list` now trusts the same keys as the guard.** It used to check every
+  precondition against the local recorder key, so once approvers were listed in
+  `~/.perathos/approvers.json` it could show VALID for a precondition the guard rejects, and
+  untrusted for one the guard accepts. Each row now shows the key that actually signed it
+  (`signer=alice`, or both the claimed signer and the real key when they differ), and an untrusted
+  row gives the guard's own reason. Names, ids and dates read from precondition files are printed
+  with control characters replaced by `?`, so a crafted file cannot rewrite the terminal.
+
+### Added
+- **Gate denials, timeouts and expiries are recorded.** When the guard asked Gate and the call
+  still did not run, the `pre` receipt carries a new optional `guard.gate` object:
+  `{approval_id, outcome, receipt}`, where `outcome` is `denied`, `timeout`, `expired`,
+  `unreachable` or `rejected`. `receipt` is the hash of the signed Gate receipt only when it
+  verifies and is for this call's arguments; otherwise it is null. The field is additive: older
+  logs verify unchanged, and their Gate denials read as plain blocks (RECEIPT_V1).
+- **`session export` copies cited denial and rejected receipts** into the pack's `approvals/`
+  folder alongside approvals, and checks every Gate receipt it cites. An integrity failure now
+  fails the export (1.4.5 did not check Gate signatures at export).
+- **New error codes:** `ERR_GATE_RECEIPT_MISSING`, `ERR_GATE_RECEIPT_NOT_DENIED`,
+  `ERR_GATE_RECEIPT_ARGS_MISMATCH`, `ERR_GATE_ENV_KEY`, `ERR_GATE_ENV_URL`.
+- **`verification.json`:** new `gate_check` (`gate_key_pinned`, `gate_key_confirmed`,
+  `gate_key_source`, `approvers_pinned`, `approvers_source`,
+  `pin_mismatches: {approvals, denials}`) and top-level `warnings_require_attention`;
+  `approved_by_person[]` gains `receipt`, `receipt_verified` and `pin_issue`;
+  `blocked_calls[].gate` is null or the outcome with its receipt status. `gate_key_confirmed` is
+  true only when a Gate key is pinned and every cited Gate receipt was signed by it.
+- **`evidence verify`:** a new `gate_receipts` block (`cited`, `in_pack`, `verified`, `outcomes`,
+  `pin_mismatches`), and new output lines for calls that asked Gate and did not run.
+  `VALID_UNCONFIRMED_GATE` now also applies to a pack whose only Gate receipts are denials or
+  rejected approvals, when the signer is confirmed and no Gate key was given or pinned.
+- **New warnings:** a Gate denial not backed by a signed receipt, an unknown Gate outcome, and a
+  Gate outcome on a call the guard did not deny.
+
+### Changed
+- **The pack report names Gate approvals correctly.** A call a person approved with a passkey was
+  listed as "allowed under a signed safety check (precondition missing from pack)". It now reads
+  "approved by <name> with a passkey at <time> (Gate receipt ...)", and blocked calls say why:
+  blocked by rule, denied by a person, no decision before the wait ended, request expired, Gate
+  unreachable, or an approval that failed the guard's checks. Approved calls are no longer counted
+  in `allowed_under_precondition`, so `preconditions_missing_from_pack` no longer lists `null`.
+  The browser verifier makes the same distinction.
+- **Pins versus integrity when checking Gate receipts.** An integrity failure (missing, modified
+  or unsigned receipt, other arguments, an approve receipt cited as a denial) fails both
+  `session export` and `evidence verify`. A failure that is only about local pins (approver not
+  pinned, or signed by a Gate key other than the pinned one) is:
+  - in `evidence verify`: an error on an approval (unchanged), a warning on a denial or rejected
+    approval, since a denial authorises nothing;
+  - in `session export`: always a warning, so a rotated Gate key or an approver pinned later cannot
+    break the export of an old log. The export prints a `[WARN]` line per mismatched call. When an
+    approval that let a call run does not match, the first line reads `VALID (WITH WARNINGS)` and
+    the last line and the report heading read "VALID, BUT n Gate approvals do not match this
+    machine's pins (check with perathos evidence verify --gate-key ... --approver-key ...)" (or
+    "1 Gate approval does"). When only denials or rejected approvals do not match, the report adds
+    a note instead: "a denial authorises nothing".
+  So `session export` can say VALID with a warning where `evidence verify` on the same machine
+  says INVALID. Run `evidence verify` with the pins when the answer matters (THREAT_MODEL 5.6).
+- **`approvals.in_pack`** in `evidence verify` counts approval receipts only, not denials.
+- **The guard's reason for a denial without a usable receipt** now says the approver denied the
+  action, instead of falling back to "approval requested" with the link.
+- A `rejected` approval is cited only if it is intact and for this call's arguments.
+
+### Not covered
+- The browser verifier still does not verify Gate receipts (THREAT_MODEL 5.6); they never fail a
+  pack there.
+- `gate_key_confirmed` does not mean the same in both places. In the export's `gate_check` it
+  means a Gate key is pinned and every cited Gate receipt was signed by it. In `evidence verify`'s
+  `approvals` block it means only that a Gate key was given or found pinned on this machine; it
+  stays true when a cited denial was signed by another Gate key, which is only a warning. A later
+  release will rename one.
+
 ## [1.4.5] - 2026-11-12
 
 Guard coverage. A full system test and an internal evaluation found ordinary forms of
