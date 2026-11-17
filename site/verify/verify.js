@@ -151,7 +151,7 @@ function render(r, backend) {
       case "denied":
         return gt.receipt
           ? `denied by ${gt.approver ?? "an approver not named in the pack"} with a passkey${gt.decided_at ? ` at ${gt.decided_at}` : ""}${rc}`
-          : `denied by a person through Perathos Gate (${req}; no signed denial receipt recorded)`;
+          : `the Gate reported a denial; no verified denial receipt recorded (${req})`;
       case "timeout":
         return `sent to a person (${req}); no decision before the wait ended`;
       case "expired":

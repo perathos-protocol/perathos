@@ -464,8 +464,12 @@ def apply_gate(decision, *, tool: str, args, cwd, session_id: str = "", agent_na
         _set_pending(cwd, ah, None)
         if not chk:
             _save_receipt(cwd, receipt, used=True)
+            # Cite the refused approval only when it is an intact Gate receipt for this call (it may
+            # have failed only a pin, or expired); anything else is not evidence of this call.
+            intact = (verify_receipt(receipt, gate_key=None) and isinstance(receipt.get("request"), dict)
+                      and receipt["request"].get("args_hash") == ah)
             return Decision("deny", decision.rule, None, f"{first}. Approval receipt rejected: {chk.error}",
-                            gate=_gate_ref(approval_id, "rejected", receipt.get("receipt_hash")))
+                            gate=_gate_ref(approval_id, "rejected", receipt.get("receipt_hash") if intact else None))
         _save_receipt(cwd, receipt, used=True)
         return Decision("allow", decision.rule, None,
                         f"perathos guard: allowed, approved by {receipt['approver'].get('name')} with a passkey",

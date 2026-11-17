@@ -1,0 +1,48 @@
+{
+  "approver": {
+    "alg": -7,
+    "credential_id": "Y3JlZC0x",
+    "enrolled_at": "2026-11-01T00:00:00Z",
+    "name": "Alice Moyo",
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM0nzh5DHlwPJxdLluf7G6SdDuQM6N-o_4_oOChNPXSEkcwaD29kSVYuSehLZm1OxRBi2PAskp1sFTWfHxFehaA"
+  },
+  "decided_at": "2026-11-15T15:53:59Z",
+  "decision": "approve",
+  "receipt_hash": "c48996139d8afa6f1cdfe937f412c36a90b5e830ff9b9e9e55e112846f430862",
+  "request": {
+    "action": {
+      "detail": "perathos guard: blocked PostgreSQL dropdb (db.dropdb). No precondition.",
+      "rule": "db.dropdb",
+      "summary": "dropdb prod",
+      "tool": "Bash"
+    },
+    "agent": {
+      "host": "IU-8NZ63J4",
+      "name": "agent"
+    },
+    "args_hash": "32fc89498466285f3339b4a23a93c90ea811170c305c1030d1a523a0701f968e",
+    "created_at": "2026-11-15T15:53:59Z",
+    "expires_at": "2026-11-15T16:03:59Z",
+    "gate": "gate_test",
+    "id": "apr_y5tbh56fsl7jnahhkmvqhcqdtk",
+    "org": "org_1",
+    "v": "perathos.gate.request/v1"
+  },
+  "request_hash": "e94869845cdd872d363303c398bb2466ff8a2eb70db928ec19c40d4cc155a590",
+  "rp": {
+    "id": "localhost",
+    "origin": "http://localhost:8787"
+  },
+  "server_signature": {
+    "algorithm": "ed25519",
+    "signature": "9bfbeb5a897dba630b3f753ebe2710e4ab268cbd4a426b7cbc52e83f51267e715abc218334f377d8c59f906c798f4e3dc9431e74e13c7734b2b7dcc474f4660c",
+    "verify_key": "43671399aad66d51b452bf53e3562dc9e639e53cb2b00facc14a812b62b1142c"
+  },
+  "v": "perathos.gate.receipt/v1",
+  "valid_until": "2026-11-15T16:03:59Z",
+  "webauthn": {
+    "authenticator_data": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAABw",
+    "client_data_json": "eyJ0eXBlIjogIndlYmF1dGhuLmdldCIsICJjaGFsbGVuZ2UiOiAiRm1VWlA1SUpmVXUxbk1UNE9vYjI2aGU2cENGVGNhQmhaeDJJaExUNTdZbyIsICJvcmlnaW4iOiAiaHR0cDovL2xvY2FsaG9zdDo4Nzg3In0",
+    "signature": "MEUCID3ZjOYvBe5fo1UjSZG787E_RL5SSV1SlwQSVXHirUR0AiEA6eA5s-ewQBVxWvxrOUIPIHe90jG8zVFjEuY89mCx-as"
+  }
+}

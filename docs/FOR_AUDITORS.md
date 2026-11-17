@@ -56,6 +56,7 @@ Each destructive call the guard matched is listed in the report with how it ende
 | approved by *name* with a passkey at *time* (Gate receipt *hash*) | `decision: allow`, `approval: <hash>` | A person approved this exact call through Perathos Gate; the receipt is in `approvals/` |
 | blocked by rule *rule* | `decision: deny`, no `gate` | Blocked by the rule; no person was asked (or the log predates the `gate` field) |
 | denied by *name* with a passkey | `decision: deny`, `gate.outcome: denied`, `gate.receipt: <hash>` | A person said no; the signed denial is in `approvals/` |
+| the Gate reported a denial; no verified denial receipt recorded | `gate.outcome: denied`, `gate.receipt: null` | The Gate said denied but sent no receipt the guard could verify for this call; `evidence verify` warns that the denial is not backed by a signed receipt |
 | no decision before the wait ended | `gate.outcome: timeout` | A person was asked and nobody answered in time |
 | request expired | `gate.outcome: expired` | The request lapsed before anyone decided |
 | Gate unreachable | `gate.outcome: unreachable` | The guard could not reach the Gate, so nobody was asked |
@@ -64,10 +65,14 @@ Each destructive call the guard matched is listed in the report with how it ende
 In each of the `deny` rows the call did not run. The report also says, for each Gate receipt,
 whether it is in the pack and whether it verified at export, and against which Gate key and
 approver pins; re-check that yourself with step 3. `evidence verify` prints the outcomes
-(`asked Gate   1 denied, 1 timeout`) and a `Gate denials` line with how many denial receipts
-were cited, found and verified. Only `denied` (and `rejected`) carry a signed receipt: a
-`timeout`, `expired` or `unreachable` outcome is the recorder's own statement, sealed in the
-log like any other field but with nothing from the Gate behind it.
+(`asked Gate   1 denied, 1 timeout`) and a `Gate receipts (denied/rejected)` line with how many
+of those receipts were cited, found and verified. A denial or rejected approval signed by a
+Gate key other than the one you pinned, or by an approver you did not pin, is a warning rather
+than an error, because it authorises nothing; a broken hash or signature, other arguments or a
+non-deny decision is an error. Only `denied` and `rejected` can carry a signed receipt, and a
+`denied` may have none (`gate.receipt: null`): then, like `timeout`, `expired` and
+`unreachable`, it is the recorder's own statement, sealed in the log like any other field but
+with nothing signed by the Gate behind it.
 
 ## What a VALID pack establishes
 

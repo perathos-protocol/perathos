@@ -1,0 +1,12 @@
+{
+  "made_by": "perathos 1.4.5 (git archive v1.4.5), tmp generator for PR #91",
+  "session_id": "v145",
+  "signer_verify_key": "97e5968c36625a65e75a3c9c1b14f04023924a18daf0061c0411669f49732204",
+  "gate_key": "43671399aad66d51b452bf53e3562dc9e639e53cb2b00facc14a812b62b1142c",
+  "approver_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM0nzh5DHlwPJxdLluf7G6SdDuQM6N-o_4_oOChNPXSEkcwaD29kSVYuSehLZm1OxRBi2PAskp1sFTWfHxFehaA",
+  "report_1_4_5": {
+    "valid": true,
+    "blocked": 3,
+    "tool_calls": 5
+  }
+}

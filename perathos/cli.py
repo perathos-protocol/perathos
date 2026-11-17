@@ -1502,8 +1502,10 @@ def evidence_verify(pack: str, expected_verify_key: str, tsa_roots: tuple, gate_
                         else "approvers NOT PINNED")
             click.echo(f"  approvals    {ap['cited']} cited, {ap['verified']} verified, {gate_txt}, {pins_txt}")
             if gr["cited"]:
-                click.echo(f"  Gate denials {gr['cited']} receipt(s) cited, {gr['in_pack']} in pack, "
-                           f"{gr['verified']} verified")
+                click.echo(f"  Gate receipts (denied/rejected) {gr['cited']} cited, {gr['in_pack']} in pack, "
+                           f"{gr['verified']} verified"
+                           + (f", {gr['pin_mismatches']} not matching your pins (warning)"
+                              if gr["pin_mismatches"] else ""))
             if not ap["gate_key_confirmed"]:
                 click.echo(f"  NOTE         approvals are signed by Gate key {', '.join(ap['gate_keys']) or '(none verified)'}; "
                            "anyone can run a Gate, so")

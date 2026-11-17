@@ -606,13 +606,16 @@ def test_denial_is_recorded_exported_and_verified(gate, tmp_path):
     assert (res["dir"] / "approvals" / f"{deny_receipt['request']['id']}.json").exists()
     out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
     assert out["valid"], out["errors"]
-    assert out["gate_receipts"] == {"cited": 1, "in_pack": 1, "verified": 1, "outcomes": {"denied": 1}}
+    assert out["gate_receipts"] == {"cited": 1, "in_pack": 1, "verified": 1, "outcomes": {"denied": 1},
+                                    "pin_mismatches": 0}
+    assert out["approvals"]["in_pack"] == 0  # the denial is not counted as an approval
     md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
     assert "denied by Alice Moyo with a passkey at " in md and deny_receipt["receipt_hash"][:16] in md
     assert "receipt verified at export, Gate key confirmed (local pin), approver NOT PINNED" in md
     assert "denied by Alice Moyo with a passkey at " in (res["dir"] / "REPORT.html").read_text(encoding="utf-8")
     r = CliRunner().invoke(cli, ["evidence", "verify", str(res["dir"]), "--verify-key", vk])
-    assert r.exit_code == 0 and "1 denied" in r.output and "Gate denials 1 receipt(s) cited, 1 in pack, 1 verified" in r.output
+    assert r.exit_code == 0 and "1 denied" in r.output
+    assert "Gate receipts (denied/rejected) 1 cited, 1 in pack, 1 verified" in r.output
 
 
 def test_timeout_and_expired_are_recorded(gate, tmp_path):
@@ -635,7 +638,8 @@ def test_timeout_and_expired_are_recorded(gate, tmp_path):
     assert TOKEN not in md
     out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
     assert out["valid"], out["errors"]
-    assert out["gate_receipts"] == {"cited": 0, "in_pack": 0, "verified": 0, "outcomes": {"timeout": 1, "expired": 1}}
+    assert out["gate_receipts"] == {"cited": 0, "in_pack": 0, "verified": 0, "outcomes": {"timeout": 1, "expired": 1},
+                                    "pin_mismatches": 0}
 
 
 def test_unreachable_gate_is_recorded(gate, tmp_path):
@@ -760,3 +764,157 @@ def test_approve_receipt_cited_as_a_denial_fails(gate, tmp_path):
     assert not res["valid"]
     out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
     assert [e.split(":")[0] for e in out["errors"]] == ["ERR_GATE_RECEIPT_NOT_DENIED"], out["errors"]
+
+
+# --------------------------------------------------------------------------- #
+# Pins versus integrity: a rotated Gate key or an approver pinned later
+# --------------------------------------------------------------------------- #
+
+
+def _denied_and_approved(gate, tmp_path, sid):
+    """One call a person denied and one a person approved, both through the stub Gate."""
+    d = _denied_session(gate, tmp_path, sid)
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    gate.decide(gate.only_pending(), "approve")
+    a = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert a.decision == "allow"
+    _pre(tmp_path, sid, "t2", a)
+    return d, a
+
+
+def test_gate_key_rotated_after_the_receipts(gate, tmp_path):
+    """Export must not fail on a pin that changed later; verify keeps approvals strict, denials lenient."""
+    from perathos.approvers import set_config
+    from perathos.evidence import verify_evidence_pack
+    d, a = _denied_and_approved(gate, tmp_path, "rot")
+    set_config("gate_key", generate_keypair()[1])  # the Gate key is rotated after the session
+    res, _, vk = _export(tmp_path, "rot")
+    assert res["valid"], res["report"]["errors"]
+    warns = res["report"]["warnings"]
+    assert sum("ERR_GATE_UNEXPECTED_SERVER" in w for w in warns) == 2, warns
+    md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    assert md.count("receipt signatures valid at export, but signed by a Gate key other than the pinned one") == 2
+    assert "FAILED" not in md
+    out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
+    assert [e.split(":")[0] for e in out["errors"]] == ["ERR_GATE_UNEXPECTED_SERVER"]  # the approval only
+    assert out["gate_receipts"]["pin_mismatches"] == 1 and out["gate_receipts"]["verified"] == 1
+    assert any("ERR_GATE_UNEXPECTED_SERVER" in w and "a denial authorises nothing" in w for w in out["warnings"])
+    # With the Gate key that signed them, everything verifies.
+    ok = verify_evidence_pack(res["dir"], expected_verify_key=vk, gate_key=gate.server_vk)
+    assert ok["valid"] and not ok["warnings"], (ok["errors"], ok["warnings"])
+
+
+def test_approver_pinned_after_the_receipts(gate, tmp_path):
+    from perathos.approvers import set_config
+    from perathos.evidence import verify_evidence_pack
+    _denied_and_approved(gate, tmp_path, "pin")
+    set_config("gate_approvers", [{"name": "Someone Else", "public_key": "bm90LXRoZS1rZXk"}])
+    res, _, vk = _export(tmp_path, "pin")
+    assert res["valid"], res["report"]["errors"]
+    assert sum("ERR_GATE_UNTRUSTED_APPROVER" in w for w in res["report"]["warnings"]) == 2
+    assert res["report"]["gate_check"]["approvers_pinned"] is True
+    md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    assert md.count("receipt signatures valid at export, but approver not one you pinned") == 2
+    out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
+    assert [e.split(":")[0] for e in out["errors"]] == ["ERR_GATE_UNTRUSTED_APPROVER"]  # the approval only
+    assert out["gate_receipts"]["pin_mismatches"] == 1
+
+
+def test_export_without_any_pins_reports_unconfirmed(gate, tmp_path):
+    from perathos.approvers import set_config
+    _denied_and_approved(gate, tmp_path, "nop")
+    set_config("gate_key", None)
+    res, _, _ = _export(tmp_path, "nop")
+    assert res["valid"] and not res["report"]["warnings"][1:], res["report"]["warnings"]
+    assert res["report"]["gate_check"] == {"gate_key_confirmed": False, "gate_key_source": None,
+                                           "approvers_pinned": False, "approvers_source": None}
+    md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    assert md.count("receipt verified at export, Gate key UNCONFIRMED, approver NOT PINNED") == 2
+
+
+@pytest.mark.parametrize("damage, code", [
+    (lambda r: r["approver"].update(name="Mallory"), "ERR_GATE_RECEIPT_HASH"),  # modified
+    (lambda r: r.pop("server_signature"), "ERR_GATE_SERVER_SIGNATURE"),        # unsigned
+])
+def test_cited_denial_modified_or_unsigned_fails(gate, tmp_path, damage, code):
+    """Integrity failures on a denial stay errors, in the export and in evidence verify."""
+    from perathos.evidence import verify_evidence_pack
+    _denied_session(gate, tmp_path, "dmg")
+    res, sk, vk = _export(tmp_path, "dmg")
+    f = next((res["dir"] / "approvals").glob("*.json"))
+    data = json.loads(f.read_text(encoding="utf-8"))
+    damage(data)
+    f.write_text(json.dumps(data), encoding="utf-8")
+    _resign(res["dir"], sk)
+    out = verify_evidence_pack(res["dir"], expected_verify_key=None)
+    assert any(e.startswith(f"{code}: ") for e in out["errors"]), out["errors"]
+    # The same damage in the project fails the export too (not a pin issue).
+    src = next((tmp_path / ".perathos" / "approvals").glob("apr_*.json"))
+    src.write_text(json.dumps(data), encoding="utf-8")
+    res2, _, _ = _export(tmp_path, "dmg", name="pack2")
+    assert not res2["valid"] and any(e.startswith(code) for e in res2["report"]["errors"])
+    assert "receipt FAILED verification" in (res2["dir"] / "REPORT.md").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Branches of apply_gate: what the guard records for odd Gate answers
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("status", ["approved", "something-new"])
+def test_unusable_status_is_recorded_as_timeout(gate, tmp_path, status):
+    """'approved' with no receipt, or a status the client does not know: still pending as far as the guard knows."""
+    _login(gate)
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    aid = gate.only_pending()
+    gate.approvals[aid]["status"] = status
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny"
+    assert d.receipt_field()["gate"] == {"approval_id": aid, "outcome": "timeout", "receipt": None}
+
+
+def test_denial_without_a_receipt_is_recorded_and_warned_about(gate, tmp_path):
+    from perathos.evidence import verify_evidence_pack
+    _login(gate)
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    aid = gate.only_pending()
+    gate.approvals[aid]["status"] = "denied"  # no receipt
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "the approver denied this action" in d.reason
+    assert d.receipt_field()["gate"] == {"approval_id": aid, "outcome": "denied", "receipt": None}
+    _pre(tmp_path, "dn", "t1", d)
+    res, _, vk = _export(tmp_path, "dn")
+    assert res["valid"]
+    md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+    assert f"the Gate reported a denial; no verified denial receipt recorded (Gate request {aid})" in md
+    out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
+    assert out["valid"] and any("Gate denial not backed by a signed receipt" in w for w in out["warnings"])
+
+
+def test_denial_receipt_for_other_arguments_is_not_cited(gate, tmp_path):
+    """A genuine deny receipt, but for another request's arguments: saved, not cited."""
+    _login(gate)
+    apply_gate(DENY, tool="Bash", args={"command": "dropdb customers"}, cwd=tmp_path, wait_seconds=0)
+    other = gate.only_pending()
+    gate.decide(other, "deny")
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    aid = gate.only_pending()
+    gate.approvals[aid] = {"status": "denied", "request": gate.approvals[aid]["request"],
+                           "receipt": gate.approvals[other]["receipt"]}
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.receipt_field()["gate"] == {"approval_id": aid, "outcome": "denied", "receipt": None}
+    assert (tmp_path / ".perathos" / "approvals" / f"{other}.json").exists()
+
+
+def test_unknown_outcome_and_gate_on_allow_are_warnings(tmp_path):
+    from perathos.evidence import verify_evidence_pack
+    _pre(tmp_path, "uw", "t1", {"decision": "deny", "rule": "r", "precondition": None,
+                                "gate": {"approval_id": "apr_x", "outcome": "vetoed-by-robot", "receipt": None}})
+    _pre(tmp_path, "uw", "t2", {"decision": "allow", "rule": "r", "precondition": None,
+                                "gate": {"approval_id": "apr_y", "outcome": "timeout", "receipt": None}})
+    res, _, vk = _export(tmp_path, "uw")
+    out = verify_evidence_pack(res["dir"], expected_verify_key=vk, use_local_pins=False)
+    assert out["valid"], out["errors"]
+    assert any("unknown Gate outcome 'vetoed-by-robot'" in w for w in out["warnings"])
+    assert any("receipt 2: names a Gate outcome but the guard's decision is not deny" in w for w in out["warnings"])
+    assert "Gate outcome 'vetoed-by-robot'" in (res["dir"] / "REPORT.md").read_text(encoding="utf-8")

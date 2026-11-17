@@ -145,34 +145,37 @@ def _gate_field(r: dict) -> dict | None:
 
 
 def _gate_receipt_hashes(receipts: list[dict]) -> tuple[set[str], set[str]]:
-    """(every Gate receipt hash the log cites, those cited only as an approval the guard rejected)."""
-    cited: set[str] = set()
-    other: set[str] = set()
-    rejected: set[str] = set()
+    """(every Gate receipt hash the log cites, those cited only by ``guard.gate``, never as an approval)."""
+    approvals: set[str] = set()
+    gate_cited: set[str] = set()
     for r in receipts:
         g = r.get("guard")
         if r.get("kind") != "pre" or not isinstance(g, dict):
             continue
         if g.get("approval"):
-            cited.add(str(g["approval"]))
-            other.add(str(g["approval"]))
+            approvals.add(str(g["approval"]))
         gf = _gate_field(r)
         if gf and gf.get("receipt"):
-            h = str(gf["receipt"])
-            cited.add(h)
-            (rejected if gf.get("outcome") == "rejected" else other).add(h)
-    return cited, rejected - other
+            gate_cited.add(str(gf["receipt"]))
+    return approvals | gate_cited, gate_cited - approvals
+
+
+# Failures that come only from what the verifier pinned, not from the receipt itself.
+_PIN_ONLY = {
+    "ERR_GATE_UNTRUSTED_APPROVER": "approver not one you pinned",
+    "ERR_GATE_UNEXPECTED_SERVER": "signed by a Gate key other than the pinned one",
+}
 
 
 def _check_gate_citations(receipts: list[dict],
                           in_pack: dict[str, dict | None]) -> tuple[list[str], list[str], dict[str, Any]]:
     """Cross-check each ``guard.gate`` field against the Gate receipts in the pack.
 
-    A cited receipt must be in the pack (``ERR_GATE_RECEIPT_MISSING``). For a
-    ``denied`` outcome it must be a deny decision (``ERR_GATE_RECEIPT_NOT_DENIED``)
-    for exactly the call's ``args_hash`` (``ERR_GATE_RECEIPT_ARGS_MISMATCH``).
-    A ``rejected`` outcome cites an approval the guard already refused, so a
-    mismatch there is a warning, not an error.
+    A cited receipt must be in the pack (``ERR_GATE_RECEIPT_MISSING``) and be
+    for exactly the call's ``args_hash`` (``ERR_GATE_RECEIPT_ARGS_MISMATCH``);
+    for a ``denied`` outcome it must be a deny decision
+    (``ERR_GATE_RECEIPT_NOT_DENIED``). A ``denied`` outcome with no receipt is a
+    warning: nothing signed backs it.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -190,6 +193,8 @@ def _check_gate_citations(receipts: list[dict],
         if r.get("guard", {}).get("decision") != "deny":
             warnings.append(f"receipt {seq}: names a Gate outcome but the guard's decision is not deny")
         if not gf.get("receipt"):
+            if outcome == "denied":
+                warnings.append(f"receipt {seq}: Gate denial not backed by a signed receipt")
             continue
         h = str(gf["receipt"])
         cited += 1
@@ -211,31 +216,33 @@ def _check_gate_citations(receipts: list[dict],
                        f"which was given for different arguments")
         if problem is None:
             verified += 1
-        elif outcome == "rejected":
-            warnings.append(f"receipt {seq}: the guard rejected Gate receipt {h[:16]}... when it was returned; "
-                            f"here: {problem.split(':')[0]}")
         else:
             errors.append(problem)
     return errors, warnings, {"gate_receipts_cited": cited, "gate_receipts_in_pack": present,
                               "gate_receipts_verified": verified, "gate_outcomes": outcomes}
 
 
-def _check_gate_files(files: list[Path], receipts: list[dict], gate_key, pins):
+def _check_gate_files(files: list[Path], receipts: list[dict], gate_key, pins, *, pins_warn_all: bool = False):
     """Verify each Gate receipt file (server and approver passkey signatures, against the
     Gate key and approver passkeys given, if any).
 
-    Returns (errors, warnings, in_pack, gate_keys_seen, approvers_seen), where
-    ``in_pack`` maps each declared receipt_hash to its receipt, or to None when
-    the file failed its own check. A receipt the log cites only as an approval
-    the guard rejected failed a check when it was returned, so its failing here
-    is a warning, not an error.
+    Returns (errors, warnings, in_pack, pin_issues, gate_only, gate_keys_seen, approvers_seen).
+    ``in_pack`` maps each declared receipt_hash to its receipt, or to None when the
+    file failed its own check. Integrity failures (hash, signatures, malformed) are
+    always errors. A failure that comes only from the pins (approver not pinned, a
+    Gate key other than the pinned one) is a warning, recorded in ``pin_issues``,
+    for a receipt the log cites only through ``guard.gate`` (a denial authorises
+    nothing), and for every receipt when ``pins_warn_all`` (export: the exporting
+    machine's pins may have changed since). ``gate_only`` is the set of receipt
+    hashes cited only through ``guard.gate``.
     """
     from .gate import verify_receipt as _verify_gate
 
-    _, rejected_only = _gate_receipt_hashes(receipts)
+    _, gate_only = _gate_receipt_hashes(receipts)
     errors: list[str] = []
     warnings: list[str] = []
     in_pack: dict[str, dict | None] = {}
+    pin_issues: dict[str, str] = {}
     gate_keys_seen: list[str] = []
     approvers_seen: list[dict] = []
     for f in files:
@@ -246,41 +253,50 @@ def _check_gate_files(files: list[Path], receipts: list[dict], gate_key, pins):
         if not isinstance(g, dict):
             errors.append(f"ERR_APPROVAL_MALFORMED: {f.name}")
             continue
+        h = str(g.get("receipt_hash"))
         chk = _verify_gate(g, gate_key=gate_key, trusted_approvers=pins)
         if not chk:
             code = chk.error.split(":")[0]
-            if str(g.get("receipt_hash")) in rejected_only:
-                warnings.append(f"{f.name}: an approval the guard rejected when it was returned; here: {code}")
-            else:
+            # Pin-only when the same receipt verifies with no pins at all.
+            pin_only = code in _PIN_ONLY and bool(_verify_gate(g, gate_key=None, trusted_approvers=None))
+            if not (pin_only and (pins_warn_all or h in gate_only)):
                 errors.append(f"{code}: {f.name}")
-            in_pack.setdefault(str(g.get("receipt_hash")), None)
-            continue
-        in_pack[str(g["receipt_hash"])] = g
+                in_pack.setdefault(h, None)
+                continue
+            pin_issues[h] = code
+            warnings.append(f"{f.name}: {_PIN_ONLY[code]} ({code}); its signatures are valid"
+                            + ("; a denial authorises nothing" if h in gate_only else ""))
+        in_pack[h] = g
         vk = g["server_signature"].get("verify_key")
         if vk not in gate_keys_seen:
             gate_keys_seen.append(vk)
         who = {"name": g["approver"].get("name"), "public_key": g["approver"].get("public_key")}
         if who not in approvers_seen:
             approvers_seen.append(who)
-    return errors, warnings, in_pack, gate_keys_seen, approvers_seen
+    return errors, warnings, in_pack, pin_issues, gate_only, gate_keys_seen, approvers_seen
 
 
 def _summarise(receipts: list[dict], preconditions: dict[str, dict],
-               gate_receipts: dict[str, dict | None] | None = None) -> dict[str, Any]:
+               gate_receipts: dict[str, dict | None] | None = None,
+               pin_issues: dict[str, str] | None = None) -> dict[str, Any]:
     """What the guard did, call by call, for the report.
 
     ``gate_receipts`` maps receipt_hash to a Gate receipt in the pack (None when
-    it failed verification). An allow under a person's approval is listed in
+    it failed verification); ``pin_issues`` maps a receipt_hash to the pin-only
+    error it had. An allow under a person's approval is listed in
     ``approved_by_person``, not as a precondition allow.
     """
     gate_receipts = gate_receipts or {}
+    pin_issues = pin_issues or {}
 
     def receipt_info(h) -> dict:
         h = str(h) if h else None
         g = gate_receipts.get(h) if h else None
         approver = g.get("approver") if isinstance(g, dict) and isinstance(g.get("approver"), dict) else {}
+        issue = pin_issues.get(h) if h else None
         return {"receipt": h, "receipt_in_pack": bool(h) and h in gate_receipts,
-                "receipt_verified": isinstance(g, dict), "approver": approver.get("name"),
+                "receipt_verified": isinstance(g, dict) and issue is None,
+                "pin_issue": _PIN_ONLY.get(issue) if issue else None, "approver": approver.get("name"),
                 "decided_at": g.get("decided_at") if isinstance(g, dict) else None}
 
     blocked, allowed, approved = [], [], []
@@ -381,17 +397,20 @@ def export_evidence_pack(
         check_head=True,
     )
     # Gate receipts are checked against the Gate key and approver passkeys pinned on the
-    # exporting machine, if any (as `evidence verify` would there). A reviewer re-checks
-    # them with keys of their own: `evidence verify --gate-key ... --approver-key ...`.
+    # exporting machine, if any, and the report says which. Those pins may have changed
+    # since the receipt was made (a rotated Gate key, an approver pinned later), so here a
+    # pin-only mismatch is a warning; integrity failures fail the export. A reviewer
+    # re-checks with keys of their own: `evidence verify --gate-key ... --approver-key ...`.
     gate_check = {"gate_key_confirmed": False, "gate_key_source": None, "approvers_pinned": False,
                   "approvers_source": None}
     gate_receipts: dict[str, dict | None] = {}
+    pin_issues: dict[str, str] = {}
     if approvals:
         gate_key, key_src, pins, pins_src = _gate_pins(None, None, True)
         gate_check = {"gate_key_confirmed": gate_key is not None, "gate_key_source": key_src,
                       "approvers_pinned": pins is not None, "approvers_source": pins_src}
-        g_errors, g_warnings, gate_receipts, _, _ = _check_gate_files(
-            sorted((out / "approvals").glob("*.json")), receipts, gate_key, pins)
+        g_errors, g_warnings, gate_receipts, pin_issues, _, _, _ = _check_gate_files(
+            sorted((out / "approvals").glob("*.json")), receipts, gate_key, pins, pins_warn_all=True)
         for e in g_errors:
             report.fail(e)
         report.warnings.extend(g_warnings)
@@ -400,7 +419,7 @@ def export_evidence_pack(
     for e in cite_errors:
         report.fail(e)
     report.warnings.extend(cite_warnings)
-    summary = _summarise(receipts, preconditions, gate_receipts)
+    summary = _summarise(receipts, preconditions, gate_receipts, pin_issues)
     missing = [a["precondition"]["hash"] for a in summary["allowed_under_precondition"]
                if a["precondition"].get("missing")]
     verification = {**report.to_dict(), "path": "session.jsonl", **summary, "gate_check": gate_check,
@@ -545,16 +564,25 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
         gate_key, gate_key_src, pins, pins_src = _gate_pins(gate_key, approver_keys, use_local_pins)
         receipts = _read_receipts(pack / "session.jsonl") if (pack / "session.jsonl").exists() else []
         ap_files = sorted((pack / "approvals").glob("*.json")) if (pack / "approvals").exists() else []
-        g_errors, warnings, in_pack, gate_keys_seen, approvers_seen = _check_gate_files(
+        g_errors, warnings, in_pack, pin_issues, gate_only, gate_keys_seen, approvers_seen = _check_gate_files(
             ap_files, receipts, gate_key, pins)
         errors.extend(g_errors)
+        # approvals/ also holds denial receipts; count only the approvals here.
+        ap_in_pack = 0
+        for f in ap_files:
+            try:
+                declared = str(json.loads(f.read_text(encoding="utf-8")).get("receipt_hash"))
+            except (OSError, ValueError, AttributeError):
+                declared = None
+            if declared not in gate_only:
+                ap_in_pack += 1
         # Cross-check the log against the preconditions and Gate receipts in the pack. (A file
         # that failed its own check above still counts as present; its failure is reported.)
         cite_errors, cite_warnings, counts = _check_citations(receipts, pc_in_pack, in_pack)
         errors.extend(cite_errors)
         warnings.extend(cite_warnings)
         approvals_report = {
-            "cited": counts["approvals_cited"], "in_pack": len(ap_files), "verified": counts["approvals_verified"],
+            "cited": counts["approvals_cited"], "in_pack": ap_in_pack, "verified": counts["approvals_verified"],
             "gate_key_confirmed": gate_key is not None, "gate_key_source": gate_key_src,
             "approvers_pinned": pins is not None, "approvers_source": pins_src,
             "gate_keys": gate_keys_seen, "approvers": approvers_seen,
@@ -569,6 +597,7 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
         gate_receipts_report = {
             "cited": counts["gate_receipts_cited"], "in_pack": counts["gate_receipts_in_pack"],
             "verified": counts["gate_receipts_verified"], "outcomes": counts["gate_outcomes"],
+            "pin_mismatches": sum(1 for h in pin_issues if h in gate_only),
         }
         return {"valid": not errors, "errors": errors, "warnings": warnings, "session": rep.to_dict(),
                 "approvals": approvals_report, "gate_receipts": gate_receipts_report,
@@ -586,6 +615,8 @@ def _gate_receipt_status(item: dict, gc: dict) -> str:
     """How far a Gate receipt cited in the report was checked at export."""
     if not item.get("receipt_in_pack"):
         return "receipt MISSING from the pack"
+    if item.get("pin_issue"):
+        return f"receipt signatures valid at export, but {item['pin_issue']}"
     if not item.get("receipt_verified"):
         return "receipt FAILED verification"
     key = (f"Gate key confirmed ({gc.get('gate_key_source')})" if gc.get("gate_key_confirmed")
@@ -615,7 +646,7 @@ def _blocked_text(b: dict, gc: dict) -> str:
     req = f"Gate request {gf['approval_id']}" if gf.get("approval_id") else "Gate request"
     if outcome == "denied":
         if not gf.get("receipt"):
-            return f"denied by a person through Perathos Gate ({req}; no signed denial receipt recorded)"
+            return f"the Gate reported a denial; no verified denial receipt recorded ({req})"
         who = gf.get("approver") or "an approver not named in the pack"
         at = f" at {gf['decided_at']}" if gf.get("decided_at") else ""
         return (f"denied by {who} with a passkey{at} (Gate receipt {_short(gf['receipt'])}; "
