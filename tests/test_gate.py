@@ -17,9 +17,11 @@ from click.testing import CliRunner
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from perathos.approvers import set_config
 from perathos.cli import cli
 from perathos.gate import (
     GateClient,
+    GateConfigError,
     apply_gate,
     b64url,
     build_receipt,
@@ -991,3 +993,99 @@ def test_approval_from_an_attackers_gate_is_flagged_at_export(gate, tmp_path, mo
     text = proc.stdout.decode("ascii")  # raises if anything non-ASCII was written
     assert text.splitlines()[0].startswith("VALID (WITH WARNINGS)") and "[WARN]  receipt 1: Gate approval " in text
     assert text.splitlines()[-1] == lines[-1]
+
+
+# --------------------------------------------------------------------------- #
+# The environment cannot replace the Gate pinned by `perathos gate login`
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def rogue_gate():
+    """A second Gate server with its own signing key: what an agent would point the guard at."""
+    g = StubGate()  # its own fresh signing key
+    yield g
+    g.close()
+
+
+def test_env_key_and_url_cannot_swap_the_pinned_gate(gate, rogue_gate, tmp_path, monkeypatch):
+    _login(gate)
+    monkeypatch.setenv("PERATHOS_GATE_URL", rogue_gate.url)
+    monkeypatch.setenv("PERATHOS_GATE_KEY", rogue_gate.server_vk)
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "ERR_GATE_ENV_KEY" in d.reason
+    assert rogue_gate.created == 0 and gate.created == 0
+    with pytest.raises(GateConfigError, match="ERR_GATE_ENV_KEY"):
+        require_approval("rogue", wait_seconds=1)
+    r = CliRunner().invoke(cli, ["gate", "status"])
+    assert r.exit_code == 1 and "ERR_GATE_ENV_KEY" in r.output
+
+
+def test_env_key_alone_that_differs_from_the_pin_is_refused(gate, rogue_gate, tmp_path, monkeypatch):
+    _login(gate)
+    monkeypatch.setenv("PERATHOS_GATE_KEY", rogue_gate.server_vk)
+    with pytest.raises(GateConfigError, match="ERR_GATE_ENV_KEY"):
+        GateClient.from_config()
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "ERR_GATE_ENV_KEY" in d.reason and gate.created == 0
+
+
+def test_env_url_that_differs_from_the_pin_is_refused(gate, rogue_gate, tmp_path, monkeypatch):
+    _login(gate)
+    monkeypatch.setenv("PERATHOS_GATE_URL", rogue_gate.url)
+    with pytest.raises(GateConfigError, match="ERR_GATE_ENV_URL"):
+        GateClient.from_config()
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "ERR_GATE_ENV_URL" in d.reason
+    assert rogue_gate.created == 0 and gate.created == 0
+    r = CliRunner().invoke(cli, ["gate", "status"])
+    assert r.exit_code == 1 and "ERR_GATE_ENV_URL" in r.output
+
+
+def test_env_matching_the_pin_is_accepted(gate, tmp_path, monkeypatch):
+    _login(gate)
+    monkeypatch.setenv("PERATHOS_GATE_URL", gate.url + "/")
+    monkeypatch.setenv("PERATHOS_GATE_KEY", gate.server_vk.upper())
+    c = GateClient.from_config()
+    assert c.url == gate.url and c.gate_key == gate.server_vk
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    gate.decide(gate.only_pending(), "approve")
+    assert apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0).decision == "allow"
+
+
+def test_env_only_with_nothing_pinned_is_used(gate, tmp_path, monkeypatch):
+    # A CI runner (gate-action): an empty home, the whole Gate config in the environment.
+    monkeypatch.setenv("PERATHOS_GATE_URL", gate.url)
+    monkeypatch.setenv("PERATHOS_GATE_API_KEY", "key-1")
+    monkeypatch.setenv("PERATHOS_GATE_KEY", gate.server_vk)
+    c = GateClient.from_config()
+    assert c.url == gate.url and c.gate_key == gate.server_vk
+    apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    gate.decide(gate.only_pending(), "approve")
+    assert apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0).decision == "allow"
+
+
+def test_env_key_cannot_stand_in_when_a_gate_is_pinned_without_a_key(gate, rogue_gate, tmp_path, monkeypatch):
+    _login(gate)
+    set_config("gate_key", None)  # a pinned Gate URL with its key removed from the config
+    monkeypatch.setenv("PERATHOS_GATE_KEY", rogue_gate.server_vk)
+    assert GateClient.from_config().gate_key is None
+    d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    assert d.decision == "deny" and "not pinned" in d.reason
+    assert gate.created == 0 and rogue_gate.created == 0
+
+
+def test_env_url_cannot_stand_in_when_only_a_key_is_pinned(gate, rogue_gate, tmp_path, monkeypatch):
+    _login(gate)
+    set_config("gate_url", None)  # a pinned key with its URL removed from the config
+    monkeypatch.setenv("PERATHOS_GATE_URL", rogue_gate.url)
+    assert GateClient.from_config() is None
+    assert apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0) is DENY
+    assert rogue_gate.created == 0
+
+
+def test_env_api_key_is_used_with_a_pinned_gate(gate, monkeypatch):
+    _login(gate)
+    monkeypatch.setenv("PERATHOS_GATE_API_KEY", "key-2")
+    c = GateClient.from_config()
+    assert c.api_key == "key-2" and c.url == gate.url and c.gate_key == gate.server_vk

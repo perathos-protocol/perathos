@@ -1767,7 +1767,11 @@ def gate_login(url: str, api_key: str, wait_seconds: int):
 def gate_status():
     """Show the Gate configuration and check the server and pinned key."""
     from .gate import GateClient, GateError
-    client = GateClient.from_config()
+    try:
+        client = GateClient.from_config()
+    except GateError as exc:
+        click.echo(f"[ERROR] {exc}", err=True)
+        sys.exit(1)
     if client is None:
         click.echo("Gate not configured. Run: perathos gate login --url ... --api-key ...")
         sys.exit(1)
