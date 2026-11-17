@@ -689,7 +689,7 @@ def pin_verdict(v: dict) -> str | None:
         return None
     what = "1 Gate approval does" if n == 1 else f"{n} Gate approvals do"
     return (f"VALID, BUT {what} not match this machine's pins "
-            f"(check with `perathos evidence verify --gate-key … --approver-key …`)")
+            f"(check with `perathos evidence verify --gate-key ... --approver-key ...`)")
 
 
 def _denial_pin_note(v: dict) -> str | None:

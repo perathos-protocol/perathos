@@ -961,7 +961,7 @@ def test_approval_from_an_attackers_gate_is_flagged_at_export(gate, tmp_path, mo
     assert any(ln.startswith("[WARN]  receipt 1: Gate approval ") and "signed by a Gate key other than the pinned one"
                in ln for ln in lines), r.output
     assert lines[-1] == ("VALID, BUT 1 Gate approval does not match this machine's pins "
-                         "(check with perathos evidence verify --gate-key … --approver-key …)")
+                         "(check with perathos evidence verify --gate-key ... --approver-key ...)")
     v = json.loads((tmp_path / "pack" / "verification.json").read_text(encoding="utf-8"))
     assert v["valid"] is True and v["warnings_require_attention"] is True
     assert v["gate_check"]["gate_key_pinned"] is True and v["gate_check"]["gate_key_confirmed"] is False
@@ -969,10 +969,25 @@ def test_approval_from_an_attackers_gate_is_flagged_at_export(gate, tmp_path, mo
     a = v["approved_by_person"][0]
     assert a["receipt_verified"] is False and a["pin_issue"] == "signed by a Gate key other than the pinned one"
     heading = ("VALID, BUT 1 Gate approval does not match this machine's pins "
-               "(check with `perathos evidence verify --gate-key … --approver-key …`)")
+               "(check with `perathos evidence verify --gate-key ... --approver-key ...`)")
     assert f"**Verification: {heading}**" in (tmp_path / "pack" / "REPORT.md").read_text(encoding="utf-8")
     html = (tmp_path / "pack" / "REPORT.html").read_text(encoding="utf-8")
     assert "VALID, BUT 1 Gate approval does not match this machine&#x27;s pins" in html and ">VERIFIED<" not in html
     # evidence verify on the same machine, with the same pins: INVALID, exit 1.
     out = runner.invoke(cli, ["evidence", "verify", str(tmp_path / "pack")])
     assert out.exit_code == 1 and "ERR_GATE_UNEXPECTED_SERVER" in out.output, out.output
+    # The same export on a stdout that can only encode ASCII (every new CLI string is plain ASCII).
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "PYTHONIOENCODING": "ascii", "USERPROFILE": str(tmp_path / "home"),
+           "HOME": str(tmp_path / "home"), "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
+    for k in ("PERATHOS_GATE_KEY", "PERATHOS_GATE_APPROVERS", "PERATHOS_SIGNER"):
+        env.pop(k, None)
+    proc = subprocess.run([sys.executable, "-m", "perathos", "session", "export",
+                           str(session_log_path(tmp_path, "atk")), "--out", str(tmp_path / "pack-ascii")],
+                          cwd=tmp_path, env=env, capture_output=True, timeout=120)
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    text = proc.stdout.decode("ascii")  # raises if anything non-ASCII was written
+    assert text.splitlines()[0].startswith("VALID (WITH WARNINGS)") and "[WARN]  receipt 1: Gate approval " in text
+    assert text.splitlines()[-1] == lines[-1]
