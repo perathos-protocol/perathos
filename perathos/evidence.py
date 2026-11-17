@@ -72,8 +72,8 @@ def _project_root_for(log: Path) -> Path:
     return log.parent.parent.parent
 
 
-def _check_citations(receipts: list[dict], preconditions: set[str],
-                     approvals: dict[str, dict | None]) -> tuple[list[str], list[str], dict[str, Any]]:
+def _check_citations(receipts: list[dict], preconditions: set[str], approvals: dict[str, dict | None],
+                     pin_issues: dict[str, str] | None = None) -> tuple[list[str], list[str], dict[str, Any]]:
     """Cross-check what the log cites against what the pack holds. Returns (errors, warnings, counts).
 
     An allowed call that names a precondition must find it in ``preconditions``
@@ -82,7 +82,13 @@ def _check_citations(receipts: list[dict], preconditions: set[str],
     ``approvals`` (receipt_hash -> receipt, or None for a file that failed its
     own check, which the caller has already reported) for exactly its
     ``args_hash``. Export and ``evidence verify`` both use this, so the
-    exporter's report cannot say VERIFIED for a pack the verifier rejects.
+    exporter's report cannot say VALID for a pack whose citations the verifier
+    rejects. (They can still differ on pins: export turns a Gate receipt that
+    does not match the exporting machine's pins into a warning, which
+    ``evidence verify`` reports as an error for an approval; see
+    ``export_evidence_pack``.) ``pin_issues`` (receipt_hash -> error code)
+    marks Gate receipts that did not match the pins: they are not counted as
+    verified.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -126,7 +132,7 @@ def _check_citations(receipts: list[dict], preconditions: set[str],
                             f"{', '.join(map(str, seqs))}); an approval is meant to be used once")
     counts = {"preconditions_cited": pc_cited, "approvals_cited": sum(len(s) for s in cited.values()),
               "approvals_verified": verified}
-    g_errors, g_warnings, g_counts = _check_gate_citations(receipts, approvals)
+    g_errors, g_warnings, g_counts = _check_gate_citations(receipts, approvals, pin_issues)
     errors.extend(g_errors)
     warnings.extend(g_warnings)
     counts.update(g_counts)
@@ -167,8 +173,8 @@ _PIN_ONLY = {
 }
 
 
-def _check_gate_citations(receipts: list[dict],
-                          in_pack: dict[str, dict | None]) -> tuple[list[str], list[str], dict[str, Any]]:
+def _check_gate_citations(receipts: list[dict], in_pack: dict[str, dict | None],
+                          pin_issues: dict[str, str] | None = None) -> tuple[list[str], list[str], dict[str, Any]]:
     """Cross-check each ``guard.gate`` field against the Gate receipts in the pack.
 
     A cited receipt must be in the pack (``ERR_GATE_RECEIPT_MISSING``) and be
@@ -214,10 +220,10 @@ def _check_gate_citations(receipts: list[dict],
         elif request.get("args_hash") != r.get("args_hash"):
             problem = (f"ERR_GATE_RECEIPT_ARGS_MISMATCH: receipt {seq} cites Gate receipt {h[:16]}..., "
                        f"which was given for different arguments")
-        if problem is None:
-            verified += 1
-        else:
+        if problem is not None:
             errors.append(problem)
+        elif h not in (pin_issues or {}):  # a pin mismatch is counted in pin_mismatches, not here
+            verified += 1
     return errors, warnings, {"gate_receipts_cited": cited, "gate_receipts_in_pack": present,
                               "gate_receipts_verified": verified, "gate_outcomes": outcomes}
 
@@ -401,14 +407,14 @@ def export_evidence_pack(
     # since the receipt was made (a rotated Gate key, an approver pinned later), so here a
     # pin-only mismatch is a warning; integrity failures fail the export. A reviewer
     # re-checks with keys of their own: `evidence verify --gate-key ... --approver-key ...`.
-    gate_check = {"gate_key_confirmed": False, "gate_key_source": None, "approvers_pinned": False,
-                  "approvers_source": None}
+    gate_check = {"gate_key_pinned": False, "gate_key_confirmed": False, "gate_key_source": None,
+                  "approvers_pinned": False, "approvers_source": None}
     gate_receipts: dict[str, dict | None] = {}
     pin_issues: dict[str, str] = {}
     if approvals:
         gate_key, key_src, pins, pins_src = _gate_pins(None, None, True)
-        gate_check = {"gate_key_confirmed": gate_key is not None, "gate_key_source": key_src,
-                      "approvers_pinned": pins is not None, "approvers_source": pins_src}
+        gate_check = {"gate_key_pinned": gate_key is not None, "gate_key_confirmed": gate_key is not None,
+                      "gate_key_source": key_src, "approvers_pinned": pins is not None, "approvers_source": pins_src}
         g_errors, g_warnings, gate_receipts, pin_issues, _, _, _ = _check_gate_files(
             sorted((out / "approvals").glob("*.json")), receipts, gate_key, pins, pins_warn_all=True)
         for e in g_errors:
@@ -420,9 +426,19 @@ def export_evidence_pack(
         report.fail(e)
     report.warnings.extend(cite_warnings)
     summary = _summarise(receipts, preconditions, gate_receipts, pin_issues)
+    # A pin mismatch never fails the export (the pins may have changed since), but it must not
+    # read as a match: gate_key_confirmed is true only when every cited Gate receipt was signed
+    # by the pinned key, and an approval that allowed a call against the pins is flagged.
+    pin_calls = ([("approval", a) for a in summary["approved_by_person"] if a.get("pin_issue")]
+                 + [("denial", b["gate"]) for b in summary["blocked_calls"] if b.get("gate") and b["gate"].get("pin_issue")])
+    gate_check["pin_mismatches"] = {"approvals": sum(1 for k, _ in pin_calls if k == "approval"),
+                                    "denials": sum(1 for k, _ in pin_calls if k == "denial")}
+    if any(code == "ERR_GATE_UNEXPECTED_SERVER" for code in pin_issues.values()):
+        gate_check["gate_key_confirmed"] = False
     missing = [a["precondition"]["hash"] for a in summary["allowed_under_precondition"]
                if a["precondition"].get("missing")]
     verification = {**report.to_dict(), "path": "session.jsonl", **summary, "gate_check": gate_check,
+                    "warnings_require_attention": gate_check["pin_mismatches"]["approvals"] > 0,
                     "preconditions_missing_from_pack": missing,
                     "limits": _LIMITS,
                     "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")}
@@ -578,7 +594,7 @@ def verify_evidence_pack(pack: str | Path, *, expected_verify_key: str | None = 
                 ap_in_pack += 1
         # Cross-check the log against the preconditions and Gate receipts in the pack. (A file
         # that failed its own check above still counts as present; its failure is reported.)
-        cite_errors, cite_warnings, counts = _check_citations(receipts, pc_in_pack, in_pack)
+        cite_errors, cite_warnings, counts = _check_citations(receipts, pc_in_pack, in_pack, pin_issues)
         errors.extend(cite_errors)
         warnings.extend(cite_warnings)
         approvals_report = {
@@ -619,7 +635,8 @@ def _gate_receipt_status(item: dict, gc: dict) -> str:
         return f"receipt signatures valid at export, but {item['pin_issue']}"
     if not item.get("receipt_verified"):
         return "receipt FAILED verification"
-    key = (f"Gate key confirmed ({gc.get('gate_key_source')})" if gc.get("gate_key_confirmed")
+    # A receipt with no pin issue matched the pinned key, if one was pinned.
+    key = (f"Gate key confirmed ({gc.get('gate_key_source')})" if gc.get("gate_key_pinned", gc.get("gate_key_confirmed"))
            else "Gate key UNCONFIRMED")
     who = (f"approver pinned ({gc.get('approvers_source')})" if gc.get("approvers_pinned")
            else "approver NOT PINNED")
@@ -664,13 +681,34 @@ def _blocked_text(b: dict, gc: dict) -> str:
     return f"Gate outcome {str(outcome)[:24]!r} ({req})"
 
 
+def pin_verdict(v: dict) -> str | None:
+    """The qualifier a VALID export carries when an approval that allowed a call does not match
+    the exporting machine's pins, e.g. 'VALID, BUT 1 Gate approval does not match ...'."""
+    n = ((v.get("gate_check") or {}).get("pin_mismatches") or {}).get("approvals", 0)
+    if not v.get("valid") or not n:
+        return None
+    what = "1 Gate approval does" if n == 1 else f"{n} Gate approvals do"
+    return (f"VALID, BUT {what} not match this machine's pins "
+            f"(check with `perathos evidence verify --gate-key … --approver-key …`)")
+
+
+def _denial_pin_note(v: dict) -> str | None:
+    n = ((v.get("gate_check") or {}).get("pin_mismatches") or {}).get("denials", 0)
+    if not n:
+        return None
+    what = "1 Gate denial receipt does" if n == 1 else f"{n} Gate denial receipts do"
+    return f"Note: {what} not match this machine's pins; a denial authorises nothing."
+
+
 def _report_md(v: dict) -> str:
-    status = "VALID" if v["valid"] else "INVALID"
+    status = pin_verdict(v) or ("VALID" if v["valid"] else "INVALID")
+    note = _denial_pin_note(v)
     lines = [
         f"# Agent session evidence: {v.get('session_id')}",
         "",
         f"**Verification: {status}**",
         "",
+    ] + ([note, ""] if note else []) + [
         f"- Recorded: {v.get('first_ts')} to {v.get('last_ts')} (local clock)",
         f"- Tool calls: {v.get('tool_calls')}, blocked by the guard: {v.get('blocked')}",
         f"- Sealed through receipt {v.get('sealed_through')} by {v.get('signed_checkpoints')} signed checkpoint(s)",
@@ -717,6 +755,8 @@ def _report_md(v: dict) -> str:
 def _report_html(v: dict) -> str:
     e = html.escape
     ok = v["valid"]
+    qualified = pin_verdict(v)
+    denial_note = _denial_pin_note(v)
     rows = [
         ("Recorded", f"{v.get('first_ts')} to {v.get('last_ts')} (local clock)"),
         ("Tool calls", f"{v.get('tool_calls')}"),
@@ -754,7 +794,7 @@ body {{ font: 10.5pt/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; colo
 h1 {{ font-size: 15pt; margin: 0 0 2pt; }} h2 {{ font-size: 11pt; margin: 12pt 0 4pt; }}
 .sub {{ color: #57606a; margin-bottom: 8pt; word-break: break-all; }}
 .verdict {{ display: inline-block; padding: 3pt 9pt; border-radius: 4pt; font-weight: 700; color: #fff;
-  background: {'#1a7f37' if ok else '#cf222e'}; }}
+  background: {'#9a6700' if qualified else '#1a7f37' if ok else '#cf222e'}; }}
 table {{ border-collapse: collapse; width: 100%; margin-top: 8pt; }}
 th, td {{ text-align: left; padding: 3pt 6pt; border-bottom: 1px solid #d0d7de; vertical-align: top; word-break: break-all; }}
 th {{ width: 34%; color: #57606a; font-weight: 600; }}
@@ -765,7 +805,8 @@ code {{ font: 9pt ui-monospace, Consolas, monospace; background: #f6f8fa; paddin
 </style></head><body>
 <h1>Agent session evidence</h1>
 <div class="sub">Session {e(str(v.get('session_id')))} · exported {e(v['exported_at'])} · perathos</div>
-<span class="verdict">{'VERIFIED' if ok else 'VERIFICATION FAILED'}</span>
+<span class="verdict">{e(qualified) if qualified else ('VERIFIED' if ok else 'VERIFICATION FAILED')}</span>
+{f'<p class="sub">{e(denial_note)}</p>' if denial_note else ''}
 <table>{table}</table>
 {f'<h2>Verification failures</h2><ul>{errs}</ul>' if errs else ''}
 {f'<h2>Destructive actions</h2><ul>{"".join(events)}</ul>' if events else ''}

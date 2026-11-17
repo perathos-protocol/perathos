@@ -45,6 +45,15 @@ everything can be re-checked from the files.
    then used for. Only `evidence verify` on a full pack checks that.
 4. Read `REPORT.html` (one page) for the summary, and `verification.json` for the details.
    `REPORT.html` and `verification.json` are the exporter's statements; step 2 is your check.
+   The exporter checks Gate receipts against its own machine's pins but does not fail on a
+   mismatch. A heading of "VALID, BUT 1 Gate approval does not match this machine's pins", or
+   `warnings_require_attention: true` in `verification.json`, means a call ran on an approval
+   from a Gate key or passkey other than the ones pinned where the pack was made: re-check with
+   `evidence verify --gate-key ... --approver-key ...` before relying on it. In
+   `verification.json`, `gate_check.gate_key_pinned` says whether a Gate key was pinned there,
+   `gate_check.gate_key_confirmed` is true only if every cited Gate receipt was signed by that
+   key, and `gate_check.pin_mismatches` counts mismatched approvals and denials (including
+   rejected approvals).
 
 ## Reading the guard's outcomes
 

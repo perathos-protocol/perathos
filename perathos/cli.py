@@ -1406,15 +1406,31 @@ def session_export(target: str, out_dir: str, anchors_file: str, expected_verify
                                expected_verify_key=expected_verify_key, tsa_roots=roots,
                                signing_key_hex=sk_hex, make_zip=not no_zip)
     rep = res["report"]
-    click.echo(f"{'VALID' if res['valid'] else 'INVALID'}  evidence pack for {rep.get('session_id')}")
+    click.echo(f"{'VALID' if res['valid'] else 'INVALID'}{' (WITH WARNINGS)' if rep.get('warnings_require_attention') else ''}"
+               f"  evidence pack for {rep.get('session_id')}")
     click.echo(f"  folder   {res['dir']}")
     if res["zip"]:
         click.echo(f"  zip      {res['zip']}")
     click.echo(f"  report   {Path(res['dir']) / 'REPORT.html'}")
     click.echo(f"  tool calls {rep.get('tool_calls')}, blocked {rep.get('blocked')}, "
                f"timestamps {rep.get('anchors')}")
+    # A Gate receipt that does not match this machine's pins does not fail the export (the pins
+    # may have changed since), but each one is named, and an approval mismatch qualifies VALID.
+    for a in rep.get("approved_by_person", []):
+        if a.get("pin_issue"):
+            click.echo(f"[WARN]  receipt {a['seq']}: Gate approval {str(a['receipt'])[:16]}... that allowed "
+                       f"`{a['rule']}`: {a['pin_issue']}")
+    for b in rep.get("blocked_calls", []):
+        gt = b.get("gate") or {}
+        if gt.get("pin_issue"):
+            click.echo(f"[WARN]  receipt {b['seq']}: Gate {gt.get('outcome')} receipt {str(gt.get('receipt'))[:16]}... "
+                       f"for `{b['rule']}`: {gt['pin_issue']}")
     for err in rep.get("errors", []):
         click.echo(f"[ERROR] {err}", err=True)
+    from .evidence import pin_verdict
+    qualified = pin_verdict(rep)
+    if qualified:
+        click.echo(qualified.replace("`", ""))
     sys.exit(0 if res["valid"] else 1)
 
 

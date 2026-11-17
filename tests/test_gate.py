@@ -797,7 +797,12 @@ def test_gate_key_rotated_after_the_receipts(gate, tmp_path):
     assert "FAILED" not in md
     out = verify_evidence_pack(res["dir"], expected_verify_key=vk)
     assert [e.split(":")[0] for e in out["errors"]] == ["ERR_GATE_UNEXPECTED_SERVER"]  # the approval only
-    assert out["gate_receipts"]["pin_mismatches"] == 1 and out["gate_receipts"]["verified"] == 1
+    # The denial's mismatch is counted apart from, not among, the verified receipts (as in the export).
+    assert out["gate_receipts"]["pin_mismatches"] == 1 and out["gate_receipts"]["verified"] == 0
+    assert res["report"]["gate_check"]["gate_key_confirmed"] is False
+    assert res["report"]["gate_check"]["pin_mismatches"] == {"approvals": 1, "denials": 1}
+    assert res["report"]["warnings_require_attention"] is True
+    assert "VALID, BUT 1 Gate approval does not match this machine's pins" in md
     assert any("ERR_GATE_UNEXPECTED_SERVER" in w and "a denial authorises nothing" in w for w in out["warnings"])
     # With the Gate key that signed them, everything verifies.
     ok = verify_evidence_pack(res["dir"], expected_verify_key=vk, gate_key=gate.server_vk)
@@ -826,8 +831,11 @@ def test_export_without_any_pins_reports_unconfirmed(gate, tmp_path):
     set_config("gate_key", None)
     res, _, _ = _export(tmp_path, "nop")
     assert res["valid"] and not res["report"]["warnings"][1:], res["report"]["warnings"]
-    assert res["report"]["gate_check"] == {"gate_key_confirmed": False, "gate_key_source": None,
-                                           "approvers_pinned": False, "approvers_source": None}
+    assert res["report"]["gate_check"] == {"gate_key_pinned": False, "gate_key_confirmed": False,
+                                           "gate_key_source": None, "approvers_pinned": False,
+                                           "approvers_source": None,
+                                           "pin_mismatches": {"approvals": 0, "denials": 0}}
+    assert res["report"]["warnings_require_attention"] is False
     md = (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
     assert md.count("receipt verified at export, Gate key UNCONFIRMED, approver NOT PINNED") == 2
 
@@ -918,3 +926,53 @@ def test_unknown_outcome_and_gate_on_allow_are_warnings(tmp_path):
     assert any("unknown Gate outcome 'vetoed-by-robot'" in w for w in out["warnings"])
     assert any("receipt 2: names a Gate outcome but the guard's decision is not deny" in w for w in out["warnings"])
     assert "Gate outcome 'vetoed-by-robot'" in (res["dir"] / "REPORT.md").read_text(encoding="utf-8")
+
+
+def test_approval_from_an_attackers_gate_is_flagged_at_export(gate, tmp_path, monkeypatch):
+    """An approval signed by another Gate key and passkey verifies with no pins. Exported on a
+    machine that pins the real Gate and approver, it is VALID (pins never fail an export) but
+    impossible to miss; `evidence verify` with those pins fails it."""
+    from perathos.approvers import set_config
+    from perathos.recorder import record_hook_event
+    attacker = StubGate()
+    try:
+        _login(attacker)  # the guard is pointed at the attacker's Gate for this call
+        apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+        attacker.decide(attacker.only_pending(), "approve")
+        d = apply_gate(DENY, tool="Bash", args=ARGS, cwd=tmp_path, wait_seconds=0)
+    finally:
+        attacker.close()
+    assert d.decision == "allow" and verify_receipt(
+        json.loads(next((tmp_path / ".perathos" / "approvals").glob("apr_*.json")).read_text(encoding="utf-8")),
+        gate_key=None)
+    _pre(tmp_path, "atk", "t1", d)
+    # This machine pins the real Gate and the real approver.
+    set_config("gate_key", gate.server_vk)
+    set_config("gate_approvers", [{"name": "Alice Moyo", "public_key": b64url(gate.pub)}])
+    runner = CliRunner()
+    assert runner.invoke(cli, ["keygen"]).exit_code == 0
+    record_hook_event({"hook_event_name": "Stop", "session_id": "atk", "cwd": str(tmp_path)},
+                      signing_key_hex=generate_keypair()[0])
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(cli, ["session", "export", str(session_log_path(tmp_path, "atk")), "--out", str(tmp_path / "pack")])
+    assert r.exit_code == 0, r.output
+    lines = r.output.splitlines()
+    assert lines[0].startswith("VALID (WITH WARNINGS)")
+    assert any(ln.startswith("[WARN]  receipt 1: Gate approval ") and "signed by a Gate key other than the pinned one"
+               in ln for ln in lines), r.output
+    assert lines[-1] == ("VALID, BUT 1 Gate approval does not match this machine's pins "
+                         "(check with perathos evidence verify --gate-key … --approver-key …)")
+    v = json.loads((tmp_path / "pack" / "verification.json").read_text(encoding="utf-8"))
+    assert v["valid"] is True and v["warnings_require_attention"] is True
+    assert v["gate_check"]["gate_key_pinned"] is True and v["gate_check"]["gate_key_confirmed"] is False
+    assert v["gate_check"]["pin_mismatches"] == {"approvals": 1, "denials": 0}
+    a = v["approved_by_person"][0]
+    assert a["receipt_verified"] is False and a["pin_issue"] == "signed by a Gate key other than the pinned one"
+    heading = ("VALID, BUT 1 Gate approval does not match this machine's pins "
+               "(check with `perathos evidence verify --gate-key … --approver-key …`)")
+    assert f"**Verification: {heading}**" in (tmp_path / "pack" / "REPORT.md").read_text(encoding="utf-8")
+    html = (tmp_path / "pack" / "REPORT.html").read_text(encoding="utf-8")
+    assert "VALID, BUT 1 Gate approval does not match this machine&#x27;s pins" in html and ">VERIFIED<" not in html
+    # evidence verify on the same machine, with the same pins: INVALID, exit 1.
+    out = runner.invoke(cli, ["evidence", "verify", str(tmp_path / "pack")])
+    assert out.exit_code == 1 and "ERR_GATE_UNEXPECTED_SERVER" in out.output, out.output
