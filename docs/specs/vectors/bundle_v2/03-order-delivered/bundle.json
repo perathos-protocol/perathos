@@ -1,0 +1,24 @@
+{
+  "bundle_id": "0f85f9c4-c5e7-563e-9427-eef2e6f82d9f",
+  "proof_system": "sha256-deterministic",
+  "issued_at": "2026-11-25T15:30:00.900Z",
+  "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+  "input_hash": "174e6ff81b9d161a6407c5e13efc9c81e1c2c5c422e007e91fe54a85f4f2dee1",
+  "output_hash": "a6ea272f89339f9d2430b99ea6efd6fe3c430ee8ec3ad840c7f3e262796e9de9",
+  "trace_hash": "f348ea6d6e6eb3406b3de8774c59850ac7431ddc4d7a234d4cfe684e9b29f149",
+  "integrity_hash": "4e731f1ffebb1ccdee3524436e96cef7efeabab4948bed23eddf8edc34501a72",
+  "_trace": {
+    "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+    "proof_system": "sha256-deterministic",
+    "input_length": 36,
+    "output_length": 250
+  },
+  "bundle_version": "2.0",
+  "model": "nexus.commerce.event/1",
+  "answer": "{\"actor\":\"owner\",\"currency\":\"ZAR\",\"event\":\"order.delivered\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-25T15:30:00.000Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":3,\"total_cents\":12900}",
+  "provider_signature": {
+    "algorithm": "ed25519",
+    "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "signature": "1077d1aac17d8f8a3a98e14e9f0f0d5a8bbaeb29873349d95f6986e4fc9a75e566080f0cf2cf5fff8ed21d96f04b09f241feebfb4f28f9bfff2a52a4541d4701"
+  }
+}
