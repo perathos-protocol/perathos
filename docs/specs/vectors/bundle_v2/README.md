@@ -42,11 +42,19 @@ There is no `verification` block, so no `verdict` or `verification_hash`.
 `answer` against `output_hash`, and its signature (and signer, with
 `--trust-jwks`). They know nothing about chains, and they check `answer` only
 when it is present. NEXUS adds two rules of its own, so two cases are valid in
-Python and invalid for NEXUS (`python` and `nexus` differ in `expected.json`):
+Python and invalid for NEXUS, and a third fails in both with different codes
+(`python` and `nexus` differ in `expected.json`):
 
 * `answer` is required for model `nexus.commerce.event/1` (`ERR_ANSWER_REQUIRED`);
 * a chain check: `seq` runs 1, 2, 3, ...; the first `input_hash` is sha256(`""`);
-  each later `input_hash` is sha256 of the previous `bundle_id` (`ERR_CHAIN`).
+  each later `input_hash` is sha256 of the previous `bundle_id` (`ERR_CHAIN`);
+* number tokens: NEXUS parses bundle text and rejects any number written with
+  `.`, `e`, `E`, or as `-0` (`ERR_MALFORMED_BUNDLE`) before hashing. Python
+  reads `0.0` as a float and canonicalises it as `0.0`, so the hash fails
+  there instead (`ERR_TRACE_HASH_MISMATCH` in case 20). A JavaScript verifier
+  that let `JSON.parse` turn `0.0` into `0` would hash the original bytes and
+  wrongly say VALID; refusing the token keeps NEXUS from ever saying VALID
+  where Python says invalid.
 
 ## Cases
 
@@ -66,6 +74,7 @@ Python and invalid for NEXUS (`python` and `nexus` differ in `expected.json`):
 | `17-untrusted-signer` | 01 rebuilt and signed by the outsider key, not in `jwks.json` | `ERR_UNTRUSTED_SIGNER` | same |
 | `18-answer-stripped` | 01 with `answer` removed | `VALID` | `ERR_ANSWER_REQUIRED` |
 | `19-chain-broken` | seq 2 signed correctly, but `input_text` is not 01's `bundle_id`; checked as the chain [01, 19] | `VALID` | `ERR_CHAIN` |
+| `20-trace-float-encoding` | 01 with `_trace.input_length` written as `0.0` in the file text (numerically equal) | `ERR_TRACE_HASH_MISMATCH` | `ERR_MALFORMED_BUNDLE` |
 
 Python verdicts are from `verify_bundle(bundle, trust_store=TrustStore.from_jwks(jwks), require_signed=True)`.
 Each failing case fails on exactly one code.
@@ -100,6 +109,7 @@ bundle. Actual output (errors go to stderr):
 17-untrusted-signer    [ERROR] INVALID  ERR_UNTRUSTED_SIGNER
 18-answer-stripped     VALID_SIGNED  18-answer-stripped/bundle.json
 19-chain-broken        VALID_SIGNED  19-chain-broken/bundle.json
+20-trace-float-encoding  [ERROR] INVALID  ERR_TRACE_HASH_MISMATCH
 ```
 
 ## The signing keys are published test keys
@@ -111,5 +121,7 @@ trust them, for anything real.
 
 ## Line endings
 
-Compare these files byte for byte. `.gitattributes` here turns off line-ending
+Compare these files byte for byte. Case 20's file is not what `json.dumps`
+would write (the generator patches one number token), so parse the file text
+itself; do not re-serialise it. `.gitattributes` here turns off line-ending
 conversion, so a Windows checkout keeps LF.

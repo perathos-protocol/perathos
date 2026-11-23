@@ -62,6 +62,7 @@ def test_cases_published():
         "17-untrusted-signer",
         "18-answer-stripped",
         "19-chain-broken",
+        "20-trace-float-encoding",
     ]
 
 
@@ -176,17 +177,29 @@ def test_chains():
     assert "answer" not in _bundle("18-answer-stripped")
 
 
+def _cli_error_line(code: str) -> str:
+    """The first stderr line `perathos verify` prints for a failing bundle."""
+    if code == "ERR_UNSIGNED":
+        # The unsigned policy gate prints its own line, without the ERR_ code.
+        return "[ERROR] UNSIGNED  bundle has no signature, so its issuer is unproven"
+    return f"[ERROR] INVALID  {code}"
+
+
 @pytest.mark.parametrize("name", CASES)
 def test_cli_verdict(name):
     bundle = VECTORS / EXPECTED["cases"][name]["file"]
     result = CliRunner().invoke(
-        cli,
-        ["verify", "--file", str(bundle), "--trust-jwks", str(VECTORS / "jwks.json")],
+        cli, ["verify", "--file", str(bundle), "--trust-jwks", str(VECTORS / "jwks.json")]
     )
-    valid = EXPECTED["cases"][name]["python"]["verdict"] == "VALID"
+    want = EXPECTED["cases"][name]["python"]
+    valid = want["verdict"] == "VALID"
     assert result.exit_code == (0 if valid else 1), result.output
     if valid:
         assert result.output.splitlines()[0] == f"VALID_SIGNED  {bundle}"
+    else:
+        assert result.output.splitlines()[0] == _cli_error_line(want["code"]), result.output
+        if want["code"] != "ERR_UNSIGNED":
+            assert want["code"] in result.output
 
 
 def test_valid_cases_pass_cli():

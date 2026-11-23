@@ -130,6 +130,7 @@ TAMPERED = (
     "17-untrusted-signer",
     "18-answer-stripped",
     "19-chain-broken",
+    "20-trace-float-encoding",
 )
 
 
@@ -388,6 +389,27 @@ def _cases() -> tuple[dict, dict]:
         },
     )
 
+    # 20: 01 with _trace.input_length written as 0.0 in the JSON text. Python
+    # reads a float and canonicalises it as 0.0, so trace_hash no longer matches;
+    # NEXUS refuses any non-integer number token before hashing. json.dumps
+    # cannot write 0.0 for the int 0, so the file text is patched (see _file_text).
+    out["20-trace-float-encoding"] = (
+        copy.deepcopy(base_bundle),
+        {
+            "kind": "tampered",
+            "description": "01-order-confirmed with _trace.input_length written as 0.0 instead of 0 "
+            "(the file text only; the value is numerically equal). Python parses a float, canonical JSON "
+            "writes 0.0, and the trace hash no longer matches. NEXUS rejects any number token with a "
+            "'.', 'e', 'E' or '-0' before hashing, so it never reports VALID where Python reports a "
+            "hash mismatch.",
+            "derived_from": "01-order-confirmed",
+            "mutation": '_trace.input_length: 0 -> 0.0 (JSON text)',
+            "build": base_inter,
+            "python": {"verdict": "INVALID", "code": "ERR_TRACE_HASH_MISMATCH"},
+            "nexus": {"verdict": "INVALID", "code": "ERR_MALFORMED_BUNDLE"},
+        },
+    )
+
     chains = {
         "valid": [name for name, _, _ in CHAIN],
         "broken": ["01-order-confirmed", "19-chain-broken"],
@@ -429,17 +451,29 @@ def _dump(obj) -> bytes:
     return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def _file_text(name: str, bundle: dict) -> bytes:
+    """The bundle file. Case 20 differs from json.dumps only in one number token."""
+    text = _dump(bundle)
+    if name == "20-trace-float-encoding":
+        old, new = b'"input_length": 0,', b'"input_length": 0.0,'
+        assert text.count(old) == 1
+        text = text.replace(old, new)
+    return text
+
+
 def generate(out: Path) -> None:
     cases, chains = _cases()
     ts = _trust_store()
     for name, (bundle, record) in cases.items():
-        ok, err = verify_bundle(bundle, trust_store=ts, require_signed=True)
+        # Verify what a reader of the file gets, not the in-memory dict.
+        parsed = json.loads(_file_text(name, bundle))
+        ok, err = verify_bundle(parsed, trust_store=ts, require_signed=True)
         want = record["python"]
         assert (ok, err) == (want["verdict"] == "VALID", want["code"]), (name, ok, err)
     out.mkdir(parents=True, exist_ok=True)
     for name, (bundle, _) in cases.items():
         (out / name).mkdir(parents=True, exist_ok=True)
-        (out / name / BUNDLE_FILE).write_bytes(_dump(bundle))
+        (out / name / BUNDLE_FILE).write_bytes(_file_text(name, bundle))
     (out / "jwks.json").write_bytes(_dump(ts.to_jwks()))
     (out / "expected.json").write_bytes(_dump(_expected(cases, chains)))
 
