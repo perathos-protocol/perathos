@@ -1,0 +1,1006 @@
+{
+  "format": "perathos bundle v2 (bundle_version 2.0), NEXUS commerce event mapping",
+  "generator": "scripts/make_bundle_v2_vectors.py",
+  "model": "nexus.commerce.event/1",
+  "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+  "proof_system": "sha256-deterministic",
+  "perathos_namespace": "d3f44362-2cf7-574d-a4d2-39c198f8e5e8",
+  "jwks": "jwks.json",
+  "keys": {
+    "trusted": {
+      "signing_key": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "kid": "ed25519-21fe31dfa154a261",
+      "in_jwks": true
+    },
+    "forger": {
+      "signing_key": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "verify_key": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "kid": "ed25519-39f713d0a644253f",
+      "in_jwks": false
+    },
+    "outsider": {
+      "signing_key": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "verify_key": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "kid": "ed25519-dac073e0123bdea5",
+      "in_jwks": false
+    }
+  },
+  "test_keys_note": "FIXED TEST KEYS (RFC 8032 section 7.1 TEST 1-3), published on purpose. Never use them for anything real.",
+  "python_verify": "verify_bundle(bundle, trust_store=TrustStore.from_jwks(jwks.json), require_signed=True)",
+  "chains": {
+    "valid": [
+      "01-order-confirmed",
+      "02-order-shipped",
+      "03-order-delivered",
+      "04-dispute-closed"
+    ],
+    "broken": [
+      "01-order-confirmed",
+      "19-chain-broken"
+    ]
+  },
+  "cases": {
+    "01-order-confirmed": {
+      "file": "01-order-confirmed/bundle.json",
+      "kind": "valid",
+      "description": "seq 1 of the order: order.confirmed, the first event, so input_text is \"\"",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "VALID",
+        "code": ""
+      }
+    },
+    "02-order-shipped": {
+      "file": "02-order-shipped/bundle.json",
+      "kind": "valid",
+      "description": "seq 2 of the order: order.shipped, input_text is the previous event's bundle_id",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.shipped",
+          "seq": 2,
+          "actor": "owner",
+          "occurred_at": "2026-11-23T10:00:00.000Z"
+        },
+        "payload_canonical": "{\"actor\":\"owner\",\"currency\":\"ZAR\",\"event\":\"order.shipped\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-23T10:00:00.000Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":2,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a226f776e6572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e73686970706564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32335431303a30303a30302e3030305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a322c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "issued_at": "2026-11-23T10:00:00.250Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 36,
+          "output_length": 248
+        },
+        "trace_canonical": "{\"input_length\":36,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":248,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "7f111e7833cebe0812151fa5981220cf1a77f5e9c85176e3ee6ff046a7903671",
+        "output_hash": "9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "7f111e7833cebe0812151fa5981220cf1a77f5e9c85176e3ee6ff046a7903671",
+          "issued_at": "2026-11-23T10:00:00.250Z",
+          "output_hash": "9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"7f111e7833cebe0812151fa5981220cf1a77f5e9c85176e3ee6ff046a7903671\",\"issued_at\":\"2026-11-23T10:00:00.250Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2237663131316537383333636562653038313231353166613539383132323063663161373766356539633835313736653365653666663034366137393033363731222c226973737565645f6174223a22323032362d31312d32335431303a30303a30302e3235305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2239323038646534346264393063383831646365396130633561363461663861653339373161613132373633313438346335323966316535373363653437663932222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2230653630333030633230373936643666313835633837633233383261373338653666363038323533393761386564613566316639383863616533343335653635227d",
+        "integrity_hash": "c641a38b44eebe4b947811b2e2a12336c9264dd688965bba039cd7cf4f64718f",
+        "bundle_id": "1db240e7-402e-5048-8ee5-483909b51acf",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "8350edad63d2c39467fc9f7113df907c1994f2350ed2fc6ed794873ecca949915e6bd73e82809b298541de2d6b937d6b042d863304f362c5c317166bfa5cf70b"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "VALID",
+        "code": ""
+      }
+    },
+    "03-order-delivered": {
+      "file": "03-order-delivered/bundle.json",
+      "kind": "valid",
+      "description": "seq 3 of the order: order.delivered, input_text is the previous event's bundle_id",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.delivered",
+          "seq": 3,
+          "actor": "owner",
+          "occurred_at": "2026-11-25T15:30:00.000Z"
+        },
+        "payload_canonical": "{\"actor\":\"owner\",\"currency\":\"ZAR\",\"event\":\"order.delivered\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-25T15:30:00.000Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":3,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a226f776e6572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e64656c697665726564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32355431353a33303a30302e3030305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a332c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "1db240e7-402e-5048-8ee5-483909b51acf",
+        "issued_at": "2026-11-25T15:30:00.900Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 36,
+          "output_length": 250
+        },
+        "trace_canonical": "{\"input_length\":36,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":250,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "f348ea6d6e6eb3406b3de8774c59850ac7431ddc4d7a234d4cfe684e9b29f149",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "174e6ff81b9d161a6407c5e13efc9c81e1c2c5c422e007e91fe54a85f4f2dee1",
+        "output_hash": "a6ea272f89339f9d2430b99ea6efd6fe3c430ee8ec3ad840c7f3e262796e9de9",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "174e6ff81b9d161a6407c5e13efc9c81e1c2c5c422e007e91fe54a85f4f2dee1",
+          "issued_at": "2026-11-25T15:30:00.900Z",
+          "output_hash": "a6ea272f89339f9d2430b99ea6efd6fe3c430ee8ec3ad840c7f3e262796e9de9",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "f348ea6d6e6eb3406b3de8774c59850ac7431ddc4d7a234d4cfe684e9b29f149",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"174e6ff81b9d161a6407c5e13efc9c81e1c2c5c422e007e91fe54a85f4f2dee1\",\"issued_at\":\"2026-11-25T15:30:00.900Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"a6ea272f89339f9d2430b99ea6efd6fe3c430ee8ec3ad840c7f3e262796e9de9\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"f348ea6d6e6eb3406b3de8774c59850ac7431ddc4d7a234d4cfe684e9b29f149\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2231373465366666383162396431363161363430376335653133656663396338316531633263356334323265303037653931666535346138356634663264656531222c226973737565645f6174223a22323032362d31312d32355431353a33303a30302e3930305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2261366561323732663839333339663964323433306239396561366566643666653363343330656538656333616438343063376633653236323739366539646539222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2266333438656136643665366562333430366233646538373734633539383530616337343331646463346437613233346434636665363834653962323966313439227d",
+        "integrity_hash": "4e731f1ffebb1ccdee3524436e96cef7efeabab4948bed23eddf8edc34501a72",
+        "bundle_id": "0f85f9c4-c5e7-563e-9427-eef2e6f82d9f",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "1077d1aac17d8f8a3a98e14e9f0f0d5a8bbaeb29873349d95f6986e4fc9a75e566080f0cf2cf5fff8ed21d96f04b09f241feebfb4f28f9bfff2a52a4541d4701"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "VALID",
+        "code": ""
+      }
+    },
+    "04-dispute-closed": {
+      "file": "04-dispute-closed/bundle.json",
+      "kind": "valid",
+      "description": "seq 4 of the order: order.dispute_closed with outcome 'won', input_text is the previous event's bundle_id",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.dispute_closed",
+          "seq": 4,
+          "actor": "payment_provider",
+          "occurred_at": "2026-12-20T08:00:00.000Z",
+          "outcome": "won"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.dispute_closed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-12-20T08:00:00.000Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"outcome\":\"won\",\"schema\":\"nexus.commerce.event/1\",\"seq\":4,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e646973707574655f636c6f736564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31322d32305430383a30303a30302e3030305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c226f7574636f6d65223a22776f6e222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a342c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "0f85f9c4-c5e7-563e-9427-eef2e6f82d9f",
+        "issued_at": "2026-12-20T08:00:01.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 36,
+          "output_length": 282
+        },
+        "trace_canonical": "{\"input_length\":36,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":282,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "da3674546dfad58b98f5546bb1f61fe9e060192122d15619f5ac3be031cf3215",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "9bb8443eac1de94267e7bb4394521fccf81df5a03a17790deb810c5949c34c7e",
+        "output_hash": "7cd4eb152a6582e5744721186d957891e689931c8f28ccc81466d3475cf965a2",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "9bb8443eac1de94267e7bb4394521fccf81df5a03a17790deb810c5949c34c7e",
+          "issued_at": "2026-12-20T08:00:01.000Z",
+          "output_hash": "7cd4eb152a6582e5744721186d957891e689931c8f28ccc81466d3475cf965a2",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "da3674546dfad58b98f5546bb1f61fe9e060192122d15619f5ac3be031cf3215",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"9bb8443eac1de94267e7bb4394521fccf81df5a03a17790deb810c5949c34c7e\",\"issued_at\":\"2026-12-20T08:00:01.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"7cd4eb152a6582e5744721186d957891e689931c8f28ccc81466d3475cf965a2\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"da3674546dfad58b98f5546bb1f61fe9e060192122d15619f5ac3be031cf3215\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2239626238343433656163316465393432363765376262343339343532316663636638316466356130336131373739306465623831306335393439633334633765222c226973737565645f6174223a22323032362d31322d32305430383a30303a30312e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2237636434656231353261363538326535373434373231313836643935373839316536383939333163386632386363633831343636643334373563663936356132222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2264613336373435343664666164353862393866353534366262316636316665396530363031393231323264313536313966356163336265303331636633323135227d",
+        "integrity_hash": "e535f5c73bcee3ab4b5948d1aacacba989060a8ecb787cdd6c50b04469de5e5c",
+        "bundle_id": "190f4cf2-593c-5c39-8374-be27b247806d",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "ea406e3e2b552100ff79d2c1211a51380d95da9e168892630e7d4a684c4fb3d401ebf618c28359052f727e8aa0184b5b4a1f719f55e6579310e09d40ac7e6802"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "VALID",
+        "code": ""
+      }
+    },
+    "10-answer-edited": {
+      "file": "10-answer-edited/bundle.json",
+      "kind": "tampered",
+      "description": "answer edited after signing; output_hash still binds the original payload.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "answer: \"total_cents\":12900 -> \"total_cents\":12901",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_ANSWER_MISMATCH"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_ANSWER_MISMATCH"
+      }
+    },
+    "11-output-hash-edited": {
+      "file": "11-output-hash-edited/bundle.json",
+      "kind": "tampered",
+      "description": "output_hash edited; it is bound into integrity_hash.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "output_hash: last hex digit changed",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_INTEGRITY_HASH_MISMATCH"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_INTEGRITY_HASH_MISMATCH"
+      }
+    },
+    "12-trace-edited": {
+      "file": "12-trace-edited/bundle.json",
+      "kind": "tampered",
+      "description": "_trace edited; it no longer hashes to trace_hash.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "_trace.output_length: +1",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_TRACE_HASH_MISMATCH"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_TRACE_HASH_MISMATCH"
+      }
+    },
+    "13-bundle-id-edited": {
+      "file": "13-bundle-id-edited/bundle.json",
+      "kind": "tampered",
+      "description": "bundle_id edited; it is uuid5(PERATHOS_NAMESPACE, integrity_hash).",
+      "derived_from": "01-order-confirmed",
+      "mutation": "bundle_id: last hex digit changed",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_BUNDLE_ID_MISMATCH"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_BUNDLE_ID_MISMATCH"
+      }
+    },
+    "14-forged-signature": {
+      "file": "14-forged-signature/bundle.json",
+      "kind": "tampered",
+      "description": "A well-formed Ed25519 signature over integrity_hash from another key; verify_key still names the trusted key.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "provider_signature.signature: made with the forger key; verify_key unchanged",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_BAD_SIGNATURE"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_BAD_SIGNATURE"
+      }
+    },
+    "15-signature-removed": {
+      "file": "15-signature-removed/bundle.json",
+      "kind": "tampered",
+      "description": "No provider_signature; fails because signatures are required (require_signed / CLI default).",
+      "derived_from": "01-order-confirmed",
+      "mutation": "provider_signature: removed",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_UNSIGNED"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_UNSIGNED"
+      }
+    },
+    "16-algorithm-changed": {
+      "file": "16-algorithm-changed/bundle.json",
+      "kind": "tampered",
+      "description": "provider_signature.algorithm is not ed25519.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "provider_signature.algorithm: \"ed25519\" -> \"ed448\"",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_UNSUPPORTED_ALGORITHM"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_UNSUPPORTED_ALGORITHM"
+      }
+    },
+    "17-untrusted-signer": {
+      "file": "17-untrusted-signer/bundle.json",
+      "kind": "tampered",
+      "description": "Built exactly like 01 but signed by the outsider key, which is not in jwks.json.",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "outsider",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+          "signature": "3b512cde980e768abbeeebb2be49afe24d4b9c8e2bf939038fb157d8bfa0849fa11a09b25f29e53b91fee5eaafe5a1199bebae0aeb27c6b128755344af4de00d"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_UNTRUSTED_SIGNER"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_UNTRUSTED_SIGNER"
+      }
+    },
+    "18-answer-stripped": {
+      "file": "18-answer-stripped/bundle.json",
+      "kind": "tampered",
+      "description": "answer removed. Python checks answer only when present, so verify_bundle returns (True, \"\"). NEXUS requires answer for model nexus.commerce.event/1 (TRUST_RECORD.md section 4.1, D3): without it the bundle carries only a hash and nobody can read what was attested.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "answer: removed",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_ANSWER_REQUIRED"
+      }
+    },
+    "19-chain-broken": {
+      "file": "19-chain-broken/bundle.json",
+      "kind": "tampered",
+      "description": "seq 2 (order.shipped) built and signed correctly, but its input_text is not 01-order-confirmed's bundle_id (last hex digit changed). Python verifies one bundle at a time and accepts it; a chain check over [01-order-confirmed, 19-chain-broken] fails because input_hash != sha256(previous bundle_id).",
+      "derived_from": null,
+      "mutation": null,
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.shipped",
+          "seq": 2,
+          "actor": "owner",
+          "occurred_at": "2026-11-23T10:00:00.000Z"
+        },
+        "payload_canonical": "{\"actor\":\"owner\",\"currency\":\"ZAR\",\"event\":\"order.shipped\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-23T10:00:00.000Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":2,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a226f776e6572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e73686970706564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32335431303a30303a30302e3030305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a322c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "53b12ae0-2029-5392-9ed3-23b8e97322d0",
+        "issued_at": "2026-11-23T10:00:00.250Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 36,
+          "output_length": 248
+        },
+        "trace_canonical": "{\"input_length\":36,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":248,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "ec4616660be36a78ed11c3102c715dbfd8b037cffeb96ba6b64b562557707677",
+        "output_hash": "9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "ec4616660be36a78ed11c3102c715dbfd8b037cffeb96ba6b64b562557707677",
+          "issued_at": "2026-11-23T10:00:00.250Z",
+          "output_hash": "9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"ec4616660be36a78ed11c3102c715dbfd8b037cffeb96ba6b64b562557707677\",\"issued_at\":\"2026-11-23T10:00:00.250Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"9208de44bd90c881dce9a0c5a64af8ae3971aa127631484c529f1e573ce47f92\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"0e60300c20796d6f185c87c2382a738e6f60825397a8eda5f1f988cae3435e65\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265633436313636363062653336613738656431316333313032633731356462666438623033376366666562393662613662363462353632353537373037363737222c226973737565645f6174223a22323032362d31312d32335431303a30303a30302e3235305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2239323038646534346264393063383831646365396130633561363461663861653339373161613132373633313438346335323966316535373363653437663932222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2230653630333030633230373936643666313835633837633233383261373338653666363038323533393761386564613566316639383863616533343335653635227d",
+        "integrity_hash": "a088ca9dc3eb5f8ec2387211ef1e8df977b5684311138e1c6799c0a356b07953",
+        "bundle_id": "36cfc79e-cded-5cc0-b824-e284196cc677",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "4a7a00156e363a0a06a21d4b7745650b6347c082fcc082f6e4a5d1dbb23d6b79f151478f1d7357177dfb6d498bb55b098f02011e4a46b038413bad3556e8300a"
+        }
+      },
+      "python": {
+        "verdict": "VALID",
+        "code": ""
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_CHAIN"
+      }
+    },
+    "20-trace-float-encoding": {
+      "file": "20-trace-float-encoding/bundle.json",
+      "kind": "tampered",
+      "description": "01-order-confirmed with _trace.input_length written as 0.0 instead of 0 (the file text only; the value is numerically equal). Python parses a float, canonical JSON writes 0.0, and the trace hash no longer matches. NEXUS rejects any number token with a '.', 'e', 'E' or '-0' before hashing, so it never reports VALID where Python reports a hash mismatch.",
+      "derived_from": "01-order-confirmed",
+      "mutation": "_trace.input_length: 0 -> 0.0 (JSON text)",
+      "build": {
+        "payload": {
+          "schema": "nexus.commerce.event/1",
+          "order_ref": "or_1d52ade058740de10eecc395f7d710be",
+          "total_cents": 12900,
+          "currency": "ZAR",
+          "item_count": 3,
+          "evidence": "recorded",
+          "event": "order.confirmed",
+          "seq": 1,
+          "actor": "payment_provider",
+          "occurred_at": "2026-11-22T09:14:03.120Z"
+        },
+        "payload_canonical": "{\"actor\":\"payment_provider\",\"currency\":\"ZAR\",\"event\":\"order.confirmed\",\"evidence\":\"recorded\",\"item_count\":3,\"occurred_at\":\"2026-11-22T09:14:03.120Z\",\"order_ref\":\"or_1d52ade058740de10eecc395f7d710be\",\"schema\":\"nexus.commerce.event/1\",\"seq\":1,\"total_cents\":12900}",
+        "payload_canonical_hex": "7b226163746f72223a227061796d656e745f70726f7669646572222c2263757272656e6379223a225a4152222c226576656e74223a226f726465722e636f6e6669726d6564222c2265766964656e6365223a227265636f72646564222c226974656d5f636f756e74223a332c226f636375727265645f6174223a22323032362d31312d32325430393a31343a30332e3132305a222c226f726465725f726566223a226f725f3164353261646530353837343064653130656563633339356637643731306265222c22736368656d61223a226e657875732e636f6d6d657263652e6576656e742f31222c22736571223a312c22746f74616c5f63656e7473223a31323930307d",
+        "input_text": "",
+        "issued_at": "2026-11-22T09:14:04.000Z",
+        "signer": "trusted",
+        "_trace": {
+          "model_descriptor": "nexus-platform:nexus.commerce.event:v1",
+          "proof_system": "sha256-deterministic",
+          "input_length": 0,
+          "output_length": 261
+        },
+        "trace_canonical": "{\"input_length\":0,\"model_descriptor\":\"nexus-platform:nexus.commerce.event:v1\",\"output_length\":261,\"proof_system\":\"sha256-deterministic\"}",
+        "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+        "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+        "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+        "integrity_payload": {
+          "ai_id": "09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797",
+          "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "issued_at": "2026-11-22T09:14:04.000Z",
+          "output_hash": "dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1",
+          "proof_system": "sha256-deterministic",
+          "trace_hash": "7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1",
+          "bundle_version": "2.0",
+          "model": "nexus.commerce.event/1"
+        },
+        "integrity_payload_canonical": "{\"ai_id\":\"09bc81e2f26ea4f7004c7ff64dfcc25cc23cddb459fe8be9e0ef3882a0fec797\",\"bundle_version\":\"2.0\",\"input_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"issued_at\":\"2026-11-22T09:14:04.000Z\",\"model\":\"nexus.commerce.event/1\",\"output_hash\":\"dbe3d10e0a5c4a3f72875f6de2519e132db74c8ae425f3373ee394aeaa1a3bc1\",\"proof_system\":\"sha256-deterministic\",\"trace_hash\":\"7f3b0bf74b64ccbdf250dc4b0e25941d4f6384047e47ef96c8ee1c440a0735f1\"}",
+        "integrity_payload_canonical_hex": "7b2261695f6964223a2230396263383165326632366561346637303034633766663634646663633235636332336364646234353966653862653965306566333838326130666563373937222c2262756e646c655f76657273696f6e223a22322e30222c22696e7075745f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c226973737565645f6174223a22323032362d31312d32325430393a31343a30342e3030305a222c226d6f64656c223a226e657875732e636f6d6d657263652e6576656e742f31222c226f75747075745f68617368223a2264626533643130653061356334613366373238373566366465323531396531333264623734633861653432356633333733656533393461656161316133626331222c2270726f6f665f73797374656d223a227368613235362d64657465726d696e6973746963222c2274726163655f68617368223a2237663362306266373462363463636264663235306463346230653235393431643466363338343034376534376566393663386565316334343061303733356631227d",
+        "integrity_hash": "0043626ff4414982ea597ceb1290cf1ca28a36e9a4443f41b334da6a30d3f962",
+        "bundle_id": "53b12ae0-2029-5392-9ed3-23b8e97322d1",
+        "provider_signature": {
+          "algorithm": "ed25519",
+          "verify_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature": "bba7ab09b5cee70950f8da0363ec9ae8791967a4009567873e97c7b4b70025d8592124b4d9064281cfb856bb9546b52b53a71c0e6eb6a537757278746ac12308"
+        }
+      },
+      "python": {
+        "verdict": "INVALID",
+        "code": "ERR_TRACE_HASH_MISMATCH"
+      },
+      "nexus": {
+        "verdict": "INVALID",
+        "code": "ERR_MALFORMED_BUNDLE"
+      }
+    }
+  }
+}
